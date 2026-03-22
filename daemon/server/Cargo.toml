@@ -1,11 +1,11 @@
 [package]
-name = "oversight-server"
+name = "agentchat-server"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-oversight-core = { path = "../core" }
-oversight-protocol = { path = "../protocol" }
+agentchat-core = { path = "../core" }
+agentchat-protocol = { path = "../protocol" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

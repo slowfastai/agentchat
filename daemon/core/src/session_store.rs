@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use oversight_protocol::SessionInfo;
+use agentchat_protocol::SessionInfo;
 
 /// In-memory session store. Will be backed by SQLite in the future.
 pub struct SessionStore {

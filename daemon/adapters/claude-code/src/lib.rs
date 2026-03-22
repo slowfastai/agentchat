@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use oversight_protocol::{
+use agentchat_protocol::{
     AdapterCapabilities, AdapterError, AdapterInfo, AgentAdapter, AgentConfig, AgentStatus,
     HealthStatus, Prompt, ResponseEvent, SessionInfo, SessionMetadata, SessionOptions,
     SessionSummary,

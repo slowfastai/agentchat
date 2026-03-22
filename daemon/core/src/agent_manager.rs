@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use oversight_protocol::{
+use agentchat_protocol::{
     AdapterError, AgentAdapter, AgentConfig, Prompt, ResponseEvent, SessionInfo, SessionOptions,
 };
 use tokio::sync::mpsc;

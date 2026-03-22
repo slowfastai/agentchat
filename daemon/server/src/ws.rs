@@ -1,4 +1,4 @@
-use oversight_core::agent_manager::AgentManager;
+use agentchat_core::agent_manager::AgentManager;
 
 /// WebSocket server that bridges the iOS app and the agent manager.
 pub struct WebSocketServer {

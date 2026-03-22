@@ -3,6 +3,61 @@
 version = 4
 
 [[package]]
+name = "agentchat-adapter-claude-code"
+version = "0.1.0"
+dependencies = [
+ "agentchat-protocol",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "agentchat-core"
+version = "0.1.0"
+dependencies = [
+ "agentchat-protocol",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "agentchat-daemon"
+version = "0.1.0"
+dependencies = [
+ "agentchat-core",
+ "agentchat-protocol",
+ "agentchat-server",
+ "tokio",
+]
+
+[[package]]
+name = "agentchat-protocol"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "agentchat-server"
+version = "0.1.0"
+dependencies = [
+ "agentchat-core",
+ "agentchat-protocol",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.102"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -182,61 +237,6 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
-
-[[package]]
-name = "oversight-adapter-claude-code"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "oversight-protocol",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "oversight-core"
-version = "0.1.0"
-dependencies = [
- "oversight-protocol",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "oversight-daemon"
-version = "0.1.0"
-dependencies = [
- "oversight-core",
- "oversight-protocol",
- "oversight-server",
- "tokio",
-]
-
-[[package]]
-name = "oversight-protocol"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "oversight-server"
-version = "0.1.0"
-dependencies = [
- "oversight-core",
- "oversight-protocol",
- "serde",
- "serde_json",
- "tokio",
-]
 
 [[package]]
 name = "parking_lot"

@@ -1,10 +1,10 @@
 [package]
-name = "oversight-adapter-claude-code"
+name = "agentchat-adapter-claude-code"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-oversight-protocol = { path = "../../protocol" }
+agentchat-protocol = { path = "../../protocol" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
