@@ -8,3 +8,5 @@ agentchat-core = { path = "../core" }
 agentchat-server = { path = "../server" }
 agentchat-protocol = { path = "../protocol" }
 tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

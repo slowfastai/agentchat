@@ -1,85 +1,103 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
-use agentchat_protocol::{
-    AdapterError, AgentAdapter, AgentConfig, Prompt, ResponseEvent, SessionInfo, SessionOptions,
-};
-use tokio::sync::mpsc;
+use agent_client_protocol::SessionId;
+use tracing::info;
 
-/// Manages all agent adapter instances.
+use agentchat_protocol::AgentConfig;
+
+use crate::acp_client::AcpAgent;
+
+/// Manages ACP agent instances.
+///
+/// For M0: single agent support. Post-M0: multi-agent with GroupChat routing.
 pub struct AgentManager {
-    adapters: HashMap<String, Box<dyn AgentAdapter>>,
+    agents: HashMap<String, AcpAgent>,
+    /// Map session IDs to agent IDs for routing.
+    session_to_agent: HashMap<String, String>,
 }
 
 impl AgentManager {
     pub fn new() -> Self {
         Self {
-            adapters: HashMap::new(),
+            agents: HashMap::new(),
+            session_to_agent: HashMap::new(),
         }
     }
 
-    /// Register an adapter for the given agent ID.
-    pub fn register(&mut self, agent_id: String, adapter: Box<dyn AgentAdapter>) {
-        self.adapters.insert(agent_id, adapter);
-    }
-
-    /// Initialize a registered adapter with config.
-    pub async fn init_agent(
+    /// Spawn and initialize an ACP agent from config.
+    pub async fn add_agent(
         &mut self,
-        agent_id: &str,
         config: AgentConfig,
-    ) -> Result<(), AdapterError> {
-        let adapter = self
-            .adapters
-            .get_mut(agent_id)
-            .ok_or_else(|| AdapterError::Other(format!("agent not found: {agent_id}")))?;
-        adapter.init(config).await?;
+        project_root: PathBuf,
+    ) -> Result<(), String> {
+        let agent_id = config.id.clone();
+        let agent = AcpAgent::spawn(&config, project_root)?;
+
+        agent
+            .initialize()
+            .await
+            .map_err(|e| format!("ACP init failed: {e}"))?;
+
+        self.agents.insert(agent_id.clone(), agent);
+        info!("agent '{}' registered and initialized", agent_id);
         Ok(())
     }
 
-    /// Create a session on the specified agent.
-    pub async fn create_session(
-        &mut self,
-        agent_id: &str,
-        options: SessionOptions,
-    ) -> Result<SessionInfo, AdapterError> {
-        let adapter = self
-            .adapters
-            .get_mut(agent_id)
-            .ok_or_else(|| AdapterError::Other(format!("agent not found: {agent_id}")))?;
-        adapter.create_session(options).await
+    /// Get a mutable reference to an agent by ID.
+    pub fn get_agent_mut(&mut self, agent_id: &str) -> Option<&mut AcpAgent> {
+        self.agents.get_mut(agent_id)
     }
 
-    /// Send a prompt to the specified agent and return the response channel.
-    pub async fn send_prompt(
-        &mut self,
-        agent_id: &str,
-        session_id: &str,
-        prompt: Prompt,
-    ) -> Result<mpsc::Receiver<ResponseEvent>, AdapterError> {
-        let adapter = self
-            .adapters
-            .get_mut(agent_id)
-            .ok_or_else(|| AdapterError::Other(format!("agent not found: {agent_id}")))?;
-        adapter.send_prompt(session_id, prompt).await
+    /// Get an immutable reference to an agent by ID.
+    pub fn get_agent(&self, agent_id: &str) -> Option<&AcpAgent> {
+        self.agents.get(agent_id)
     }
 
-    /// Abort a running task.
-    pub async fn abort(
-        &mut self,
-        agent_id: &str,
-        session_id: &str,
-    ) -> Result<(), AdapterError> {
-        let adapter = self
-            .adapters
-            .get_mut(agent_id)
-            .ok_or_else(|| AdapterError::Other(format!("agent not found: {agent_id}")))?;
-        adapter.abort(session_id).await
+    /// Get the first registered agent ID.
+    ///
+    /// M0 only supports a single configured agent, so any registered agent is valid.
+    pub fn first_agent_id(&self) -> Option<&str> {
+        self.agents.keys().next().map(|id| id.as_str())
     }
 
-    /// Shutdown all adapters.
+    /// Register a session → agent mapping.
+    pub fn register_session(&mut self, session_id: String, agent_id: String) {
+        self.session_to_agent.insert(session_id, agent_id);
+    }
+
+    /// Look up which agent owns a session.
+    pub fn agent_for_session(&self, session_id: &str) -> Option<&str> {
+        self.session_to_agent.get(session_id).map(|s| s.as_str())
+    }
+
+    /// Get the agent for a session (mutable).
+    pub fn agent_for_session_mut(&mut self, session_id: &str) -> Option<&mut AcpAgent> {
+        let agent_id = self.session_to_agent.get(session_id)?.clone();
+        self.agents.get_mut(&agent_id)
+    }
+
+    /// Cancel an ongoing prompt on a session.
+    pub async fn cancel_session(&self, session_id: &str) -> Result<(), String> {
+        let agent_id = self
+            .session_to_agent
+            .get(session_id)
+            .ok_or_else(|| format!("no agent for session {session_id}"))?;
+        let agent = self
+            .agents
+            .get(agent_id)
+            .ok_or_else(|| format!("agent {agent_id} not found"))?;
+        agent
+            .cancel(SessionId::new(session_id))
+            .await
+            .map_err(|e| format!("cancel failed: {e}"))
+    }
+
+    /// Shutdown all agents.
     pub async fn shutdown_all(&mut self) {
-        for (_, adapter) in self.adapters.iter_mut() {
-            let _ = adapter.shutdown().await;
+        for (id, agent) in self.agents.iter_mut() {
+            info!("shutting down agent '{}'", id);
+            agent.shutdown().await;
         }
     }
 }

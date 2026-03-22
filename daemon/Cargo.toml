@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "protocol",
     "core",
-    "adapters/claude-code",
     "server",
     "bin",
 ]
@@ -14,3 +13,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
+agent-client-protocol = { version = "0.10", features = ["unstable"] }
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["compat"] }
+tokio-tungstenite = "0.26"
+tracing = "0.1"
+tracing-subscriber = "0.3"

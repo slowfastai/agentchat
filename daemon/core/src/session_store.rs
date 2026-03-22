@@ -1,11 +1,20 @@
 use std::collections::HashMap;
 
-use agentchat_protocol::SessionInfo;
+use serde::{Deserialize, Serialize};
+
+/// Daemon-side session tracking info.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionRecord {
+    pub session_id: String,
+    pub agent_id: String,
+    pub working_dir: String,
+    pub created_at: u64,
+}
 
 /// In-memory session store. Will be backed by SQLite in the future.
 pub struct SessionStore {
-    /// agent_id -> session_id -> SessionInfo
-    sessions: HashMap<String, HashMap<String, SessionInfo>>,
+    /// session_id -> SessionRecord
+    sessions: HashMap<String, SessionRecord>,
 }
 
 impl SessionStore {
@@ -15,25 +24,19 @@ impl SessionStore {
         }
     }
 
-    /// Store a session.
-    pub fn insert(&mut self, agent_id: &str, session: SessionInfo) {
-        self.sessions
-            .entry(agent_id.to_string())
-            .or_default()
-            .insert(session.session_id.clone(), session);
+    pub fn insert(&mut self, record: SessionRecord) {
+        self.sessions.insert(record.session_id.clone(), record);
     }
 
-    /// Get a session by agent ID and session ID.
-    pub fn get(&self, agent_id: &str, session_id: &str) -> Option<&SessionInfo> {
-        self.sessions.get(agent_id)?.get(session_id)
+    pub fn get(&self, session_id: &str) -> Option<&SessionRecord> {
+        self.sessions.get(session_id)
     }
 
-    /// List all sessions for a given agent.
-    pub fn list_by_agent(&self, agent_id: &str) -> Vec<&SessionInfo> {
+    pub fn list_by_agent(&self, agent_id: &str) -> Vec<&SessionRecord> {
         self.sessions
-            .get(agent_id)
-            .map(|m| m.values().collect())
-            .unwrap_or_default()
+            .values()
+            .filter(|s| s.agent_id == agent_id)
+            .collect()
     }
 }
 
