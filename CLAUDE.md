@@ -25,23 +25,26 @@ This is a Rust workspace (`daemon/Cargo.toml`) implementing a daemon that bridge
 ```
 agentchat-daemon (bin)
   └─> agentchat-server          WebSocket listener (port 9390)
-        └─> agentchat-core      AgentManager, EventBus, SessionStore
-              └─> agentchat-protocol   AgentAdapter trait, all shared types
-  └─> agentchat-adapter-claude-code    Claude Code CLI adapter
-        └─> agentchat-protocol
+  │     └─> agentchat-core      AgentManager, AcpAgent, DaemonClient
+  │           └─> agentchat-protocol   Shared types (ResponseEvent, ClientMessage, AgentConfig)
+  └─> agentchat-core
+  └─> agentchat-protocol
 ```
+
+External dependency: `agent-client-protocol` crate (ACP SDK) — used by `core` and `server`.
 
 ### Key abstractions
 
-- **`AgentAdapter` trait** (`protocol/src/lib.rs`) — The central extension point. Every agent backend (Claude Code, future others) implements this async trait. Defines `init`, `create_session`, `send_prompt`, `abort`, `health_check`, `shutdown`, and session management methods.
-- **`AgentManager`** (`core/src/agent_manager.rs`) — Registry of adapters keyed by agent ID. Delegates all operations to the appropriate adapter.
-- **`EventBus<T>`** (`core/src/event_bus.rs`) — Generic tokio broadcast-based pub/sub.
-- **`SessionStore`** (`core/src/session_store.rs`) — In-memory session storage (planned SQLite migration).
-- **`ClaudeCodeAdapter`** (`adapters/claude-code/src/lib.rs`) — Spawns `claude` CLI as a subprocess. Streams JSON output via `--output-format stream-json`. Tracks child processes per session for abort/shutdown.
-- **`WebSocketServer`** (`server/src/ws.rs`) — Stub; will accept connections and bridge to AgentManager.
+- **ACP (Agent Client Protocol)** — JSON-RPC 2.0 over stdio standard for editor↔agent communication. The daemon speaks ACP to agent subprocesses.
+- **`AcpAgent`** (`core/src/acp_client.rs`) — Wraps an ACP `ClientSideConnection`. Spawns agent subprocess, runs initialize handshake, manages sessions (`new_session`, `prompt`, `cancel`), streams updates via `mpsc` channel.
+- **`DaemonClient`** (`core/src/capabilities.rs`) — Implements ACP `Client` trait. Handles agent→daemon requests: file read/write (scoped to project root), terminal command execution, permission auto-approval (M0).
+- **`AgentManager`** (`core/src/agent_manager.rs`) — Registry of `AcpAgent` instances keyed by agent ID. Routes sessions to agents.
+- **`WebSocketServer`** (`server/src/ws.rs`) — Accepts iOS WebSocket connections, translates `ClientMessage` to ACP calls, streams `SessionNotification` back as `ResponseEvent` frames.
+- **Protocol types** (`protocol/src/lib.rs`) — `ResponseEvent` (daemon→iOS), `ClientMessage` (iOS→daemon), `AgentConfig`, `DeltaType`.
 
 ### Design patterns
 
-- **Async-first**: All I/O uses tokio. Responses stream via `mpsc::Sender<ResponseEvent>`.
-- **Trait-based adapters with capability declarations**: Adapters declare supported features (streaming, abort, resume, etc.) via `AdapterCapabilities`, letting the server adapt its behavior per-agent.
-- **Process isolation**: Each agent session is a separate CLI subprocess.
+- **Single-threaded runtime**: Uses `tokio::task::LocalSet` with `current_thread` flavor. Required because ACP SDK's `Client` trait is `!Send` (`async_trait(?Send)`).
+- **ACP-first**: All agent communication goes through the ACP protocol. Any agent in the ACP registry can be used by changing `AgentConfig.command`.
+- **Process isolation**: Each agent is a separate subprocess communicating via stdio JSON-RPC.
+- **Bidirectional RPC**: The daemon is both a client (sends prompts) and a server (handles agent requests for file access, terminal, permissions).
