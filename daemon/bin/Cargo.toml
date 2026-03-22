@@ -1,0 +1,10 @@
+[package]
+name = "oversight-daemon"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+oversight-core = { path = "../core" }
+oversight-server = { path = "../server" }
+oversight-protocol = { path = "../protocol" }
+tokio = { workspace = true }

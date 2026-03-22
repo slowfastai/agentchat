@@ -1,0 +1,12 @@
+[package]
+name = "oversight-adapter-claude-code"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+oversight-protocol = { path = "../../protocol" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
