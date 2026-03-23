@@ -7,7 +7,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e:main-daemon": "bash ../daemon/scripts/relay_ci_main_daemon.sh"
   },
   "devDependencies": {
     "typescript": "^5.8.3",

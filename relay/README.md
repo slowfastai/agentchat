@@ -49,6 +49,12 @@ Start the local Worker:
 npm run dev
 ```
 
+Run the stronger end-to-end validation against the real daemon binary:
+
+```bash
+npm run test:e2e:main-daemon
+```
+
 ## Current development helper endpoints
 
 To get `/v1/ws`, authentication, and routing working quickly, the Worker currently exposes two

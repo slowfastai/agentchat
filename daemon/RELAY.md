@@ -88,12 +88,32 @@ cd daemon
 python3 scripts/relay_main_daemon_e2e.py
 ```
 
+For CI or one-command local validation, use the wrapper script:
+
+```bash
+bash daemon/scripts/relay_ci_main_daemon.sh
+```
+
+Or from `relay/`:
+
+```bash
+npm run test:e2e:main-daemon
+```
+
 This stronger validation uses:
 
 - the local relay Worker
 - the real `agentchat-daemon` main binary in relay mode
 - `fake_acp_agent` as the backend agent
 - an app-side relay client that sends real `ClientMessage` values over encrypted envelopes
+
+The CI-friendly wrapper does the following automatically:
+
+1. runs relay `typecheck` and `test`
+2. runs daemon `cargo test` and `cargo clippy`
+3. starts the local relay Worker
+4. waits for `/healthz`
+5. runs the stronger relay main-daemon end-to-end validation
 
 It exercises the real application path:
 
@@ -154,3 +174,4 @@ The app-side smoke client will:
 - app protocol smoke binary: `daemon/bin/src/bin/relay_app_protocol_smoke.rs`
 - local relay smoke script: `daemon/scripts/relay_smoke_e2e.py`
 - main daemon relay app protocol script: `daemon/scripts/relay_main_daemon_e2e.py`
+- CI-friendly relay wrapper: `daemon/scripts/relay_ci_main_daemon.sh`
