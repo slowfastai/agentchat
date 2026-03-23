@@ -1,0 +1,10 @@
+{
+  "type": "relay_envelope",
+  "id": "018f6f88-5f8b-7c98-9d7d-7b10ca2e4002",
+  "timestamp": 1774257600300,
+  "from": "app:7d44a5b8-b448-4c7a-9c4d-b1d496f0c3af",
+  "to": "daemon",
+  "channel_id": "cbW8x8w-8Y3r6hT2L5Hqbw",
+  "seq": 0,
+  "ciphertext": "J0Yf1F7qk_2l7I0WmN8QhR3cP6vL9mS4uD8oE1aK0bY"
+}

@@ -1,0 +1,14 @@
+{
+  "type": "secure_channel_accept",
+  "id": "018f6f88-5f8b-7c98-9d7d-7b10ca2e3002",
+  "timestamp": 1774257600200,
+  "protocol_version": "relay-wire/0.1",
+  "from": "daemon",
+  "to": "daemon",
+  "hello_id": "018f6f88-5f8b-7c98-9d7d-7b10ca2e2001",
+  "connection_id": "rc_PbJt4ZbW2mK6o1Qx",
+  "crypto_suite": "X25519_Ed25519_ChaCha20Poly1305_HKDFSHA256_v1",
+  "ephemeral_public_key": "Q6kV2T0nY0cVh6sE3qE1Z9lM0xK4B2cJ8mD5uR7aS0U",
+  "expires_at": 1774257630200,
+  "signature": "N5cQ2v0mG8hLs4m7qz0sH1vV7m3Pp8Lh1bQ4t6fA3eD2mR0pC7uL9g2wJ5nS8xY1qZ0hF4rB6dE7tK2mN8w1CA"
+}

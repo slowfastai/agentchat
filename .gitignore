@@ -32,6 +32,9 @@ playground.xcworkspace
 .build/
 daemon/target/
 daemon/.agentchat/
+relay/node_modules/
+relay/.wrangler/
+relay/.dev.vars*
 
 # CocoaPods
 #

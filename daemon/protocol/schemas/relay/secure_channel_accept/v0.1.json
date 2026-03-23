@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentchat.dev/schemas/relay/secure_channel_accept/v0.1.json",
+  "title": "secure_channel_accept",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "id",
+    "timestamp",
+    "protocol_version",
+    "from",
+    "to",
+    "hello_id",
+    "connection_id",
+    "crypto_suite",
+    "ephemeral_public_key",
+    "expires_at",
+    "signature"
+  ],
+  "properties": {
+    "type": { "const": "secure_channel_accept" },
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "timestamp": { "type": "integer", "minimum": 0 },
+    "protocol_version": { "const": "relay-wire/0.1" },
+    "from": { "const": "daemon" },
+    "to": {
+      "type": "string",
+      "pattern": "^app:[A-Za-z0-9._-]{1,128}$"
+    },
+    "hello_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "connection_id": {
+      "type": "string",
+      "pattern": "^rc_[A-Za-z0-9_-]{12,64}$"
+    },
+    "crypto_suite": {
+      "const": "X25519_Ed25519_ChaCha20Poly1305_HKDFSHA256_v1"
+    },
+    "ephemeral_public_key": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "expires_at": { "type": "integer", "minimum": 0 },
+    "signature": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{86}$"
+    }
+  }
+}

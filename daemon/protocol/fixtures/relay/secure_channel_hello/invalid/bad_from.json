@@ -1,0 +1,13 @@
+{
+  "type": "secure_channel_hello",
+  "id": "018f6f88-5f8b-7c98-9d7d-7b10ca2e2002",
+  "timestamp": 1774257600100,
+  "protocol_version": "relay-wire/0.1",
+  "from": "ios-app",
+  "to": "daemon",
+  "connection_id": "rc_8PrnFvN3vM2NgWQY",
+  "crypto_suite": "X25519_Ed25519_ChaCha20Poly1305_HKDFSHA256_v1",
+  "ephemeral_public_key": "M4rG8QwH5dL9uN7wF6sI9r4XbL6R2Q1G0tS4o5y7z8A",
+  "expires_at": 1774257630100,
+  "signature": "dL4eQ5HL9JfRj7v5k0W0m2hDP3SOV0Vf2Qkq9N4hUq7C8l6QH1i4n8-JkQkzD6xS9nHfB0s9b3cWz0q5u2o5BQ"
+}

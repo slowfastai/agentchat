@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agentchat-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-23",
+  "vars": {
+    "RELAY_DEV_MODE": "true"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "DEVICE_HUB",
+        "class_name": "DeviceHubDO"
+      },
+      {
+        "name": "PAIRING_INDEX",
+        "class_name": "PairingIndexDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "DeviceHubDO",
+        "PairingIndexDO"
+      ]
+    }
+  ]
+}
