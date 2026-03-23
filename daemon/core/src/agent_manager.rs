@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 
-use agent_client_protocol::SessionId;
 use tracing::info;
 
 use agentchat_protocol::AgentConfig;
@@ -12,7 +12,7 @@ use crate::acp_client::AcpAgent;
 ///
 /// For M0: single agent support. Post-M0: multi-agent with GroupChat routing.
 pub struct AgentManager {
-    agents: HashMap<String, AcpAgent>,
+    agents: HashMap<String, Rc<AcpAgent>>,
     /// Map session IDs to agent IDs for routing.
     session_to_agent: HashMap<String, String>,
 }
@@ -32,7 +32,7 @@ impl AgentManager {
         project_root: PathBuf,
     ) -> Result<(), String> {
         let agent_id = config.id.clone();
-        let agent = AcpAgent::spawn(&config, project_root)?;
+        let agent = Rc::new(AcpAgent::spawn(&config, project_root)?);
 
         agent
             .initialize()
@@ -44,14 +44,9 @@ impl AgentManager {
         Ok(())
     }
 
-    /// Get a mutable reference to an agent by ID.
-    pub fn get_agent_mut(&mut self, agent_id: &str) -> Option<&mut AcpAgent> {
-        self.agents.get_mut(agent_id)
-    }
-
-    /// Get an immutable reference to an agent by ID.
-    pub fn get_agent(&self, agent_id: &str) -> Option<&AcpAgent> {
-        self.agents.get(agent_id)
+    /// Get an agent by ID.
+    pub fn get_agent(&self, agent_id: &str) -> Option<Rc<AcpAgent>> {
+        self.agents.get(agent_id).cloned()
     }
 
     /// Get the first registered agent ID.
@@ -61,7 +56,7 @@ impl AgentManager {
         self.agents.keys().next().map(|id| id.as_str())
     }
 
-    /// Register a session → agent mapping.
+    /// Register a session -> agent mapping.
     pub fn register_session(&mut self, session_id: String, agent_id: String) {
         self.session_to_agent.insert(session_id, agent_id);
     }
@@ -71,33 +66,39 @@ impl AgentManager {
         self.session_to_agent.get(session_id).map(|s| s.as_str())
     }
 
-    /// Get the agent for a session (mutable).
-    pub fn agent_for_session_mut(&mut self, session_id: &str) -> Option<&mut AcpAgent> {
-        let agent_id = self.session_to_agent.get(session_id)?.clone();
-        self.agents.get_mut(&agent_id)
+    /// Remove a session -> agent mapping.
+    pub fn remove_session(&mut self, session_id: &str) -> Option<String> {
+        self.session_to_agent.remove(session_id)
     }
 
-    /// Cancel an ongoing prompt on a session.
-    pub async fn cancel_session(&self, session_id: &str) -> Result<(), String> {
-        let agent_id = self
-            .session_to_agent
-            .get(session_id)
-            .ok_or_else(|| format!("no agent for session {session_id}"))?;
-        let agent = self
-            .agents
+    /// Remove multiple session -> agent mappings.
+    pub fn remove_sessions(&mut self, session_ids: &[String]) {
+        for session_id in session_ids {
+            self.session_to_agent.remove(session_id);
+        }
+    }
+
+    /// Report whether the agent process is still alive.
+    pub fn is_agent_alive(&self, agent_id: &str) -> bool {
+        self.agents
             .get(agent_id)
-            .ok_or_else(|| format!("agent {agent_id} not found"))?;
-        agent
-            .cancel(SessionId::new(session_id))
-            .await
-            .map_err(|e| format!("cancel failed: {e}"))
+            .map(|agent| agent.is_alive())
+            .unwrap_or(false)
     }
 
     /// Shutdown all agents.
-    pub async fn shutdown_all(&mut self) {
-        for (id, agent) in self.agents.iter_mut() {
-            info!("shutting down agent '{}'", id);
-            agent.shutdown().await;
+    pub fn shutdown_all(&self) -> impl std::future::Future<Output = ()> + 'static {
+        let agents = self
+            .agents
+            .iter()
+            .map(|(id, agent)| (id.clone(), Rc::clone(agent)))
+            .collect::<Vec<_>>();
+
+        async move {
+            for (id, agent) in agents {
+                info!("shutting down agent '{}'", id);
+                agent.shutdown().await;
+            }
         }
     }
 }
@@ -105,5 +106,39 @@ impl AgentManager {
 impl Default for AgentManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_agent_id_is_none_when_empty() {
+        let manager = AgentManager::new();
+
+        assert_eq!(manager.first_agent_id(), None);
+    }
+
+    #[test]
+    fn register_lookup_and_remove_session() {
+        let mut manager = AgentManager::new();
+        manager.register_session("session-1".into(), "agent-1".into());
+
+        assert_eq!(manager.agent_for_session("session-1"), Some("agent-1"));
+        assert_eq!(manager.remove_session("session-1"), Some("agent-1".into()));
+        assert_eq!(manager.agent_for_session("session-1"), None);
+    }
+
+    #[test]
+    fn remove_sessions_clears_multiple_mappings() {
+        let mut manager = AgentManager::new();
+        manager.register_session("session-1".into(), "agent-1".into());
+        manager.register_session("session-2".into(), "agent-1".into());
+
+        manager.remove_sessions(&["session-1".into(), "session-2".into()]);
+
+        assert_eq!(manager.agent_for_session("session-1"), None);
+        assert_eq!(manager.agent_for_session("session-2"), None);
     }
 }

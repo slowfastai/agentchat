@@ -1,16 +1,17 @@
-//! ACP client wrapper — spawns an agent subprocess and communicates via ACP over stdio.
+//! ACP client wrapper -- spawns an agent subprocess and communicates via ACP over stdio.
 //!
 //! This module handles the full ACP lifecycle: subprocess management, initialize handshake,
 //! session creation, prompt/response streaming, and cancellation.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
 
 use agent_client_protocol::*;
 use futures::future::LocalBoxFuture;
 use tokio::process::Command;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use agentchat_protocol::AgentConfig;
 
@@ -21,12 +22,58 @@ use crate::capabilities::DaemonClient;
 /// Wraps a `ClientSideConnection` (which implements the `Agent` trait)
 /// and provides methods to interact with the agent.
 pub struct AcpAgent {
-    /// ACP connection — use this to call Agent methods (initialize, new_session, prompt, etc.)
+    /// ACP connection -- use this to call Agent methods (initialize, new_session, prompt, etc.)
     conn: ClientSideConnection,
-    /// The agent subprocess handle.
-    child: tokio::process::Child,
     /// Channel to receive session update notifications from the DaemonClient.
-    update_rx: mpsc::UnboundedReceiver<SessionNotification>,
+    update_rx: RefCell<Option<mpsc::UnboundedReceiver<SessionNotification>>>,
+    /// Broadcasts whether the child process is still alive.
+    health_tx: watch::Sender<bool>,
+    /// Signals the child-process monitor task to terminate the subprocess.
+    kill_tx: watch::Sender<bool>,
+}
+
+async fn monitor_agent_process(
+    mut child: tokio::process::Child,
+    mut kill_rx: watch::Receiver<bool>,
+    health_tx: watch::Sender<bool>,
+) {
+    tokio::select! {
+        status = child.wait() => {
+            match status {
+                Ok(status) => info!("agent process exited with status {status}"),
+                Err(e) => error!("failed waiting for agent process: {e}"),
+            }
+        }
+        changed = kill_rx.changed() => {
+            match changed {
+                Ok(()) if *kill_rx.borrow() => {
+                    info!("shutting down agent process");
+                    if let Err(e) = child.kill().await {
+                        warn!("failed to kill agent process: {e}");
+                    }
+                    if let Err(e) = child.wait().await {
+                        error!("failed waiting for killed agent process: {e}");
+                    }
+                }
+                Ok(()) => {
+                    debug!("received unexpected agent kill signal state");
+                }
+                Err(_) => {
+                    warn!("agent kill signal dropped; terminating child process");
+                    if let Err(e) = child.kill().await {
+                        warn!("failed to kill orphaned agent process: {e}");
+                    }
+                    if let Err(e) = child.wait().await {
+                        error!("failed waiting for orphaned agent process: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    if health_tx.send(false).is_err() {
+        debug!("agent health watchers dropped");
+    }
 }
 
 impl AcpAgent {
@@ -66,7 +113,7 @@ impl AcpAgent {
         let write_stream = stdin.compat_write();
         let read_stream = stdout.compat();
 
-        // Channel for forwarding session notifications from DaemonClient to the caller
+        // Channel for forwarding session notifications from DaemonClient to the caller.
         let (update_tx, update_rx) = mpsc::unbounded_channel();
 
         let client = DaemonClient::new(project_root, update_tx);
@@ -80,7 +127,10 @@ impl AcpAgent {
             },
         );
 
-        // Spawn the IO task on the local set — this drives the JSON-RPC communication
+        let (health_tx, _) = watch::channel(true);
+        let (kill_tx, kill_rx) = watch::channel(false);
+
+        // Spawn the IO task on the local set -- this drives the JSON-RPC communication.
         tokio::task::spawn_local(async move {
             if let Err(e) = io_task.await {
                 error!("ACP IO task error: {e}");
@@ -88,12 +138,15 @@ impl AcpAgent {
             debug!("ACP IO task ended");
         });
 
+        tokio::task::spawn_local(monitor_agent_process(child, kill_rx, health_tx.clone()));
+
         info!("spawned agent process: {}", config.command);
 
         Ok(Self {
             conn,
-            child,
-            update_rx,
+            update_rx: RefCell::new(Some(update_rx)),
+            health_tx,
+            kill_tx,
         })
     }
 
@@ -145,9 +198,18 @@ impl AcpAgent {
     ///
     /// Call this once after construction to get the stream of session updates
     /// that arrive while prompts are being processed.
-    pub fn take_update_rx(&mut self) -> mpsc::UnboundedReceiver<SessionNotification> {
-        let (_, empty_rx) = mpsc::unbounded_channel();
-        std::mem::replace(&mut self.update_rx, empty_rx)
+    pub fn take_update_rx(&self) -> Option<mpsc::UnboundedReceiver<SessionNotification>> {
+        self.update_rx.borrow_mut().take()
+    }
+
+    /// Subscribe to the agent's health state.
+    pub fn subscribe_health(&self) -> watch::Receiver<bool> {
+        self.health_tx.subscribe()
+    }
+
+    /// Report whether the agent process is still alive.
+    pub fn is_alive(&self) -> bool {
+        *self.health_tx.borrow()
     }
 
     /// Subscribe to the raw ACP stream (all JSON-RPC messages).
@@ -155,9 +217,22 @@ impl AcpAgent {
         self.conn.subscribe()
     }
 
-    /// Kill the agent subprocess.
-    pub async fn shutdown(&mut self) {
-        info!("shutting down agent process");
-        let _ = self.child.kill().await;
+    /// Kill the agent subprocess and wait for the monitor to observe shutdown.
+    pub async fn shutdown(&self) {
+        if !self.is_alive() {
+            return;
+        }
+
+        if self.kill_tx.send(true).is_err() {
+            warn!("agent shutdown signal receiver dropped");
+            return;
+        }
+
+        let mut health_rx = self.health_tx.subscribe();
+        while *health_rx.borrow() {
+            if health_rx.changed().await.is_err() {
+                break;
+            }
+        }
     }
 }

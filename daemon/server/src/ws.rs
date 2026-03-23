@@ -7,11 +7,13 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use agent_client_protocol::{ContentBlock, SessionId, SessionNotification, SessionUpdate};
+use agent_client_protocol::{
+    ContentBlock, PromptResponse, SessionId, SessionNotification, SessionUpdate,
+};
 use futures::stream::StreamExt;
 use futures::SinkExt;
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
@@ -30,14 +32,28 @@ impl WebSocketServer {
     }
 
     /// Start listening for WebSocket connections.
-    pub async fn run(self, manager: Rc<RefCell<AgentManager>>) {
+    pub async fn run(
+        self,
+        manager: Rc<RefCell<AgentManager>>,
+        mut shutdown_rx: watch::Receiver<bool>,
+    ) -> Result<(), String> {
         let addr = format!("0.0.0.0:{}", self.port);
-        let listener = TcpListener::bind(&addr).await.expect("failed to bind");
+        let listener = TcpListener::bind(&addr)
+            .await
+            .map_err(|e| format!("failed to bind {addr}: {e}"))?;
         info!("WebSocket server listening on {}", addr);
 
-        // M0: accept one connection at a time
+        // M0: accept one connection at a time.
         loop {
-            let (stream, peer) = match listener.accept().await {
+            let accepted = tokio::select! {
+                accepted = listener.accept() => accepted,
+                _ = shutdown_rx.changed() => {
+                    info!("websocket server shutting down");
+                    break;
+                }
+            };
+
+            let (stream, peer) = match accepted {
                 Ok(v) => v,
                 Err(e) => {
                     error!("accept error: {e}");
@@ -55,46 +71,66 @@ impl WebSocketServer {
                 }
             };
 
-            self.handle_connection(ws, manager.clone()).await;
+            self.handle_connection(ws, manager.clone(), shutdown_rx.clone())
+                .await;
         }
+
+        Ok(())
     }
 
-    // Single-threaded runtime (current_thread + LocalSet) — RefCell borrows
-    // across await points are safe because no concurrent task can contend.
-    #[allow(clippy::await_holding_refcell_ref)]
     async fn handle_connection(
         &self,
         ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
         manager: Rc<RefCell<AgentManager>>,
+        mut shutdown_rx: watch::Receiver<bool>,
     ) {
         let (mut ws_tx, mut ws_rx) = ws.split();
 
-        // Take the update receiver from the first available agent
-        let update_rx = {
-            let mut mgr = manager.borrow_mut();
-            let agent_id = mgr.first_agent_id().map(|id| id.to_string());
-            agent_id
-                .as_deref()
-                .and_then(|id| mgr.get_agent_mut(id))
-                .map(|a| a.take_update_rx())
+        let setup = {
+            let mgr = manager.borrow();
+            match mgr.first_agent_id().map(|id| id.to_string()) {
+                Some(agent_id) => match mgr.get_agent(&agent_id) {
+                    Some(agent) if !agent.is_alive() => Err(ResponseEvent::Error {
+                        session_id: None,
+                        code: "agent_crashed".into(),
+                        message: "agent process exited".into(),
+                    }),
+                    Some(agent) => match agent.take_update_rx() {
+                        Some(update_rx) => Ok((update_rx, agent.subscribe_health())),
+                        None => Err(ResponseEvent::Error {
+                            session_id: None,
+                            code: "update_stream_unavailable".into(),
+                            message: "agent update stream is already in use".into(),
+                        }),
+                    },
+                    None => Err(ResponseEvent::Error {
+                        session_id: None,
+                        code: "no_agent".into(),
+                        message: "no agent configured".into(),
+                    }),
+                },
+                None => Err(ResponseEvent::Error {
+                    session_id: None,
+                    code: "no_agent".into(),
+                    message: "no agent configured".into(),
+                }),
+            }
         };
 
-        let Some(mut update_rx) = update_rx else {
-            error!("no agent available");
-            let msg = serde_json::to_string(&ResponseEvent::Error {
-                session_id: None,
-                code: "no_agent".into(),
-                message: "no agent configured".into(),
-            })
-            .unwrap();
-            let _ = ws_tx.send(Message::Text(msg.into())).await;
-            return;
+        let (mut update_rx, mut health_rx) = match setup {
+            Ok(state) => state,
+            Err(event) => {
+                if let Some(msg) = serialize_event(&event) {
+                    let _ = ws_tx.send(Message::Text(msg.into())).await;
+                }
+                return;
+            }
         };
 
-        // Channel so the incoming-message handler can send responses back to the WS
+        // Channel so the incoming-message handler can send responses back to the WS.
         let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<ResponseEvent>();
 
-        // Task 1: Forward ACP session updates → WebSocket
+        // Task 1: Forward ACP session updates -> WebSocket.
         let resp_tx_updates = resp_tx.clone();
         tokio::task::spawn_local(async move {
             while let Some(notification) = update_rx.recv().await {
@@ -105,115 +141,259 @@ impl WebSocketServer {
             }
         });
 
-        // Task 2: Forward response events → WebSocket frames
+        // Task 2: Notify the client if the backing agent exits unexpectedly.
+        let resp_tx_health = resp_tx.clone();
+        tokio::task::spawn_local(async move {
+            if !*health_rx.borrow() {
+                let _ = resp_tx_health.send(ResponseEvent::Error {
+                    session_id: None,
+                    code: "agent_crashed".into(),
+                    message: "agent process exited".into(),
+                });
+                return;
+            }
+
+            loop {
+                match health_rx.changed().await {
+                    Ok(()) => {
+                        if !*health_rx.borrow() {
+                            let _ = resp_tx_health.send(ResponseEvent::Error {
+                                session_id: None,
+                                code: "agent_crashed".into(),
+                                message: "agent process exited".into(),
+                            });
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        let _ = resp_tx_health.send(ResponseEvent::Error {
+                            session_id: None,
+                            code: "agent_crashed".into(),
+                            message: "agent process exited".into(),
+                        });
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Task 3: Forward response events -> WebSocket frames.
         tokio::task::spawn_local(async move {
             while let Some(event) = resp_rx.recv().await {
-                let json = serde_json::to_string(&event).unwrap();
+                let Some(json) = serialize_event(&event) else {
+                    continue;
+                };
+
                 if ws_tx.send(Message::Text(json.into())).await.is_err() {
                     break;
                 }
             }
         });
 
-        // Task 3: Process incoming WebSocket messages from iOS
-        while let Some(msg) = ws_rx.next().await {
-            let text = match msg {
-                Ok(Message::Text(text)) => text,
-                Ok(Message::Close(_)) => break,
-                Ok(_) => continue,
-                Err(e) => {
-                    warn!("ws read error: {e}");
-                    break;
-                }
-            };
+        let (prompt_done_tx, mut prompt_done_rx) =
+            mpsc::unbounded_channel::<(String, agent_client_protocol::Result<PromptResponse>)>();
+        let mut created_sessions = Vec::new();
+        let mut active_prompt_session: Option<String> = None;
 
-            let client_msg: ClientMessage = match serde_json::from_str(&text) {
-                Ok(m) => m,
-                Err(e) => {
-                    warn!("invalid message: {e}");
-                    continue;
-                }
-            };
-
-            match client_msg {
-                ClientMessage::CreateSession { working_dir } => {
-                    let cwd = PathBuf::from(&working_dir);
-                    let result = {
-                        let mgr = manager.borrow();
-                        let agent_id = mgr.first_agent_id().map(|id| id.to_string());
-                        match agent_id {
-                            Some(agent_id) => match mgr.get_agent(&agent_id) {
-                                Some(agent) => Some((agent_id, agent.new_session(cwd).await)),
-                                None => None,
-                            },
-                            None => None,
+        // Task 4: Process incoming WebSocket messages from iOS.
+        loop {
+            tokio::select! {
+                maybe_prompt = prompt_done_rx.recv() => {
+                    if let Some((session_id, result)) = maybe_prompt {
+                        if active_prompt_session.as_deref() == Some(session_id.as_str()) {
+                            active_prompt_session = None;
                         }
-                    };
-                    if let Some((agent_id, Ok(resp))) = result {
-                        let sid = resp.session_id.to_string();
-                        manager
-                            .borrow_mut()
-                            .register_session(sid.clone(), agent_id);
-                        let _ = resp_tx.send(ResponseEvent::SessionCreated { session_id: sid });
-                    } else if let Some((_, Err(e))) = result {
-                        let _ = resp_tx.send(ResponseEvent::Error {
-                            session_id: None,
-                            code: "create_session_failed".into(),
-                            message: e.to_string(),
-                        });
-                    }
-                }
-                ClientMessage::Prompt {
-                    session_id,
-                    content,
-                } => {
-                    let result = {
-                        let mgr = manager.borrow();
-                        let agent_id = mgr.agent_for_session(&session_id).map(|s| s.to_string());
-                        match agent_id.as_deref().and_then(|aid| mgr.get_agent(aid)) {
-                            Some(agent) => {
-                                let sid = SessionId::new(session_id.clone());
-                                Some(agent.prompt(sid, content).await)
+
+                        match result {
+                            Ok(resp) => {
+                                let _ = resp_tx.send(ResponseEvent::TurnEnd {
+                                    session_id,
+                                    stop_reason: format!("{:?}", resp.stop_reason),
+                                });
                             }
-                            None => None,
-                        }
-                    };
-                    match result {
-                        Some(Ok(resp)) => {
-                            let _ = resp_tx.send(ResponseEvent::TurnEnd {
-                                session_id: session_id.clone(),
-                                stop_reason: format!("{:?}", resp.stop_reason),
-                            });
-                        }
-                        Some(Err(e)) => {
-                            let _ = resp_tx.send(ResponseEvent::Error {
-                                session_id: Some(session_id),
-                                code: "prompt_failed".into(),
-                                message: e.to_string(),
-                            });
-                        }
-                        None => {
-                            let _ = resp_tx.send(ResponseEvent::Error {
-                                session_id: Some(session_id),
-                                code: "no_agent".into(),
-                                message: "no agent for this session".into(),
-                            });
+                            Err(e) => {
+                                let _ = resp_tx.send(ResponseEvent::Error {
+                                    session_id: Some(session_id),
+                                    code: "prompt_failed".into(),
+                                    message: e.to_string(),
+                                });
+                            }
                         }
                     }
                 }
-                ClientMessage::Cancel { session_id } => {
-                    let result = {
-                        let mgr = manager.borrow();
-                        mgr.cancel_session(&session_id).await
+                msg = ws_rx.next() => {
+                    let Some(msg) = msg else {
+                        break;
                     };
-                    if let Err(e) = result {
-                        warn!("cancel failed: {e}");
+
+                    let text = match msg {
+                        Ok(Message::Text(text)) => text,
+                        Ok(Message::Close(_)) => break,
+                        Ok(_) => continue,
+                        Err(e) => {
+                            warn!("ws read error: {e}");
+                            break;
+                        }
+                    };
+
+                    let client_msg: ClientMessage = match serde_json::from_str(&text) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            warn!("invalid message: {e}");
+                            continue;
+                        }
+                    };
+
+                    match client_msg {
+                        ClientMessage::CreateSession { working_dir } => {
+                            let cwd = PathBuf::from(&working_dir);
+                            let (agent_id, agent, is_alive) = {
+                                let mgr = manager.borrow();
+                                let agent_id = mgr.first_agent_id().map(|id| id.to_string());
+                                let agent = agent_id.as_deref().and_then(|id| mgr.get_agent(id));
+                                let is_alive = agent_id
+                                    .as_deref()
+                                    .map(|id| mgr.is_agent_alive(id))
+                                    .unwrap_or(false);
+                                (agent_id, agent, is_alive)
+                            };
+
+                            match (agent_id, agent, is_alive) {
+                                (Some(_), Some(_), false) => {
+                                    let _ = resp_tx.send(ResponseEvent::Error {
+                                        session_id: None,
+                                        code: "agent_crashed".into(),
+                                        message: "agent process exited".into(),
+                                    });
+                                }
+                                (Some(agent_id), Some(agent), true) => match agent.new_session(cwd).await {
+                                    Ok(resp) => {
+                                        let sid = resp.session_id.to_string();
+                                        manager.borrow_mut().register_session(sid.clone(), agent_id);
+                                        created_sessions.push(sid.clone());
+                                        let _ = resp_tx.send(ResponseEvent::SessionCreated { session_id: sid });
+                                    }
+                                    Err(e) => {
+                                        let _ = resp_tx.send(ResponseEvent::Error {
+                                            session_id: None,
+                                            code: "create_session_failed".into(),
+                                            message: e.to_string(),
+                                        });
+                                    }
+                                },
+                                _ => {
+                                    let _ = resp_tx.send(ResponseEvent::Error {
+                                        session_id: None,
+                                        code: "no_agent".into(),
+                                        message: "no agent configured".into(),
+                                    });
+                                }
+                            }
+                        }
+                        ClientMessage::Prompt {
+                            session_id,
+                            content,
+                        } => {
+                            if active_prompt_session.is_some() {
+                                let _ = resp_tx.send(ResponseEvent::Error {
+                                    session_id: Some(session_id),
+                                    code: "prompt_in_progress".into(),
+                                    message: "another prompt is already running".into(),
+                                });
+                                continue;
+                            }
+
+                            let (agent, is_alive) = {
+                                let mgr = manager.borrow();
+                                let agent_id = mgr.agent_for_session(&session_id).map(|id| id.to_string());
+                                let agent = agent_id.as_deref().and_then(|id| mgr.get_agent(id));
+                                let is_alive = agent_id
+                                    .as_deref()
+                                    .map(|id| mgr.is_agent_alive(id))
+                                    .unwrap_or(false);
+                                (agent, is_alive)
+                            };
+
+                            match (agent, is_alive) {
+                                (Some(_), false) => {
+                                    let _ = resp_tx.send(ResponseEvent::Error {
+                                        session_id: Some(session_id),
+                                        code: "agent_crashed".into(),
+                                        message: "agent process exited".into(),
+                                    });
+                                }
+                                (Some(agent), true) => {
+                                    active_prompt_session = Some(session_id.clone());
+                                    let prompt_done_tx = prompt_done_tx.clone();
+                                    tokio::task::spawn_local(async move {
+                                        let result = agent.prompt(SessionId::new(session_id.clone()), content).await;
+                                        if prompt_done_tx.send((session_id, result)).is_err() {
+                                            warn!("prompt completion receiver dropped");
+                                        }
+                                    });
+                                }
+                                (None, _) => {
+                                    let _ = resp_tx.send(ResponseEvent::Error {
+                                        session_id: Some(session_id),
+                                        code: "no_agent".into(),
+                                        message: "no agent for this session".into(),
+                                    });
+                                }
+                            }
+                        }
+                        ClientMessage::Cancel { session_id } => {
+                            let agent = {
+                                let mgr = manager.borrow();
+                                let agent_id = mgr.agent_for_session(&session_id).map(|id| id.to_string());
+                                agent_id.as_deref().and_then(|id| mgr.get_agent(id))
+                            };
+
+                            match agent {
+                                Some(agent) => {
+                                    if let Err(e) = agent.cancel(SessionId::new(session_id.clone())).await {
+                                        warn!("cancel failed for session {session_id}: {e}");
+                                    }
+                                }
+                                None => {
+                                    warn!("cancel failed: no agent for session {session_id}");
+                                }
+                            }
+                        }
                     }
+                }
+                _ = shutdown_rx.changed() => {
+                    info!("closing client connection for shutdown");
+                    break;
                 }
             }
         }
 
+        if let Some(session_id) = active_prompt_session.take() {
+            let agent = {
+                let mgr = manager.borrow();
+                let agent_id = mgr.agent_for_session(&session_id).map(|id| id.to_string());
+                agent_id.as_deref().and_then(|id| mgr.get_agent(id))
+            };
+
+            if let Some(agent) = agent {
+                if let Err(e) = agent.cancel(SessionId::new(session_id.clone())).await {
+                    warn!("disconnect cleanup cancel failed for session {session_id}: {e}");
+                }
+            }
+        }
+
+        manager.borrow_mut().remove_sessions(&created_sessions);
         info!("client disconnected");
+    }
+}
+
+fn serialize_event(event: &ResponseEvent) -> Option<String> {
+    match serde_json::to_string(event) {
+        Ok(json) => Some(json),
+        Err(e) => {
+            error!("failed to serialize response event: {e}");
+            None
+        }
     }
 }
 
@@ -276,5 +456,84 @@ fn extract_text_from_content(block: &ContentBlock) -> String {
     match block {
         ContentBlock::Text(t) => t.text.clone(),
         _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use agent_client_protocol::{AvailableCommandsUpdate, ContentChunk, ToolCall, ToolCallStatus};
+
+    use super::*;
+
+    #[test]
+    fn map_session_update_maps_agent_message_chunk_to_text_delta() {
+        let notification = SessionNotification::new(
+            "session-1",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from("hello"))),
+        );
+
+        assert_eq!(
+            map_session_update(&notification),
+            ResponseEvent::Delta {
+                session_id: "session-1".into(),
+                content: "hello".into(),
+                delta_type: DeltaType::Text,
+            }
+        );
+    }
+
+    #[test]
+    fn map_session_update_maps_agent_thought_chunk_to_thinking_delta() {
+        let notification = SessionNotification::new(
+            "session-1",
+            SessionUpdate::AgentThoughtChunk(ContentChunk::new(ContentBlock::from("thinking"))),
+        );
+
+        assert_eq!(
+            map_session_update(&notification),
+            ResponseEvent::Delta {
+                session_id: "session-1".into(),
+                content: "thinking".into(),
+                delta_type: DeltaType::Thinking,
+            }
+        );
+    }
+
+    #[test]
+    fn map_session_update_maps_tool_call_to_tool_update() {
+        let notification = SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(
+                ToolCall::new("tool-1", "Read file").status(ToolCallStatus::InProgress),
+            ),
+        );
+
+        assert_eq!(
+            map_session_update(&notification),
+            ResponseEvent::ToolUpdate {
+                session_id: "session-1".into(),
+                tool_call_id: "tool-1".into(),
+                title: "Read file".into(),
+                status: "InProgress".into(),
+                content: None,
+            }
+        );
+    }
+
+    #[test]
+    fn map_session_update_maps_unknown_variant_to_empty_delta() {
+        let notification = SessionNotification::new(
+            "session-1",
+            SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(Vec::new())),
+        );
+
+        assert_eq!(
+            map_session_update(&notification),
+            ResponseEvent::Delta {
+                session_id: "session-1".into(),
+                content: String::new(),
+                delta_type: DeltaType::Text,
+            }
+        );
     }
 }
