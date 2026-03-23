@@ -29,6 +29,50 @@ pub struct AgentConfig {
     pub extra: HashMap<String, Value>,
 }
 
+/// Timestamp helper in milliseconds since the UNIX epoch.
+pub fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// A captured event in a session trajectory.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SessionEvent {
+    UserPrompt {
+        content: String,
+        timestamp_ms: u64,
+    },
+    AgentUpdate {
+        notification_json: Value,
+        timestamp_ms: u64,
+    },
+    TurnEnd {
+        stop_reason: String,
+        timestamp_ms: u64,
+    },
+}
+
+/// Full trajectory for one session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionTranscript {
+    pub session_id: String,
+    pub agent_id: String,
+    pub working_dir: String,
+    pub created_at_ms: u64,
+    pub events: Vec<SessionEvent>,
+}
+
+/// Metadata about a stored skill file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SkillInfo {
+    pub name: String,
+    pub path: String,
+    pub size_bytes: u64,
+}
+
 // ============================================================
 // Response events (daemon -> iOS app via WebSocket)
 // ============================================================
@@ -68,6 +112,19 @@ pub enum ResponseEvent {
         stop_reason: String,
     },
 
+    /// Available skills in the project.
+    SkillList { skills: Vec<SkillInfo> },
+
+    /// Raw markdown content for a skill file.
+    SkillContent { name: String, content: String },
+
+    /// Progress update for knowledge distillation.
+    DistillationStatus {
+        session_id: String,
+        status: String,
+        message: String,
+    },
+
     /// Error.
     Error {
         session_id: Option<String>,
@@ -98,6 +155,12 @@ pub enum ClientMessage {
     Prompt { session_id: String, content: String },
     /// Cancel an ongoing prompt turn.
     Cancel { session_id: String },
+    /// List project skills.
+    ListSkills,
+    /// Read a project skill.
+    GetSkill { name: String },
+    /// Distill a captured session into reusable skills.
+    DistillSession { session_id: String },
 }
 
 #[cfg(test)]
@@ -129,6 +192,13 @@ mod tests {
                 content: "hello".into(),
             },
             ClientMessage::Cancel {
+                session_id: "session-1".into(),
+            },
+            ClientMessage::ListSkills,
+            ClientMessage::GetSkill {
+                name: "testing.md".into(),
+            },
+            ClientMessage::DistillSession {
                 session_id: "session-1".into(),
             },
         ];
@@ -164,6 +234,22 @@ mod tests {
                 session_id: "session-1".into(),
                 stop_reason: "end_turn".into(),
             },
+            ResponseEvent::SkillList {
+                skills: vec![SkillInfo {
+                    name: "testing.md".into(),
+                    path: ".agentchat/skills/testing.md".into(),
+                    size_bytes: 42,
+                }],
+            },
+            ResponseEvent::SkillContent {
+                name: "testing.md".into(),
+                content: "# Testing".into(),
+            },
+            ResponseEvent::DistillationStatus {
+                session_id: "session-1".into(),
+                status: "completed".into(),
+                message: "Updated 2 skills".into(),
+            },
             ResponseEvent::Error {
                 session_id: Some("session-1".into()),
                 code: "prompt_failed".into(),
@@ -174,6 +260,55 @@ mod tests {
         for event in events {
             assert_round_trip(&event);
         }
+    }
+
+    #[test]
+    fn session_events_round_trip_through_json() {
+        let events = [
+            SessionEvent::UserPrompt {
+                content: "hello".into(),
+                timestamp_ms: 1,
+            },
+            SessionEvent::AgentUpdate {
+                notification_json: json!({"session_id": "session-1", "update": {"kind": "agent_message_chunk"}}),
+                timestamp_ms: 2,
+            },
+            SessionEvent::TurnEnd {
+                stop_reason: "EndTurn".into(),
+                timestamp_ms: 3,
+            },
+        ];
+
+        for event in events {
+            assert_round_trip(&event);
+        }
+    }
+
+    #[test]
+    fn session_transcript_round_trips_through_json() {
+        let transcript = SessionTranscript {
+            session_id: "session-1".into(),
+            agent_id: "agent-1".into(),
+            working_dir: "/tmp/project".into(),
+            created_at_ms: 123,
+            events: vec![SessionEvent::UserPrompt {
+                content: "hello".into(),
+                timestamp_ms: 456,
+            }],
+        };
+
+        assert_round_trip(&transcript);
+    }
+
+    #[test]
+    fn skill_info_round_trips_through_json() {
+        let skill = SkillInfo {
+            name: "testing.md".into(),
+            path: ".agentchat/skills/testing.md".into(),
+            size_bytes: 42,
+        };
+
+        assert_round_trip(&skill);
     }
 
     #[test]
@@ -191,5 +326,10 @@ mod tests {
     fn unknown_type_tags_fail_to_deserialize() {
         assert!(serde_json::from_str::<ClientMessage>(r#"{"type":"unknown"}"#).is_err());
         assert!(serde_json::from_str::<ResponseEvent>(r#"{"type":"unknown"}"#).is_err());
+    }
+
+    #[test]
+    fn now_millis_returns_non_zero_timestamp() {
+        assert!(now_millis() > 0);
     }
 }

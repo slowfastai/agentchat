@@ -85,6 +85,11 @@ impl FakeAgent {
             .collect::<Vec<_>>()
             .join("\n")
     }
+
+    fn is_distillation_prompt(&self, prompt_text: &str) -> bool {
+        prompt_text
+            .contains("You are analyzing a completed coding session to extract reusable knowledge.")
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -135,6 +140,25 @@ impl acp::Agent for FakeAgent {
         let session_id_text = session_id.to_string();
         let prompt_text = self.prompt_text(&args.prompt);
         self.record_event(&format!("prompt:{}:{}", session_id_text, prompt_text));
+
+        if self.is_distillation_prompt(&prompt_text) {
+            self.send_update(
+                &session_id,
+                acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
+                    acp::ContentBlock::from(concat!(
+                        "---SKILL: testing-notes---\n",
+                        "# Testing Notes\n",
+                        "- Use the fake ACP agent in websocket tests.\n",
+                        "---END SKILL---\n",
+                        "---SKILL: memory-layer---\n",
+                        "# Memory Layer\n",
+                        "- Persist session transcripts under .agentchat/sessions.\n",
+                        "---END SKILL---\n"
+                    )),
+                )),
+            )?;
+            return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
+        }
 
         match self.mode {
             FakeAgentMode::Normal | FakeAgentMode::ExitAfterSession => {

@@ -4,6 +4,7 @@
 //! the iOS WebSocket protocol and ACP session/prompt/update flows.
 
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -19,7 +20,10 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
 
 use agentchat_core::agent_manager::AgentManager;
-use agentchat_protocol::{ClientMessage, DeltaType, ResponseEvent};
+use agentchat_core::distiller::Distiller;
+use agentchat_core::session_store::SessionStore;
+use agentchat_core::skills::SkillStore;
+use agentchat_protocol::{ClientMessage, DeltaType, ResponseEvent, SessionTranscript};
 
 /// WebSocket server that bridges the iOS app and ACP agents.
 pub struct WebSocketServer {
@@ -36,6 +40,9 @@ impl WebSocketServer {
         self,
         manager: Rc<RefCell<AgentManager>>,
         mut shutdown_rx: watch::Receiver<bool>,
+        session_store: Rc<RefCell<SessionStore>>,
+        skill_store: Rc<SkillStore>,
+        distiller: Rc<Distiller>,
     ) -> Result<(), String> {
         let addr = format!("0.0.0.0:{}", self.port);
         let listener = TcpListener::bind(&addr)
@@ -71,8 +78,15 @@ impl WebSocketServer {
                 }
             };
 
-            self.handle_connection(ws, manager.clone(), shutdown_rx.clone())
-                .await;
+            self.handle_connection(
+                ws,
+                manager.clone(),
+                shutdown_rx.clone(),
+                session_store.clone(),
+                skill_store.clone(),
+                distiller.clone(),
+            )
+            .await;
         }
 
         Ok(())
@@ -83,6 +97,9 @@ impl WebSocketServer {
         ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
         manager: Rc<RefCell<AgentManager>>,
         mut shutdown_rx: watch::Receiver<bool>,
+        session_store: Rc<RefCell<SessionStore>>,
+        skill_store: Rc<SkillStore>,
+        distiller: Rc<Distiller>,
     ) {
         let (mut ws_tx, mut ws_rx) = ws.split();
 
@@ -129,11 +146,27 @@ impl WebSocketServer {
 
         // Channel so the incoming-message handler can send responses back to the WS.
         let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<ResponseEvent>();
+        let internal_sessions = Rc::new(RefCell::new(HashMap::<
+            String,
+            mpsc::UnboundedSender<SessionNotification>,
+        >::new()));
 
-        // Task 1: Forward ACP session updates -> WebSocket.
+        // Task 1: Route ACP session updates either internally or back to the WebSocket client.
         let resp_tx_updates = resp_tx.clone();
+        let session_store_updates = session_store.clone();
+        let internal_sessions_updates = internal_sessions.clone();
         tokio::task::spawn_local(async move {
             while let Some(notification) = update_rx.recv().await {
+                let sid = notification.session_id.to_string();
+
+                if let Some(tx) = internal_sessions_updates.borrow().get(&sid).cloned() {
+                    let _ = tx.send(notification);
+                    continue;
+                }
+
+                session_store_updates
+                    .borrow_mut()
+                    .record_notification(&sid, &notification);
                 let event = map_session_update(&notification);
                 if resp_tx_updates.send(event).is_err() {
                     break;
@@ -194,6 +227,7 @@ impl WebSocketServer {
             mpsc::unbounded_channel::<(String, agent_client_protocol::Result<PromptResponse>)>();
         let mut created_sessions = Vec::new();
         let mut active_prompt_session: Option<String> = None;
+        let mut skill_injected_sessions = HashSet::new();
 
         // Task 4: Process incoming WebSocket messages from iOS.
         loop {
@@ -206,9 +240,22 @@ impl WebSocketServer {
 
                         match result {
                             Ok(resp) => {
+                                // Give late ACP notifications a short window to reach the routing task.
+                                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+
+                                let stop_reason = format!("{:?}", resp.stop_reason);
                                 let _ = resp_tx.send(ResponseEvent::TurnEnd {
-                                    session_id,
-                                    stop_reason: format!("{:?}", resp.stop_reason),
+                                    session_id: session_id.clone(),
+                                    stop_reason: stop_reason.clone(),
+                                });
+                                session_store.borrow_mut().record_turn_end(&session_id, &stop_reason);
+
+                                let flush_store = session_store.clone();
+                                let flush_session_id = session_id.clone();
+                                tokio::task::spawn_local(async move {
+                                    if let Err(e) = flush_session_snapshot(flush_store, flush_session_id.clone()).await {
+                                        warn!("failed to flush session {}: {}", flush_session_id, e);
+                                    }
                                 });
                             }
                             Err(e) => {
@@ -269,8 +316,11 @@ impl WebSocketServer {
                                 (Some(agent_id), Some(agent), true) => match agent.new_session(cwd).await {
                                     Ok(resp) => {
                                         let sid = resp.session_id.to_string();
-                                        manager.borrow_mut().register_session(sid.clone(), agent_id);
+                                        manager.borrow_mut().register_session(sid.clone(), agent_id.clone());
                                         created_sessions.push(sid.clone());
+                                        session_store
+                                            .borrow_mut()
+                                            .start_session(&sid, &agent_id, &working_dir);
                                         let _ = resp_tx.send(ResponseEvent::SessionCreated { session_id: sid });
                                     }
                                     Err(e) => {
@@ -323,10 +373,21 @@ impl WebSocketServer {
                                     });
                                 }
                                 (Some(agent), true) => {
+                                    session_store.borrow_mut().record_prompt(&session_id, &content);
+                                    let prompt_content = maybe_inject_skill_context(
+                                        skill_store.as_ref(),
+                                        &mut skill_injected_sessions,
+                                        &session_id,
+                                        content,
+                                    )
+                                    .await;
+
                                     active_prompt_session = Some(session_id.clone());
                                     let prompt_done_tx = prompt_done_tx.clone();
                                     tokio::task::spawn_local(async move {
-                                        let result = agent.prompt(SessionId::new(session_id.clone()), content).await;
+                                        let result = agent
+                                            .prompt(SessionId::new(session_id.clone()), prompt_content)
+                                            .await;
                                         if prompt_done_tx.send((session_id, result)).is_err() {
                                             warn!("prompt completion receiver dropped");
                                         }
@@ -359,6 +420,41 @@ impl WebSocketServer {
                                 }
                             }
                         }
+                        ClientMessage::ListSkills => {
+                            match skill_store.list_skills().await {
+                                Ok(skills) => {
+                                    let _ = resp_tx.send(ResponseEvent::SkillList { skills });
+                                }
+                                Err(e) => {
+                                    warn!("failed to list skills: {e}");
+                                    let _ = resp_tx.send(ResponseEvent::SkillList { skills: Vec::new() });
+                                }
+                            }
+                        }
+                        ClientMessage::GetSkill { name } => {
+                            match skill_store.read_skill(&name).await {
+                                Ok(content) => {
+                                    let _ = resp_tx.send(ResponseEvent::SkillContent { name, content });
+                                }
+                                Err(e) => {
+                                    let _ = resp_tx.send(ResponseEvent::Error {
+                                        session_id: None,
+                                        code: "skill_not_found".into(),
+                                        message: e,
+                                    });
+                                }
+                            }
+                        }
+                        ClientMessage::DistillSession { session_id } => {
+                            spawn_distillation_task(
+                                resp_tx.clone(),
+                                manager.clone(),
+                                session_store.clone(),
+                                internal_sessions.clone(),
+                                distiller.clone(),
+                                session_id,
+                            );
+                        }
                     }
                 }
                 _ = shutdown_rx.changed() => {
@@ -382,9 +478,187 @@ impl WebSocketServer {
             }
         }
 
+        cleanup_created_sessions(&session_store, &created_sessions).await;
         manager.borrow_mut().remove_sessions(&created_sessions);
         info!("client disconnected");
     }
+}
+
+async fn maybe_inject_skill_context(
+    skill_store: &SkillStore,
+    injected_sessions: &mut HashSet<String>,
+    session_id: &str,
+    content: String,
+) -> String {
+    if !injected_sessions.insert(session_id.to_string()) {
+        return content;
+    }
+
+    let skills = match skill_store.list_skills().await {
+        Ok(skills) => skills,
+        Err(e) => {
+            warn!("failed to load skills for prompt injection: {e}");
+            return content;
+        }
+    };
+
+    if skills.is_empty() {
+        return content;
+    }
+
+    let listing = skills
+        .iter()
+        .map(|skill| format!("- .agentchat/skills/{}", skill.name))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "[Project knowledge available:\n{}\nRead relevant skills with read_text_file.]\n\n{}",
+        listing, content
+    )
+}
+
+async fn flush_session_snapshot(
+    session_store: Rc<RefCell<SessionStore>>,
+    session_id: String,
+) -> Result<(), String> {
+    let flush = {
+        let store = session_store.borrow();
+        store.flush_session(&session_id)
+    };
+
+    flush.await.map(|_| ())
+}
+
+async fn cleanup_created_sessions(
+    session_store: &Rc<RefCell<SessionStore>>,
+    created_sessions: &[String],
+) {
+    for session_id in created_sessions {
+        if let Err(e) = flush_session_snapshot(session_store.clone(), session_id.clone()).await {
+            warn!(
+                "failed to flush session {} during cleanup: {}",
+                session_id, e
+            );
+        }
+        session_store.borrow_mut().remove_session(session_id);
+    }
+}
+
+async fn load_transcript(
+    session_store: Rc<RefCell<SessionStore>>,
+    session_id: &str,
+) -> Result<SessionTranscript, String> {
+    if let Some(transcript) = session_store.borrow().get_transcript(session_id).cloned() {
+        return Ok(transcript);
+    }
+
+    let load = {
+        let store = session_store.borrow();
+        store.load_transcript(session_id)
+    };
+
+    load.await
+}
+
+fn spawn_distillation_task(
+    resp_tx: mpsc::UnboundedSender<ResponseEvent>,
+    manager: Rc<RefCell<AgentManager>>,
+    session_store: Rc<RefCell<SessionStore>>,
+    internal_sessions: Rc<RefCell<HashMap<String, mpsc::UnboundedSender<SessionNotification>>>>,
+    distiller: Rc<Distiller>,
+    session_id: String,
+) {
+    tokio::task::spawn_local(async move {
+        let transcript = match load_transcript(session_store.clone(), &session_id).await {
+            Ok(transcript) => transcript,
+            Err(e) => {
+                send_distillation_status(&resp_tx, &session_id, "failed", e);
+                return;
+            }
+        };
+
+        let (agent, is_alive) = {
+            let mgr = manager.borrow();
+            let agent = mgr.get_agent(&transcript.agent_id);
+            let is_alive = mgr.is_agent_alive(&transcript.agent_id);
+            (agent, is_alive)
+        };
+
+        let agent = match (agent, is_alive) {
+            (Some(_), false) => {
+                send_distillation_status(&resp_tx, &session_id, "failed", "agent process exited");
+                return;
+            }
+            (Some(agent), true) => agent,
+            (None, _) => {
+                send_distillation_status(
+                    &resp_tx,
+                    &session_id,
+                    "failed",
+                    "no agent for this session",
+                );
+                return;
+            }
+        };
+
+        let distill_session = match agent
+            .new_session(PathBuf::from(&transcript.working_dir))
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                send_distillation_status(
+                    &resp_tx,
+                    &session_id,
+                    "failed",
+                    format!("failed to create distillation session: {e}"),
+                );
+                return;
+            }
+        };
+
+        let distill_session_id = distill_session.session_id.to_string();
+        let (distill_tx, distill_rx) = mpsc::unbounded_channel();
+        internal_sessions
+            .borrow_mut()
+            .insert(distill_session_id.clone(), distill_tx);
+
+        send_distillation_status(&resp_tx, &session_id, "started", "distillation started");
+
+        let result = distiller
+            .distill(agent, distill_session_id.clone(), transcript, distill_rx)
+            .await;
+
+        internal_sessions.borrow_mut().remove(&distill_session_id);
+
+        match result {
+            Ok(skills) => {
+                send_distillation_status(
+                    &resp_tx,
+                    &session_id,
+                    "completed",
+                    format!("Updated {} skills", skills.len()),
+                );
+            }
+            Err(e) => {
+                send_distillation_status(&resp_tx, &session_id, "failed", e);
+            }
+        }
+    });
+}
+
+fn send_distillation_status(
+    resp_tx: &mpsc::UnboundedSender<ResponseEvent>,
+    session_id: &str,
+    status: &str,
+    message: impl Into<String>,
+) {
+    let _ = resp_tx.send(ResponseEvent::DistillationStatus {
+        session_id: session_id.to_string(),
+        status: status.to_string(),
+        message: message.into(),
+    });
 }
 
 fn serialize_event(event: &ResponseEvent) -> Option<String> {

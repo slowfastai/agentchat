@@ -41,6 +41,7 @@ External dependency: `agent-client-protocol` crate (ACP SDK) — used by `core` 
 - **`AgentManager`** (`core/src/agent_manager.rs`) — Registry of `AcpAgent` instances keyed by agent ID. Routes sessions to agents.
 - **`WebSocketServer`** (`server/src/ws.rs`) — Accepts iOS WebSocket connections, translates `ClientMessage` to ACP calls, streams `SessionNotification` back as `ResponseEvent` frames.
 - **Protocol types** (`protocol/src/lib.rs`) — `ResponseEvent` (daemon→iOS), `ClientMessage` (iOS→daemon), `AgentConfig`, `DeltaType`.
+- **WebSocket protocol notes** (`daemon/PROTOCOL.md`) — Short request/response examples for session memory and skill-related messages.
 
 ### Design patterns
 

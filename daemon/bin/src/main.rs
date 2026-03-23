@@ -4,6 +4,9 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use agentchat_core::agent_manager::AgentManager;
+use agentchat_core::distiller::Distiller;
+use agentchat_core::session_store::SessionStore;
+use agentchat_core::skills::SkillStore;
 use agentchat_protocol::AgentConfig;
 use agentchat_server::ws::WebSocketServer;
 use tokio::sync::watch;
@@ -99,6 +102,9 @@ async fn main() {
             info!("agent initialized, starting WebSocket server");
 
             let manager = Rc::new(RefCell::new(manager));
+            let session_store = Rc::new(RefCell::new(SessionStore::new(&project_root)));
+            let skill_store = Rc::new(SkillStore::new(&project_root));
+            let distiller = Rc::new(Distiller::new(skill_store.clone()));
             let server = WebSocketServer::new(DEFAULT_PORT);
             let (_shutdown_tx, shutdown_rx) = watch::channel(false);
             let signal_tx = _shutdown_tx.clone();
@@ -110,7 +116,15 @@ async fn main() {
                 let _ = signal_tx.send(true);
             });
 
-            let run_result = server.run(manager.clone(), shutdown_rx).await;
+            let run_result = server
+                .run(
+                    manager.clone(),
+                    shutdown_rx,
+                    session_store,
+                    skill_store,
+                    distiller,
+                )
+                .await;
             let shutdown = { manager.borrow().shutdown_all() };
             shutdown.await;
 
