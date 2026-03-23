@@ -65,3 +65,6 @@ fastlane/test_output
 
 # macOS
 .DS_Store
+
+docs/
+product_design.md
