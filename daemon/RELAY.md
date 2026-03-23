@@ -1,53 +1,110 @@
-# Relay Smoke Clients
+# Relay Support and Smoke Tests
 
-当前仓库里有三块最小 relay 验证资产：
+This repository currently has two layers of relay support:
 
-- daemon-side Rust smoke client
-- app-side Rust smoke client
-- 一键本地 E2E Python smoke script
+- production daemon relay transport integrated into the main `agentchat-daemon` runtime
+- smoke / fixture / end-to-end validation tools for local protocol and crypto debugging
 
-它们一起用于验证：
+The current implementation covers:
 
-- 连接 `/v1/ws`
-- 收到 `relay_ready`
-- app 发 `secure_channel_hello`
-- daemon 回 `secure_channel_accept`
-- 使用真实 `Ed25519` 签名 hello / accept
-- 使用真实 `X25519 + HKDF-SHA256` 派生会话密钥
-- 双方计算出同一个 `channel_id`
-- app -> daemon 发送真实加密 `relay_envelope`
-- daemon -> app 返回真实加密 `relay_envelope`
-- replay 的 envelope 被本地 `seq` 保护拒绝
+- connecting to `/v1/ws`
+- receiving `relay_ready`
+- app -> daemon `secure_channel_hello`
+- daemon -> app `secure_channel_accept`
+- real `Ed25519` signatures for hello / accept
+- real `X25519 + HKDF-SHA256` session key derivation
+- matching `channel_id` derivation on both sides
+- app -> daemon encrypted `relay_envelope`
+- daemon -> app encrypted `relay_envelope`
+- local `seq`-based replay rejection
+- decrypted relay `ClientMessage` frames entering the real daemon application protocol path
+- daemon `ResponseEvent` values being re-encrypted into `relay_envelope` frames for the app
 
-## 最推荐：一键本地 E2E
+## Production daemon relay mode
 
-先启动本地 relay Worker：
+The main daemon binary now supports relay transport.
+
+If both of the following environment variables are set, `agentchat-daemon`
+starts in relay mode instead of starting the local direct WebSocket server:
+
+- `AGENTCHAT_RELAY_WS_URL`
+- `AGENTCHAT_RELAY_TOKEN`
+
+You must also provide relay identity configuration.
+
+### Development mode
+
+```bash
+AGENTCHAT_RELAY_DEV_CRYPTO=true
+```
+
+This uses fixed development identities from the repository so the daemon can interoperate
+with `relay_smoke_app` and the local Worker setup.
+
+### Explicit identity configuration
+
+```bash
+AGENTCHAT_RELAY_IDENTITY_SEED_B64URL=...
+AGENTCHAT_RELAY_REMOTE_IDENTITY_PUBLIC_KEY_B64URL=...
+```
+
+In relay mode, the daemon-side transport decrypts `ClientMessage` values and forwards them
+into the same application protocol handling path used by the direct WebSocket server.
+
+## Recommended local end-to-end flow
+
+Start the local relay Worker first:
 
 ```bash
 cd relay
 npm run dev
 ```
 
-然后在另一个终端运行：
+Then run the basic relay smoke script from another terminal:
 
 ```bash
 cd daemon
 python3 scripts/relay_smoke_e2e.py
 ```
 
-这个脚本会自动：
+This script automatically:
 
-1. 调用 relay 的 dev bootstrap / pair 接口
-2. 启动 `relay_smoke_daemon`
-3. 启动 `relay_smoke_app`
-4. 等待双方完成真实签名握手
-5. 校验双方打印了同一个 `channel_id`
-6. 校验双方都报告 `has_session_keys=true`
-7. 校验 app -> daemon 的真实密文 envelope 能被解密
-8. 校验 daemon -> app 的真实密文 envelope 能被解密
-9. 校验 replay protection 触发 `SEQ_REPLAY`
+1. calls the relay dev bootstrap / pair endpoints
+2. starts `relay_smoke_daemon`
+3. starts `relay_smoke_app`
+4. waits for both sides to complete the real signed handshake
+5. verifies that both sides print the same `channel_id`
+6. verifies that both sides report `has_session_keys=true`
+7. verifies that the app -> daemon encrypted envelope is decrypted successfully
+8. verifies that the daemon -> app encrypted envelope is decrypted successfully
+9. verifies that replay protection triggers `SEQ_REPLAY`
 
-## 手工运行 daemon smoke client
+## Stronger end-to-end validation against the real daemon binary
+
+To validate the full application protocol path through relay, run:
+
+```bash
+cd daemon
+python3 scripts/relay_main_daemon_e2e.py
+```
+
+This stronger validation uses:
+
+- the local relay Worker
+- the real `agentchat-daemon` main binary in relay mode
+- `fake_acp_agent` as the backend agent
+- an app-side relay client that sends real `ClientMessage` values over encrypted envelopes
+
+It exercises the real application path:
+
+1. `create_session`
+2. `prompt`
+3. streamed `delta` / `tool_update`
+4. `turn_end`
+
+and also verifies that the fake ACP agent recorded the expected `new_session` and `prompt` events.
+
+## Run the daemon smoke client manually
 
 ```bash
 cd daemon
@@ -56,15 +113,15 @@ AGENTCHAT_RELAY_TOKEN='achdm.dev_local_1.<secret>' \
 cargo run -p agentchat-daemon --bin relay_smoke_daemon
 ```
 
-daemon 侧会：
+The daemon-side smoke client will:
 
-1. 连接 relay
-2. 打印 `relay_ready`
-3. 校验 app 的 `secure_channel_hello` 签名
-4. 自动回真实签名的 `secure_channel_accept`
-5. 派生会话密钥并打印 `channel_id`
+1. connect to the relay
+2. log `relay_ready`
+3. verify the app `secure_channel_hello` signature
+4. send a real signed `secure_channel_accept`
+5. derive session keys and log the resulting `channel_id`
 
-## 手工运行 app smoke client
+## Run the app smoke client manually
 
 ```bash
 cd daemon
@@ -73,22 +130,27 @@ AGENTCHAT_RELAY_TOKEN='achapp.dev_local_1.app_local_1.<secret>' \
 cargo run -p agentchat-daemon --bin relay_smoke_app
 ```
 
-app 侧会：
+The app-side smoke client will:
 
-1. 连接 relay
-2. 收到 `relay_ready`
-3. 自动发送真实签名的 `secure_channel_hello`
-4. 校验 `secure_channel_accept` 签名
-5. 派生会话密钥并打印 `channel_id`
+1. connect to the relay
+2. receive `relay_ready`
+3. send a real signed `secure_channel_hello`
+4. verify the `secure_channel_accept` signature
+5. derive session keys and log the resulting `channel_id`
 
-## 实现位置
+## Implementation locations
 
-- 协议辅助：`daemon/protocol/src/relay.rs`
-- relay crypto：`daemon/protocol/src/relay_crypto.rs`
-- crypto fixture：`daemon/protocol/fixtures/relay/crypto/handshake_v1.json`
-- fixture 生成器：`daemon/bin/src/bin/relay_crypto_fixture.rs`
-- Rust relay client：`daemon/core/src/relay_client.rs`
-- relay integration tests：`daemon/core/tests/relay_integration.rs`
-- daemon smoke binary：`daemon/bin/src/bin/relay_smoke_daemon.rs`
-- app smoke binary：`daemon/bin/src/bin/relay_smoke_app.rs`
-- 一键 E2E 脚本：`daemon/scripts/relay_smoke_e2e.py`
+- relay protocol helpers: `daemon/protocol/src/relay.rs`
+- relay crypto: `daemon/protocol/src/relay_crypto.rs`
+- crypto fixture: `daemon/protocol/fixtures/relay/crypto/handshake_v1.json`
+- fixture generator: `daemon/bin/src/bin/relay_crypto_fixture.rs`
+- Rust relay client: `daemon/core/src/relay_client.rs`
+- relay integration tests: `daemon/core/tests/relay_integration.rs`
+- shared application protocol handler: `daemon/server/src/app.rs`
+- relay transport: `daemon/server/src/relay.rs`
+- direct WebSocket transport: `daemon/server/src/ws.rs`
+- daemon smoke binary: `daemon/bin/src/bin/relay_smoke_daemon.rs`
+- app smoke binary: `daemon/bin/src/bin/relay_smoke_app.rs`
+- app protocol smoke binary: `daemon/bin/src/bin/relay_app_protocol_smoke.rs`
+- local relay smoke script: `daemon/scripts/relay_smoke_e2e.py`
+- main daemon relay app protocol script: `daemon/scripts/relay_main_daemon_e2e.py`
