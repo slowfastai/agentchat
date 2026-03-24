@@ -7,6 +7,10 @@ struct IssueInboxView: View {
     @State private var searchText = ""
     @State private var filter: IssueFilter = .all
 
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
+
     private var filteredIssues: [Issue] {
         let baseIssues = store.currentProject?.issues ?? store.allIssues
 
@@ -39,6 +43,14 @@ struct IssueInboxView: View {
         filteredIssues.filter { $0.status == .review }.count
     }
 
+    private var isCompactPhoneLayout: Bool {
+        #if os(iOS)
+        return horizontalSizeClass == .compact
+        #else
+        return false
+        #endif
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: AppSpacing.md) {
@@ -57,15 +69,7 @@ struct IssueInboxView: View {
                         }
                     } else {
                         ForEach(filteredIssues) { issue in
-                            Button {
-                                selectedIssueID = issue.id
-                            } label: {
-                                IssueRowCard(
-                                    issue: issue,
-                                    isSelected: selectedIssueID == issue.id
-                                )
-                            }
-                            .buttonStyle(.plain)
+                            issueRow(for: issue)
                         }
                     }
                 }
@@ -73,6 +77,31 @@ struct IssueInboxView: View {
             .padding(AppSpacing.lg)
         }
         .navigationTitle(store.currentProject?.name ?? "Issues")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.large)
+        #endif
+    }
+
+    @ViewBuilder
+    private func issueRow(for issue: Issue) -> some View {
+        if isCompactPhoneLayout {
+            NavigationLink {
+                IssueWorkspaceView(issueID: issue.id)
+            } label: {
+                IssueRowCard(issue: issue, isSelected: false)
+            }
+            .buttonStyle(.plain)
+            .simultaneousGesture(TapGesture().onEnded {
+                selectedIssueID = issue.id
+            })
+        } else {
+            Button {
+                selectedIssueID = issue.id
+            } label: {
+                IssueRowCard(issue: issue, isSelected: selectedIssueID == issue.id)
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     private var toolbar: some View {

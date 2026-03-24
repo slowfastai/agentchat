@@ -315,6 +315,21 @@ struct WorkspaceCardModel: Identifiable, Hashable {
     var elapsedSeconds: Int
 }
 
+struct ChatThreadSummary: Identifiable, Hashable {
+    var issueID: UUID
+    var issueNumber: Int
+    var title: String
+    var participants: [String]
+    var preview: String
+    var updatedAt: Date
+    var unreadCount: Int
+    var isPinned: Bool
+    var state: SessionState
+    var accent: ColorToken
+
+    var id: UUID { issueID }
+}
+
 struct SkillCardModel: Identifiable, Hashable {
     let id: UUID
     var title: String

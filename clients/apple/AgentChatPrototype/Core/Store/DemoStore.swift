@@ -25,6 +25,36 @@ final class DemoStore: ObservableObject {
         projects.flatMap(\.issues)
     }
 
+    var chatThreads: [ChatThreadSummary] {
+        allIssues
+            .map { issue in
+                let issueSessions = sessions(for: issue.id)
+                let latestSession = issueSessions.first
+                let preview = latestTimelinePreview(for: issue.id)
+                    ?? latestSession?.latestEventText
+                    ?? issue.latestActivityText
+
+                return ChatThreadSummary(
+                    issueID: issue.id,
+                    issueNumber: issue.number,
+                    title: issue.title,
+                    participants: issue.agentNames,
+                    preview: preview,
+                    updatedAt: issue.updatedAt,
+                    unreadCount: unreadCount(for: issue),
+                    isPinned: hasRunningSessions(for: issue.id) || issue.priority == .urgent,
+                    state: latestSession?.state ?? .idle,
+                    accent: issue.assignees.first?.accent ?? issue.status.badgeColor
+                )
+            }
+            .sorted {
+                if $0.isPinned != $1.isPinned {
+                    return $0.isPinned && !$1.isPinned
+                }
+                return $0.updatedAt > $1.updatedAt
+            }
+    }
+
     var workspaceCards: [WorkspaceCardModel] {
         allIssues.map { issue in
             let issueSessions = sessions(for: issue.id)
@@ -73,6 +103,38 @@ final class DemoStore: ObservableObject {
                 updatedAt: issue.updatedAt
             )
         ]
+    }
+
+    func latestTimelinePreview(for issueID: UUID) -> String? {
+        guard let latest = timeline(for: issueID).last else { return nil }
+
+        switch latest.payload {
+        case .system(let event):
+            return event.text
+        case .userMessage(let message):
+            return "You: \(message.text)"
+        case .agentMessage(let message):
+            let text = message.text.isEmpty ? "…" : message.text
+            return "\(message.senderName): \(text)"
+        case .thinking(let event):
+            return "\(event.agentName) is thinking…"
+        case .toolCall(let event):
+            return "\(event.agentName): \(event.title)"
+        case .plan(let event):
+            return "\(event.agentName): \(event.title)"
+        case .turnEnd(let event):
+            return "\(event.agentName) finished · \(event.reason)"
+        }
+    }
+
+    func unreadCount(for issue: Issue) -> Int {
+        if hasRunningSessions(for: issue.id) {
+            return min(max(issue.sessionCount, 1), 3)
+        }
+        if issue.status == .review {
+            return 1
+        }
+        return 0
     }
 
     func hasRunningSessions(for issueID: UUID) -> Bool {
