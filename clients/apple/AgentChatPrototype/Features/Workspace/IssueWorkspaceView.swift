@@ -400,6 +400,27 @@ private struct WorkspaceSidePanel: View {
         }
     }
 
+    private var groupedSkillSections: [SkillSection] {
+        let grouped = Dictionary(grouping: store.skillCards(for: issueID), by: \.scope)
+
+        return grouped
+            .map { scope, skills in
+                SkillSection(
+                    scope: scope,
+                    accent: skills.first?.accent ?? .purple,
+                    skills: skills.sorted {
+                        $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+                    }
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.scope.sortRank != rhs.scope.sortRank {
+                    return lhs.scope.sortRank < rhs.scope.sortRank
+                }
+                return lhs.scope.title.localizedCaseInsensitiveCompare(rhs.scope.title) == .orderedAscending
+            }
+    }
+
     var body: some View {
         CardSurface(accent: .gray) {
             VStack(alignment: .leading, spacing: AppSpacing.md) {
@@ -443,25 +464,92 @@ private struct WorkspaceSidePanel: View {
                                 }
                             }
 
-                            ForEach(store.skillCards(for: issueID)) { skill in
-                                CardSurface(accent: .purple) {
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        Text(skill.title)
-                                            .font(.headline)
-                                        Text(skill.summary)
-                                            .font(.subheadline)
-                                            .foregroundStyle(.secondary)
-                                        Text("Updated \(AppFormatters.relativeString(from: skill.updatedAt))")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
+                            ForEach(groupedSkillSections) { section in
+                                SkillSectionCard(section: section)
                             }
                         }
                     }
                 }
             }
         }
+    }
+}
+
+private struct SkillSection: Identifiable {
+    let scope: SkillScope
+    let accent: ColorToken
+    let skills: [SkillCardModel]
+
+    var id: String { scope.id }
+}
+
+private struct SkillSectionCard: View {
+    let section: SkillSection
+
+    var body: some View {
+        CardSurface(accent: section.accent) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: section.scope.systemImage)
+                        .font(.headline)
+                        .foregroundStyle(section.accent.color)
+                        .frame(width: 34, height: 34)
+                        .background(section.accent.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(section.scope.title)
+                            .font(.headline)
+                        Text(section.scope.subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    PillView(
+                        text: "\(section.skills.count) files",
+                        color: section.accent,
+                        isSelected: true
+                    )
+                }
+
+                VStack(spacing: 8) {
+                    ForEach(section.skills) { skill in
+                        SkillRowCard(skill: skill)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct SkillRowCard: View {
+    let skill: SkillCardModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(skill.title)
+                        .font(.subheadline.weight(.semibold))
+                    Text(skill.path)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                Spacer(minLength: 0)
+                Text("Updated \(AppFormatters.relativeString(from: skill.updatedAt))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text(skill.summary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(skill.accent.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 

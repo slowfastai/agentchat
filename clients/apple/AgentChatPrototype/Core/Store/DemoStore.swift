@@ -89,20 +89,45 @@ final class DemoStore: ObservableObject {
 
     func skillCards(for issueID: UUID) -> [SkillCardModel] {
         guard let issue = issue(for: issueID) else { return [] }
-        return [
+
+        var cards = [
             SkillCardModel(
                 id: UUID(),
                 title: "memory-layer.md",
+                path: ".agentchat/skills/shared/memory-layer.md",
                 summary: "Capture reusable project conventions discovered while solving #\(issue.number).",
-                updatedAt: issue.updatedAt
+                updatedAt: issue.updatedAt,
+                scope: .shared,
+                accent: .purple
             ),
             SkillCardModel(
                 id: UUID(),
-                title: "testing-notes.md",
-                summary: "Prefer fake ACP agent coverage before wiring a real backend path.",
-                updatedAt: issue.updatedAt
+                title: "session-lifecycle.md",
+                path: ".agentchat/skills/shared/session-lifecycle.md",
+                summary: "Keep cancellation, transcript flushes, and relay cleanup aligned across every agent.",
+                updatedAt: issue.updatedAt.addingTimeInterval(-900),
+                scope: .shared,
+                accent: .purple
             )
         ]
+
+        let agentSpecificCards = issue.assignees.compactMap { participant -> SkillCardModel? in
+            guard case .agent = participant.role else { return nil }
+
+            let fileName = agentSpecificSkillFileName(for: participant.displayName)
+            return SkillCardModel(
+                id: UUID(),
+                title: fileName,
+                path: ".agentchat/skills/agents/\(agentSkillPathSegment(for: participant.displayName))/\(fileName)",
+                summary: agentSpecificSkillSummary(for: participant.displayName, issueNumber: issue.number),
+                updatedAt: issue.updatedAt,
+                scope: .agentSpecific(participant.displayName),
+                accent: participant.accent
+            )
+        }
+
+        cards.append(contentsOf: agentSpecificCards)
+        return cards
     }
 
     func latestTimelinePreview(for issueID: UUID) -> String? {
@@ -372,7 +397,7 @@ final class DemoStore: ObservableObject {
                             steps: [
                                 "Load transcript from .agentchat/sessions",
                                 "Extract project-specific conventions",
-                                "Write markdown skills into .agentchat/skills"
+                                "Write shared and agent-specific markdown skills into .agentchat/skills"
                             ]
                         )
                     )
@@ -615,7 +640,7 @@ final class DemoStore: ObservableObject {
             return (
                 name: "distill_session",
                 title: "Distill transcript into skills",
-                preview: "Updated memory-layer.md and testing-notes.md from the latest session."
+                preview: "Updated shared/memory-layer.md and agents/pi/distillation-notes.md from the latest session."
             )
         default:
             return (
@@ -624,6 +649,36 @@ final class DemoStore: ObservableObject {
                 preview: "Collected enough context for a first draft."
             )
         }
+    }
+
+    private func agentSpecificSkillFileName(for agentName: String) -> String {
+        switch agentName {
+        case "Claude":
+            return "review-playbook.md"
+        case "Codex":
+            return "fast-paths.md"
+        case "Pi":
+            return "distillation-notes.md"
+        default:
+            return "private-notes.md"
+        }
+    }
+
+    private func agentSpecificSkillSummary(for agentName: String, issueNumber: Int) -> String {
+        switch agentName {
+        case "Claude":
+            return "Claude-specific review heuristics collected while working through #\(issueNumber)."
+        case "Codex":
+            return "Codex-specific implementation shortcuts and validation loops from issue #\(issueNumber)."
+        case "Pi":
+            return "Pi-specific distillation prompts and memory-shaping notes learned on #\(issueNumber)."
+        default:
+            return "Agent-local notes that should not be injected into every session."
+        }
+    }
+
+    private func agentSkillPathSegment(for agentName: String) -> String {
+        agentName.lowercased().replacingOccurrences(of: " ", with: "-")
     }
 
     private func chunks(from text: String, wordsPerChunk: Int = 4) -> [String] {

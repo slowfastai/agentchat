@@ -262,7 +262,7 @@ private struct AgentsTabView: View {
             ),
             AgentShortcut(
                 title: "Skill Library",
-                subtitle: "Browse distilled memory",
+                subtitle: "Browse shared and agent-specific memory",
                 systemImage: "book.closed.fill",
                 tint: AppPalette.accentSecondary
             ),
@@ -1155,7 +1155,7 @@ private enum AgentDirectory {
             isOnline: true,
             summary: "Turns finished sessions into reusable memory and skill documents for the next agent run.",
             capabilities: ["Memory", "Distill", "Summaries"],
-            connectionLabel: "Daemon distillation flow • .agentchat/skills"
+            connectionLabel: "Daemon distillation flow • shared + agent skill channels"
         )
     ]
 }

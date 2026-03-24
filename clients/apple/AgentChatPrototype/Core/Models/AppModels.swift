@@ -330,9 +330,62 @@ struct ChatThreadSummary: Identifiable, Hashable {
     var id: UUID { issueID }
 }
 
+enum SkillScope: Hashable {
+    case shared
+    case agentSpecific(String)
+
+    var id: String {
+        switch self {
+        case .shared:
+            return "shared"
+        case .agentSpecific(let agentName):
+            return "agent-\(agentName)"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .shared:
+            return "Shared Memory"
+        case .agentSpecific(let agentName):
+            return "\(agentName) Notes"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .shared:
+            return "Injected into every agent session as project-wide memory."
+        case .agentSpecific(let agentName):
+            return "Only injected when \(agentName) owns the daemon session."
+        }
+    }
+
+    var sortRank: Int {
+        switch self {
+        case .shared:
+            return 0
+        case .agentSpecific:
+            return 1
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .shared:
+            return "square.stack.3d.down.right.fill"
+        case .agentSpecific:
+            return "person.crop.rectangle.stack.fill"
+        }
+    }
+}
+
 struct SkillCardModel: Identifiable, Hashable {
     let id: UUID
     var title: String
+    var path: String
     var summary: String
     var updatedAt: Date
+    var scope: SkillScope
+    var accent: ColorToken
 }
