@@ -52,7 +52,7 @@ What to expect:
 - `prompt` streams `delta` / `tool_update` events and ends with `turn_end`.
 - `distill_session` returns `distillation_status` with `started`, then `completed` or `failed`.
 - Session transcripts are written under `.agentchat/sessions/`.
-- Distilled skills are written under `.agentchat/skills/`.
+- Distilled skills are written under `.agentchat/skills/shared/` so every agent session can reuse them.
 
 ### Python Smoke Test
 
@@ -84,10 +84,10 @@ $ websocat ws://127.0.0.1:9390
 < {"type":"distillation_status","session_id":"session-1","status":"completed","message":"Updated 2 skills"}
 
 > {"type":"list_skills"}
-< {"type":"skill_list","skills":[{"name":"memory-layer.md","path":".agentchat/skills/memory-layer.md","size_bytes":64}]}
+< {"type":"skill_list","skills":[{"name":"shared/memory-layer.md","path":".agentchat/skills/shared/memory-layer.md","size_bytes":64}]}
 
-> {"type":"get_skill","name":"memory-layer.md"}
-< {"type":"skill_content","name":"memory-layer.md","content":"# Memory Layer\n- Persist session transcripts under .agentchat/sessions.\n"}
+> {"type":"get_skill","name":"shared/memory-layer.md"}
+< {"type":"skill_content","name":"shared/memory-layer.md","content":"# Memory Layer\n- Persist session transcripts under .agentchat/sessions.\n"}
 ```
 
 Notes:
@@ -122,7 +122,7 @@ Tip:
 
 ## `list_skills`
 
-List the Markdown skills currently stored under `.agentchat/skills/`.
+List the Markdown skills currently stored under `.agentchat/skills/`, including shared subdirectories such as `.agentchat/skills/shared/`.
 
 Request:
 
@@ -181,14 +181,14 @@ Error response:
 ```
 
 Notes:
-- `name` may be passed with or without `.md`; the daemon normalizes it to a single file in `.agentchat/skills/`.
+- `name` may be passed with or without `.md`; the daemon normalizes it to a single file in `.agentchat/skills/` and accepts nested names such as `shared/testing-notes.md`.
 - Path traversal is rejected.
 
 ## `distill_session`
 
 Ask the daemon to turn a completed session transcript into reusable Markdown skills.
 The daemon loads the transcript, runs an internal agent session, parses generated skill
-blocks, and writes them into `.agentchat/skills/`.
+blocks, and writes them into `.agentchat/skills/shared/`.
 
 Request:
 

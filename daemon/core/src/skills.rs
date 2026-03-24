@@ -19,34 +19,53 @@ impl SkillStore {
             return Ok(Vec::new());
         }
 
-        let mut entries = tokio::fs::read_dir(&self.skills_dir)
-            .await
-            .map_err(|e| format!("failed to read skills dir: {e}"))?;
+        let mut pending_dirs = vec![self.skills_dir.clone()];
         let mut skills = Vec::new();
 
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            .map_err(|e| format!("failed to read skills dir entry: {e}"))?
-        {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
-                continue;
-            }
-
-            let metadata = entry
-                .metadata()
+        while let Some(dir) = pending_dirs.pop() {
+            let mut entries = tokio::fs::read_dir(&dir)
                 .await
-                .map_err(|e| format!("failed to stat skill {}: {e}", path.display()))?;
-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
+                .map_err(|e| format!("failed to read skills dir {}: {e}", dir.display()))?;
 
-            skills.push(SkillInfo {
-                name: name.to_string(),
-                path: format!(".agentchat/skills/{name}"),
-                size_bytes: metadata.len(),
-            });
+            while let Some(entry) = entries
+                .next_entry()
+                .await
+                .map_err(|e| format!("failed to read skills dir entry: {e}"))?
+            {
+                let path = entry.path();
+                let file_type = entry
+                    .file_type()
+                    .await
+                    .map_err(|e| format!("failed to stat skill {}: {e}", path.display()))?;
+
+                if file_type.is_dir() {
+                    pending_dirs.push(path);
+                    continue;
+                }
+
+                if !file_type.is_file()
+                    || path.extension().and_then(|ext| ext.to_str()) != Some("md")
+                {
+                    continue;
+                }
+
+                let metadata = entry
+                    .metadata()
+                    .await
+                    .map_err(|e| format!("failed to stat skill {}: {e}", path.display()))?;
+                let Some(relative) = path.strip_prefix(&self.skills_dir).ok() else {
+                    continue;
+                };
+                let Some(name) = relative_skill_name(relative) else {
+                    continue;
+                };
+
+                skills.push(SkillInfo {
+                    path: format!(".agentchat/skills/{name}"),
+                    name,
+                    size_bytes: metadata.len(),
+                });
+            }
         }
 
         skills.sort_by(|a, b| a.name.cmp(&b.name));
@@ -85,6 +104,22 @@ impl SkillStore {
     }
 }
 
+fn relative_skill_name(path: &Path) -> Option<String> {
+    let parts = path
+        .components()
+        .map(|component| match component {
+            Component::Normal(part) => part.to_str().map(|part| part.to_string()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("/"))
+    }
+}
+
 fn normalize_skill_name(name: &str) -> Result<String, String> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -92,26 +127,35 @@ fn normalize_skill_name(name: &str) -> Result<String, String> {
     }
 
     let path = Path::new(trimmed);
-    if path.components().count() != 1
-        || !matches!(path.components().next(), Some(Component::Normal(_)))
-    {
+    if path.is_absolute() {
         return Err(format!("invalid skill name: {trimmed}"));
     }
 
-    let file_name = path
-        .file_name()
-        .and_then(|file_name| file_name.to_str())
-        .ok_or_else(|| format!("invalid skill name: {trimmed}"))?;
+    let mut parts = Vec::new();
+    for component in path.components() {
+        let Component::Normal(part) = component else {
+            return Err(format!("invalid skill name: {trimmed}"));
+        };
 
-    if file_name.contains("..") {
+        let part = part
+            .to_str()
+            .ok_or_else(|| format!("invalid skill name: {trimmed}"))?;
+        if part.is_empty() || part.contains("..") {
+            return Err(format!("invalid skill name: {trimmed}"));
+        }
+
+        parts.push(part.to_string());
+    }
+
+    let Some(file_name) = parts.last_mut() else {
         return Err(format!("invalid skill name: {trimmed}"));
+    };
+
+    if !file_name.ends_with(".md") {
+        *file_name = format!("{file_name}.md");
     }
 
-    if file_name.ends_with(".md") {
-        Ok(file_name.to_string())
-    } else {
-        Ok(format!("{file_name}.md"))
-    }
+    Ok(parts.join("/"))
 }
 
 #[cfg(test)]
@@ -139,11 +183,27 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn list_skills_returns_written_skills() {
+    async fn write_then_read_shared_skill_round_trips() {
+        let root = tempdir().unwrap();
+        let store = SkillStore::new(root.path());
+
+        store
+            .write_skill("shared/testing", "# Shared Testing\n")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.read_skill("shared/testing").await.unwrap(),
+            "# Shared Testing\n"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_skills_returns_written_skills_in_nested_directories() {
         let root = tempdir().unwrap();
         let store = SkillStore::new(root.path());
         store.write_skill("beta", "beta").await.unwrap();
-        store.write_skill("alpha", "alpha").await.unwrap();
+        store.write_skill("shared/alpha", "alpha").await.unwrap();
 
         let skills = store.list_skills().await.unwrap();
         let names = skills
@@ -151,7 +211,7 @@ mod tests {
             .map(|skill| skill.name)
             .collect::<Vec<_>>();
 
-        assert_eq!(names, vec!["alpha.md", "beta.md"]);
+        assert_eq!(names, vec!["beta.md", "shared/alpha.md"]);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -160,6 +220,15 @@ mod tests {
         let store = SkillStore::new(root.path());
 
         let error = store.read_skill("../secret.md").await.unwrap_err();
+        assert!(error.contains("invalid skill name"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn write_skill_rejects_nested_path_traversal() {
+        let root = tempdir().unwrap();
+        let store = SkillStore::new(root.path());
+
+        let error = store.write_skill("shared/../secret", "nope").await.unwrap_err();
         assert!(error.contains("invalid skill name"));
     }
 }

@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -25,7 +25,6 @@ pub struct AppProtocolSession {
     internal_sessions: Rc<RefCell<HashMap<String, mpsc::UnboundedSender<SessionNotification>>>>,
     created_sessions: Vec<String>,
     active_prompt_session: Rc<RefCell<Option<String>>>,
-    skill_injected_sessions: HashSet<String>,
 }
 
 impl AppProtocolSession {
@@ -140,7 +139,6 @@ impl AppProtocolSession {
             internal_sessions,
             created_sessions: Vec::new(),
             active_prompt_session: Rc::new(RefCell::new(None)),
-            skill_injected_sessions: HashSet::new(),
         })
     }
 
@@ -202,7 +200,6 @@ impl AppProtocolSession {
             .borrow_mut()
             .remove_sessions(&self.created_sessions);
         self.created_sessions.clear();
-        self.skill_injected_sessions.clear();
     }
 
     async fn handle_create_session(&mut self, working_dir: String) {
@@ -291,13 +288,8 @@ impl AppProtocolSession {
                 self.session_store
                     .borrow_mut()
                     .record_prompt(&session_id, &content);
-                let prompt_content = maybe_inject_skill_context(
-                    self.skill_store.as_ref(),
-                    &mut self.skill_injected_sessions,
-                    &session_id,
-                    content,
-                )
-                .await;
+                let prompt_content =
+                    maybe_inject_skill_context(self.skill_store.as_ref(), content).await;
 
                 *self.active_prompt_session.borrow_mut() = Some(session_id.clone());
                 let response_tx = self.response_tx.clone();
@@ -424,16 +416,7 @@ async fn handle_prompt_completion(
     }
 }
 
-async fn maybe_inject_skill_context(
-    skill_store: &SkillStore,
-    injected_sessions: &mut HashSet<String>,
-    session_id: &str,
-    content: String,
-) -> String {
-    if !injected_sessions.insert(session_id.to_string()) {
-        return content;
-    }
-
+async fn maybe_inject_skill_context(skill_store: &SkillStore, content: String) -> String {
     let skills = match skill_store.list_skills().await {
         Ok(skills) => skills,
         Err(err) => {
@@ -448,12 +431,12 @@ async fn maybe_inject_skill_context(
 
     let listing = skills
         .iter()
-        .map(|skill| format!("- .agentchat/skills/{}", skill.name))
+        .map(|skill| format!("- {}", skill.path))
         .collect::<Vec<_>>()
         .join("\n");
 
     format!(
-        "[Project knowledge available:\n{}\nRead relevant skills with read_text_file.]\n\n{}",
+        "[Shared project knowledge available to every agent:\n{}\nRead relevant skills with read_text_file.]\n\n{}",
         listing, content
     )
 }

@@ -244,7 +244,54 @@ async fn websocket_lists_and_reads_skills() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn websocket_injects_skill_context_into_first_prompt() {
+async fn websocket_lists_and_reads_shared_skills() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_harness(FakeAgentMode::Normal).await;
+            let shared_skill_dir = harness
+                .project_root
+                .join(".agentchat")
+                .join("skills")
+                .join("shared");
+            std::fs::create_dir_all(&shared_skill_dir).unwrap();
+            std::fs::write(shared_skill_dir.join("testing.md"), "# Shared Testing\n").unwrap();
+
+            let mut ws = connect_ws(harness.port).await;
+            send_client_message(&mut ws, &ClientMessage::ListSkills).await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::SkillList { skills } => {
+                    assert_eq!(skills.len(), 1);
+                    assert_eq!(skills[0].name, "shared/testing.md");
+                    assert_eq!(skills[0].path, ".agentchat/skills/shared/testing.md");
+                }
+                event => panic!("unexpected event while listing shared skills: {event:?}"),
+            }
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::GetSkill {
+                    name: "shared/testing.md".into(),
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::SkillContent { name, content } => {
+                    assert_eq!(name, "shared/testing.md");
+                    assert_eq!(content, "# Shared Testing\n");
+                }
+                event => panic!("unexpected event while reading shared skill: {event:?}"),
+            }
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn websocket_injects_skill_context_into_every_prompt() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -263,31 +310,35 @@ async fn websocket_injects_skill_context_into_first_prompt() {
             .await;
             let session_id = expect_session_created(&mut ws).await;
 
-            send_client_message(
-                &mut ws,
-                &ClientMessage::Prompt {
-                    session_id: session_id.clone(),
-                    content: "say hello".into(),
-                },
-            )
-            .await;
+            for prompt in ["say hello", "say goodbye"] {
+                send_client_message(
+                    &mut ws,
+                    &ClientMessage::Prompt {
+                        session_id: session_id.clone(),
+                        content: prompt.into(),
+                    },
+                )
+                .await;
 
-            let events = collect_prompt_events(&mut ws, &session_id).await;
-            let prompt_echo = events
-                .iter()
-                .find_map(|event| match event {
-                    ResponseEvent::Delta {
-                        session_id: sid,
-                        delta_type: DeltaType::Text,
-                        content,
-                    } if sid == &session_id => Some(content.clone()),
-                    _ => None,
-                })
-                .expect("missing text delta");
+                let events = collect_prompt_events(&mut ws, &session_id).await;
+                let prompt_echo = events
+                    .iter()
+                    .find_map(|event| match event {
+                        ResponseEvent::Delta {
+                            session_id: sid,
+                            delta_type: DeltaType::Text,
+                            content,
+                        } if sid == &session_id => Some(content.clone()),
+                        _ => None,
+                    })
+                    .expect("missing text delta");
 
-            assert!(prompt_echo.starts_with("echo: [Project knowledge available:"));
-            assert!(prompt_echo.contains(".agentchat/skills/testing.md"));
-            assert!(prompt_echo.ends_with("say hello"));
+                assert!(prompt_echo.starts_with(
+                    "echo: [Shared project knowledge available to every agent:"
+                ));
+                assert!(prompt_echo.contains(".agentchat/skills/testing.md"));
+                assert!(prompt_echo.ends_with(prompt));
+            }
 
             ws.send(Message::Close(None)).await.unwrap();
             drop(ws);
@@ -339,11 +390,13 @@ async fn websocket_distills_session_into_skill_files() {
                 .project_root
                 .join(".agentchat")
                 .join("skills")
+                .join("shared")
                 .join("testing-notes.md");
             let memory_skill = harness
                 .project_root
                 .join(".agentchat")
                 .join("skills")
+                .join("shared")
                 .join("memory-layer.md");
             wait_for(|| testing_skill.exists() && memory_skill.exists()).await;
             assert!(std::fs::read_to_string(&testing_skill)
@@ -352,6 +405,96 @@ async fn websocket_distills_session_into_skill_files() {
             assert!(std::fs::read_to_string(&memory_skill)
                 .unwrap()
                 .contains(".agentchat/sessions"));
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn websocket_injects_distilled_shared_skills_into_new_sessions() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_harness(FakeAgentMode::Normal).await;
+            let mut ws = connect_ws(harness.port).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateSession {
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+            let first_session_id = expect_session_created(&mut ws).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::Prompt {
+                    session_id: first_session_id.clone(),
+                    content: "teach me something".into(),
+                },
+            )
+            .await;
+            let _ = collect_prompt_events(&mut ws, &first_session_id).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::DistillSession {
+                    session_id: first_session_id.clone(),
+                },
+            )
+            .await;
+
+            expect_distillation_status(&mut ws, &first_session_id, "started").await;
+            let completed =
+                expect_distillation_status(&mut ws, &first_session_id, "completed").await;
+            assert_eq!(completed, "Updated 2 skills");
+
+            let shared_skill = harness
+                .project_root
+                .join(".agentchat")
+                .join("skills")
+                .join("shared")
+                .join("memory-layer.md");
+            wait_for(|| shared_skill.exists()).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateSession {
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+            let second_session_id = expect_session_created(&mut ws).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::Prompt {
+                    session_id: second_session_id.clone(),
+                    content: "use memory".into(),
+                },
+            )
+            .await;
+
+            let events = collect_prompt_events(&mut ws, &second_session_id).await;
+            let prompt_echo = events
+                .iter()
+                .find_map(|event| match event {
+                    ResponseEvent::Delta {
+                        session_id: sid,
+                        delta_type: DeltaType::Text,
+                        content,
+                    } if sid == &second_session_id => Some(content.clone()),
+                    _ => None,
+                })
+                .expect("missing text delta");
+
+            assert!(prompt_echo.contains(".agentchat/skills/shared/testing-notes.md"));
+            assert!(prompt_echo.contains(".agentchat/skills/shared/memory-layer.md"));
+            assert!(prompt_echo.ends_with("use memory"));
 
             ws.send(Message::Close(None)).await.unwrap();
             drop(ws);

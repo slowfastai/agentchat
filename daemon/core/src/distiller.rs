@@ -8,7 +8,7 @@ use agentchat_protocol::{SessionEvent, SessionTranscript};
 use crate::acp_client::AcpAgent;
 use crate::skills::SkillStore;
 
-/// Runs a follow-up agent pass that turns transcripts into reusable markdown skills.
+/// Runs a follow-up agent pass that turns transcripts into reusable shared markdown skills.
 pub struct Distiller {
     skill_store: Rc<SkillStore>,
 }
@@ -120,8 +120,18 @@ impl Distiller {
         let skills = self.parse_skill_blocks(&response_text);
         let mut written = Vec::with_capacity(skills.len());
         for (name, content) in skills {
-            self.skill_store.write_skill(&name, &content).await?;
-            written.push(name);
+            let target_name = if name.starts_with("shared/") {
+                name
+            } else {
+                format!("shared/{name}")
+            };
+            let target_name = if target_name.ends_with(".md") {
+                target_name
+            } else {
+                format!("{target_name}.md")
+            };
+            self.skill_store.write_skill(&target_name, &content).await?;
+            written.push(target_name);
         }
 
         Ok(written)
