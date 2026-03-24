@@ -6,9 +6,11 @@ use tokio::sync::mpsc;
 use agentchat_protocol::{SessionEvent, SessionTranscript};
 
 use crate::acp_client::AcpAgent;
-use crate::skills::SkillStore;
+use crate::skills::{agent_skill_prefix, SkillStore, SHARED_SKILL_PREFIX};
 
-/// Runs a follow-up agent pass that turns transcripts into reusable shared markdown skills.
+const AGENT_SKILL_PREFIX: &str = "agents/";
+
+/// Runs a follow-up agent pass that turns transcripts into reusable shared and agent-specific markdown skills.
 pub struct Distiller {
     skill_store: Rc<SkillStore>,
 }
@@ -27,7 +29,11 @@ impl Distiller {
                 "- Agent ID: {}\n",
                 "- Working directory: {}\n\n",
                 "Session transcript:\n{}\n\n",
-                "Extract actionable, project-specific knowledge. For each piece, output:\n\n",
+                "Extract actionable, project-specific knowledge.\n",
+                "- Use `shared/<topic-name>` for knowledge every agent should read.\n",
+                "- Use `agents/{}/<topic-name>` only for tactics specific to this agent.\n",
+                "- If a skill name has no namespace, it will be treated as shared.\n\n",
+                "For each piece, output:\n\n",
                 "---SKILL: {{topic-name}}---\n",
                 "{{markdown content}}\n",
                 "---END SKILL---\n\n",
@@ -38,6 +44,7 @@ impl Distiller {
             transcript.agent_id,
             transcript.working_dir,
             render_transcript(transcript),
+            transcript.agent_id,
         )
     }
 
@@ -120,21 +127,46 @@ impl Distiller {
         let skills = self.parse_skill_blocks(&response_text);
         let mut written = Vec::with_capacity(skills.len());
         for (name, content) in skills {
-            let target_name = if name.starts_with("shared/") {
-                name
-            } else {
-                format!("shared/{name}")
-            };
-            let target_name = if target_name.ends_with(".md") {
-                target_name
-            } else {
-                format!("{target_name}.md")
-            };
+            let target_name = normalize_distilled_skill_name(&name, &transcript.agent_id)?;
             self.skill_store.write_skill(&target_name, &content).await?;
             written.push(target_name);
         }
 
         Ok(written)
+    }
+}
+
+fn normalize_distilled_skill_name(name: &str, agent_id: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("distilled skill name cannot be empty".into());
+    }
+
+    if trimmed.starts_with(SHARED_SKILL_PREFIX) {
+        return Ok(ensure_markdown_extension(trimmed.to_string()));
+    }
+
+    if trimmed.starts_with(AGENT_SKILL_PREFIX) {
+        let agent_prefix = agent_skill_prefix(agent_id)?;
+        if !trimmed.starts_with(&agent_prefix) {
+            return Err(format!(
+                "agent-specific skill must stay under {}<topic-name>: {trimmed}",
+                agent_prefix,
+            ));
+        }
+        return Ok(ensure_markdown_extension(trimmed.to_string()));
+    }
+
+    Ok(ensure_markdown_extension(format!(
+        "{SHARED_SKILL_PREFIX}{trimmed}"
+    )))
+}
+
+fn ensure_markdown_extension(name: String) -> String {
+    if name.ends_with(".md") {
+        name
+    } else {
+        format!("{name}.md")
     }
 }
 
@@ -266,6 +298,7 @@ mod tests {
         let prompt = distiller.build_distillation_prompt(&sample_transcript());
 
         assert!(prompt.contains("Session ID: session-1"));
+        assert!(prompt.contains("agents/agent-1/<topic-name>"));
         assert!(prompt.contains("[User] Investigate failing build"));
         assert!(prompt.contains("[Tool] Run cargo test - InProgress"));
         assert!(prompt.contains("[Agent] The workspace needs a test helper."));
@@ -301,5 +334,29 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn normalize_distilled_skill_name_defaults_to_shared_namespace() {
+        assert_eq!(
+            normalize_distilled_skill_name("testing-notes", "fake").unwrap(),
+            "shared/testing-notes.md"
+        );
+    }
+
+    #[test]
+    fn normalize_distilled_skill_name_keeps_current_agent_namespace() {
+        assert_eq!(
+            normalize_distilled_skill_name("agents/fake/testing-notes", "fake").unwrap(),
+            "agents/fake/testing-notes.md"
+        );
+    }
+
+    #[test]
+    fn normalize_distilled_skill_name_rejects_other_agent_namespaces() {
+        let error =
+            normalize_distilled_skill_name("agents/other/testing-notes", "fake").unwrap_err();
+
+        assert!(error.contains("agents/fake/"));
     }
 }

@@ -146,13 +146,13 @@ impl acp::Agent for FakeAgent {
                 &session_id,
                 acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
                     acp::ContentBlock::from(concat!(
-                        "---SKILL: testing-notes---\n",
-                        "# Testing Notes\n",
-                        "- Use the fake ACP agent in websocket tests.\n",
-                        "---END SKILL---\n",
-                        "---SKILL: memory-layer---\n",
+                        "---SKILL: shared/memory-layer---\n",
                         "# Memory Layer\n",
                         "- Persist session transcripts under .agentchat/sessions.\n",
+                        "---END SKILL---\n",
+                        "---SKILL: agents/fake/testing-notes---\n",
+                        "# Testing Notes\n",
+                        "- Use the fake ACP agent in websocket tests.\n",
                         "---END SKILL---\n"
                     )),
                 )),

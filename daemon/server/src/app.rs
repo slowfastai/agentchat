@@ -13,7 +13,7 @@ use agentchat_core::agent_manager::AgentManager;
 use agentchat_core::distiller::Distiller;
 use agentchat_core::session_store::SessionStore;
 use agentchat_core::skills::SkillStore;
-use agentchat_protocol::{ClientMessage, DeltaType, ResponseEvent, SessionTranscript};
+use agentchat_protocol::{ClientMessage, DeltaType, ResponseEvent, SessionTranscript, SkillInfo};
 
 pub struct AppProtocolSession {
     manager: Rc<RefCell<AgentManager>>,
@@ -265,7 +265,7 @@ impl AppProtocolSession {
             return;
         }
 
-        let (agent, is_alive) = {
+        let (agent_id, agent, is_alive) = {
             let mgr = self.manager.borrow();
             let agent_id = mgr.agent_for_session(&session_id).map(|id| id.to_string());
             let agent = agent_id.as_deref().and_then(|id| mgr.get_agent(id));
@@ -273,23 +273,24 @@ impl AppProtocolSession {
                 .as_deref()
                 .map(|id| mgr.is_agent_alive(id))
                 .unwrap_or(false);
-            (agent, is_alive)
+            (agent_id, agent, is_alive)
         };
 
-        match (agent, is_alive) {
-            (Some(_), false) => {
+        match (agent_id, agent, is_alive) {
+            (Some(_), Some(_), false) => {
                 let _ = self.response_tx.send(ResponseEvent::Error {
                     session_id: Some(session_id),
                     code: "agent_crashed".into(),
                     message: "agent process exited".into(),
                 });
             }
-            (Some(agent), true) => {
+            (Some(agent_id), Some(agent), true) => {
                 self.session_store
                     .borrow_mut()
                     .record_prompt(&session_id, &content);
                 let prompt_content =
-                    maybe_inject_skill_context(self.skill_store.as_ref(), content).await;
+                    maybe_inject_skill_context(self.skill_store.as_ref(), Some(&agent_id), content)
+                        .await;
 
                 *self.active_prompt_session.borrow_mut() = Some(session_id.clone());
                 let response_tx = self.response_tx.clone();
@@ -306,7 +307,7 @@ impl AppProtocolSession {
                     handle_prompt_completion(response_tx, session_store, session_id, result).await;
                 });
             }
-            (None, _) => {
+            _ => {
                 let _ = self.response_tx.send(ResponseEvent::Error {
                     session_id: Some(session_id),
                     code: "no_agent".into(),
@@ -416,29 +417,60 @@ async fn handle_prompt_completion(
     }
 }
 
-async fn maybe_inject_skill_context(skill_store: &SkillStore, content: String) -> String {
-    let skills = match skill_store.list_skills().await {
+async fn maybe_inject_skill_context(
+    skill_store: &SkillStore,
+    agent_id: Option<&str>,
+    content: String,
+) -> String {
+    let shared_skills = match skill_store.list_shared_skills().await {
         Ok(skills) => skills,
         Err(err) => {
-            warn!("failed to load skills for prompt injection: {err}");
+            warn!("failed to load shared skills for prompt injection: {err}");
             return content;
         }
     };
 
-    if skills.is_empty() {
+    let agent_skills = match agent_id {
+        Some(agent_id) => match skill_store.list_agent_skills(agent_id).await {
+            Ok(skills) => skills,
+            Err(err) => {
+                warn!("failed to load agent-specific skills for prompt injection: {err}");
+                Vec::new()
+            }
+        },
+        None => Vec::new(),
+    };
+
+    if shared_skills.is_empty() && agent_skills.is_empty() {
         return content;
     }
 
-    let listing = skills
+    let mut sections = Vec::new();
+    if !shared_skills.is_empty() {
+        sections.push(format!(
+            "Shared project knowledge available to every agent:\n{}",
+            render_skill_listing(&shared_skills),
+        ));
+    }
+    if let Some(agent_id) = agent_id {
+        if !agent_skills.is_empty() {
+            sections.push(format!(
+                "Agent-specific knowledge for {agent_id}:\n{}",
+                render_skill_listing(&agent_skills),
+            ));
+        }
+    }
+    sections.push("Read relevant skills with read_text_file.".into());
+
+    format!("[{}]\n\n{}", sections.join("\n"), content)
+}
+
+fn render_skill_listing(skills: &[SkillInfo]) -> String {
+    skills
         .iter()
         .map(|skill| format!("- {}", skill.path))
         .collect::<Vec<_>>()
-        .join("\n");
-
-    format!(
-        "[Shared project knowledge available to every agent:\n{}\nRead relevant skills with read_text_file.]\n\n{}",
-        listing, content
-    )
+        .join("\n")
 }
 
 async fn flush_session_snapshot(

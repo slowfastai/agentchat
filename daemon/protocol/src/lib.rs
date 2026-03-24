@@ -68,7 +68,7 @@ pub struct SessionTranscript {
     pub events: Vec<SessionEvent>,
 }
 
-/// Metadata about a stored skill file, including nested shared skill paths.
+/// Metadata about a stored skill file, including shared and agent-specific namespaces.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SkillInfo {
     pub name: String,
@@ -115,7 +115,7 @@ pub enum ResponseEvent {
         stop_reason: String,
     },
 
-    /// Available skills in the project, including shared skill namespaces.
+    /// Available skills in the project, including shared and agent-specific namespaces.
     SkillList { skills: Vec<SkillInfo> },
 
     /// Raw markdown content for a skill file.
@@ -158,11 +158,11 @@ pub enum ClientMessage {
     Prompt { session_id: String, content: String },
     /// Cancel an ongoing prompt turn.
     Cancel { session_id: String },
-    /// List project skills, including shared subdirectories.
+    /// List project skills, including `shared/` and `agents/<agent-id>/` namespaces.
     ListSkills,
-    /// Read a project skill by relative name, such as `shared/testing.md`.
+    /// Read a project skill by relative name, such as `shared/testing.md` or `agents/opencode/testing.md`.
     GetSkill { name: String },
-    /// Distill a captured session into reusable shared skills.
+    /// Distill a captured session into reusable shared and agent-specific skills.
     DistillSession { session_id: String },
 }
 

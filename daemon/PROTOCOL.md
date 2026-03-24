@@ -52,7 +52,7 @@ What to expect:
 - `prompt` streams `delta` / `tool_update` events and ends with `turn_end`.
 - `distill_session` returns `distillation_status` with `started`, then `completed` or `failed`.
 - Session transcripts are written under `.agentchat/sessions/`.
-- Distilled skills are written under `.agentchat/skills/shared/` so every agent session can reuse them.
+- Distilled skills are written under `.agentchat/skills/shared/` for all agents, or `.agentchat/skills/agents/<agent-id>/` for agent-specific memory.
 
 ### Python Smoke Test
 
@@ -122,7 +122,7 @@ Tip:
 
 ## `list_skills`
 
-List the Markdown skills currently stored under `.agentchat/skills/`, including shared subdirectories such as `.agentchat/skills/shared/`.
+List the Markdown skills currently stored under `.agentchat/skills/`, including shared subdirectories such as `.agentchat/skills/shared/` and agent namespaces such as `.agentchat/skills/agents/<agent-id>/`.
 
 Request:
 
@@ -181,14 +181,14 @@ Error response:
 ```
 
 Notes:
-- `name` may be passed with or without `.md`; the daemon normalizes it to a single file in `.agentchat/skills/` and accepts nested names such as `shared/testing-notes.md`.
+- `name` may be passed with or without `.md`; the daemon normalizes it to a single file in `.agentchat/skills/` and accepts nested names such as `shared/testing-notes.md` or `agents/opencode/testing-notes.md`.
 - Path traversal is rejected.
 
 ## `distill_session`
 
 Ask the daemon to turn a completed session transcript into reusable Markdown skills.
 The daemon loads the transcript, runs an internal agent session, parses generated skill
-blocks, and writes them into `.agentchat/skills/shared/`.
+blocks, and writes them into `.agentchat/skills/shared/` or `.agentchat/skills/agents/<agent-id>/`.
 
 Request:
 
@@ -233,3 +233,4 @@ Notes:
 - Distillation uses an internal ACP session and does not stream those agent updates back to the iOS client.
 - The target session can be loaded from memory or from `.agentchat/sessions/{session_id}.json`.
 - Resulting skills are ordinary Markdown files and are immediately available through `list_skills` and `get_skill`.
+- Use `shared/<topic-name>` for skills every agent should read, and `agents/<agent-id>/<topic-name>` for memory that should only be injected for that agent.

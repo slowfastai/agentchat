@@ -291,14 +291,70 @@ async fn websocket_lists_and_reads_shared_skills() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn websocket_injects_skill_context_into_every_prompt() {
+async fn websocket_lists_and_reads_agent_specific_skills() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_harness(FakeAgentMode::Normal).await;
+            let agent_skill_dir = harness
+                .project_root
+                .join(".agentchat")
+                .join("skills")
+                .join("agents")
+                .join("fake");
+            std::fs::create_dir_all(&agent_skill_dir).unwrap();
+            std::fs::write(agent_skill_dir.join("testing.md"), "# Fake Testing\n").unwrap();
+
+            let mut ws = connect_ws(harness.port).await;
+            send_client_message(&mut ws, &ClientMessage::ListSkills).await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::SkillList { skills } => {
+                    assert_eq!(skills.len(), 1);
+                    assert_eq!(skills[0].name, "agents/fake/testing.md");
+                    assert_eq!(skills[0].path, ".agentchat/skills/agents/fake/testing.md");
+                }
+                event => panic!("unexpected event while listing agent-specific skills: {event:?}"),
+            }
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::GetSkill {
+                    name: "agents/fake/testing.md".into(),
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::SkillContent { name, content } => {
+                    assert_eq!(name, "agents/fake/testing.md");
+                    assert_eq!(content, "# Fake Testing\n");
+                }
+                event => panic!("unexpected event while reading agent-specific skill: {event:?}"),
+            }
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn websocket_injects_shared_and_agent_specific_skill_context() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
             let harness = start_harness(FakeAgentMode::Normal).await;
             let skill_dir = harness.project_root.join(".agentchat").join("skills");
-            std::fs::create_dir_all(&skill_dir).unwrap();
+            let shared_skill_dir = skill_dir.join("shared");
+            let agent_skill_dir = skill_dir.join("agents").join("fake");
+            let other_agent_skill_dir = skill_dir.join("agents").join("other");
+            std::fs::create_dir_all(&shared_skill_dir).unwrap();
+            std::fs::create_dir_all(&agent_skill_dir).unwrap();
+            std::fs::create_dir_all(&other_agent_skill_dir).unwrap();
             std::fs::write(skill_dir.join("testing.md"), "# Testing\n").unwrap();
+            std::fs::write(shared_skill_dir.join("common.md"), "# Common\n").unwrap();
+            std::fs::write(agent_skill_dir.join("private.md"), "# Private\n").unwrap();
+            std::fs::write(other_agent_skill_dir.join("ignore.md"), "# Ignore\n").unwrap();
 
             let mut ws = connect_ws(harness.port).await;
             send_client_message(
@@ -333,10 +389,13 @@ async fn websocket_injects_skill_context_into_every_prompt() {
                     })
                     .expect("missing text delta");
 
-                assert!(prompt_echo.starts_with(
-                    "echo: [Shared project knowledge available to every agent:"
-                ));
+                assert!(prompt_echo
+                    .starts_with("echo: [Shared project knowledge available to every agent:"));
                 assert!(prompt_echo.contains(".agentchat/skills/testing.md"));
+                assert!(prompt_echo.contains(".agentchat/skills/shared/common.md"));
+                assert!(prompt_echo.contains("Agent-specific knowledge for fake:"));
+                assert!(prompt_echo.contains(".agentchat/skills/agents/fake/private.md"));
+                assert!(!prompt_echo.contains(".agentchat/skills/agents/other/ignore.md"));
                 assert!(prompt_echo.ends_with(prompt));
             }
 
@@ -390,7 +449,8 @@ async fn websocket_distills_session_into_skill_files() {
                 .project_root
                 .join(".agentchat")
                 .join("skills")
-                .join("shared")
+                .join("agents")
+                .join("fake")
                 .join("testing-notes.md");
             let memory_skill = harness
                 .project_root
@@ -414,7 +474,7 @@ async fn websocket_distills_session_into_skill_files() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn websocket_injects_distilled_shared_skills_into_new_sessions() {
+async fn websocket_injects_distilled_shared_and_agent_specific_skills_into_new_sessions() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -459,7 +519,14 @@ async fn websocket_injects_distilled_shared_skills_into_new_sessions() {
                 .join("skills")
                 .join("shared")
                 .join("memory-layer.md");
-            wait_for(|| shared_skill.exists()).await;
+            let agent_skill = harness
+                .project_root
+                .join(".agentchat")
+                .join("skills")
+                .join("agents")
+                .join("fake")
+                .join("testing-notes.md");
+            wait_for(|| shared_skill.exists() && agent_skill.exists()).await;
 
             send_client_message(
                 &mut ws,
@@ -492,8 +559,9 @@ async fn websocket_injects_distilled_shared_skills_into_new_sessions() {
                 })
                 .expect("missing text delta");
 
-            assert!(prompt_echo.contains(".agentchat/skills/shared/testing-notes.md"));
             assert!(prompt_echo.contains(".agentchat/skills/shared/memory-layer.md"));
+            assert!(prompt_echo.contains("Agent-specific knowledge for fake:"));
+            assert!(prompt_echo.contains(".agentchat/skills/agents/fake/testing-notes.md"));
             assert!(prompt_echo.ends_with("use memory"));
 
             ws.send(Message::Close(None)).await.unwrap();
