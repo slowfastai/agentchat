@@ -92,7 +92,7 @@ struct DaemonAgentSummary: Codable, Identifiable, Hashable {
     var isOnline: Bool { status == "online" }
     var isOffline: Bool { status == "offline" }
 
-    func withStatus(_ status: String) -> Self {
+    nonisolated func withStatus(_ status: String) -> Self {
         Self(
             agentID: agentID,
             name: name,

@@ -159,10 +159,18 @@ struct ContentView: View {
     }
 
     private var agentSelectionSection: some View {
-        Section("Available Agents") {
+        Section("Agent Friends") {
             if store.agents.isEmpty {
-                Text("Waiting for daemon agents…")
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("No agents added yet")
+                        .foregroundStyle(.secondary)
+                    Text(store.hasConfiguredDaemonURL
+                        ? "Reconnect or scan another QR code to discover agents and keep them in this list."
+                        : "Scan a QR code or enter a daemon URL to discover agents and keep them in this list.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
             } else {
                 ForEach(store.agents, id: \.agentID) { agent in
                     HStack(alignment: .top, spacing: 12) {
@@ -207,7 +215,7 @@ struct ContentView: View {
                     }
                 }
 
-                Text("Selected agents are used by Feed → menu → Create Thread / Add Agent.")
+                Text("Agents stay in this list after first discovery. Selected agents are used by Feed → menu → Create Thread / Add Agent, and only online agents can join right now.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

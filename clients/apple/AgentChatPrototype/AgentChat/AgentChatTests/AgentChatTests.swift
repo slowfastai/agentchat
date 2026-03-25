@@ -10,6 +10,55 @@ import Testing
 
 struct AgentChatTests {
 
+    @Test func agentRosterKeepsKnownAgentsVisibleWhenLiveListShrinks() async throws {
+        let claude = makeAgent(
+            agentID: "claude",
+            name: "Claude",
+            status: "online",
+            capabilities: ["review"]
+        )
+        let codex = makeAgent(
+            agentID: "codex",
+            name: "Codex",
+            status: "online",
+            capabilities: ["codegen"]
+        )
+
+        let merged = AgentRoster.merge(
+            knownAgents: [claude, codex],
+            incomingAgents: [claude]
+        )
+
+        #expect(merged.map(\.agentID) == ["claude", "codex"])
+        #expect(merged.first(where: { $0.agentID == "claude" })?.status == "online")
+        #expect(merged.first(where: { $0.agentID == "codex" })?.status == "offline")
+    }
+
+    @Test func agentRosterRefreshesKnownAgentDetailsFromLatestLiveSnapshot() async throws {
+        let staleCodex = makeAgent(
+            agentID: "codex",
+            name: "Codex",
+            status: "offline",
+            capabilities: ["codegen"]
+        )
+        let refreshedCodex = makeAgent(
+            agentID: "codex",
+            name: "Codex Pro",
+            status: "online",
+            capabilities: ["codegen", "tests"]
+        )
+
+        let merged = AgentRoster.merge(
+            knownAgents: [staleCodex],
+            incomingAgents: [refreshedCodex]
+        )
+
+        #expect(merged.count == 1)
+        #expect(merged[0].name == "Codex Pro")
+        #expect(merged[0].status == "online")
+        #expect(merged[0].capabilities == ["codegen", "tests"])
+    }
+
     @Test func assistantTurnReducerIgnoresEmptyInitialDelta() async throws {
         var reducer = AssistantTurnReducer()
 
@@ -207,5 +256,21 @@ struct AgentChatTests {
         #expect(completedState?.response.isEmpty == true)
         #expect(completedState?.status == "completed")
         #expect(reducer.activeStates.isEmpty)
+    }
+
+    private func makeAgent(
+        agentID: String,
+        name: String,
+        status: String,
+        capabilities: [String]
+    ) -> DaemonAgentSummary {
+        DaemonAgentSummary(
+            agentID: agentID,
+            name: name,
+            kind: "assistant",
+            status: status,
+            defaultWorkingDir: nil,
+            capabilities: capabilities
+        )
     }
 }
