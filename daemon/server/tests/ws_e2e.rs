@@ -98,6 +98,7 @@ async fn websocket_round_trip_streams_prompt_events_and_survives_reconnect() {
                     session_id: sid,
                     delta_type: DeltaType::Text,
                     content,
+                    ..
                 } if sid == &session_id && content == "echo: say hello"
             )));
             assert!(events.iter().any(|event| matches!(
@@ -106,6 +107,7 @@ async fn websocket_round_trip_streams_prompt_events_and_survives_reconnect() {
                     session_id: sid,
                     delta_type: DeltaType::Thinking,
                     content,
+                    ..
                 } if sid == &session_id && content == "thinking about the request"
             )));
             assert!(events.iter().any(|event| matches!(
@@ -123,6 +125,7 @@ async fn websocket_round_trip_streams_prompt_events_and_survives_reconnect() {
                 ResponseEvent::TurnEnd {
                     session_id: sid,
                     stop_reason,
+                    ..
                 } if sid == &session_id && stop_reason == "EndTurn"
             )));
 
@@ -151,6 +154,7 @@ async fn websocket_round_trip_streams_prompt_events_and_survives_reconnect() {
                 &mut ws,
                 &ClientMessage::AttachSession {
                     session_id: session_id.clone(),
+                    after_seq: None,
                 },
             )
             .await;
@@ -160,14 +164,26 @@ async fn websocket_round_trip_streams_prompt_events_and_survives_reconnect() {
                 }
                 event => panic!("unexpected event while attaching session: {event:?}"),
             }
-            match receive_event(&mut ws).await {
+            let last_event_seq = match receive_event(&mut ws).await {
                 ResponseEvent::SessionSnapshot { snapshot } => {
                     assert_eq!(snapshot.session_id, session_id);
                     assert_eq!(snapshot.agent_id, "fake");
                     assert_eq!(snapshot.working_dir, ".");
                     assert_eq!(snapshot.state, SessionState::Idle);
+                    assert!(snapshot.last_event_seq > 0);
+                    snapshot.last_event_seq
                 }
                 event => panic!("unexpected event while reading session snapshot: {event:?}"),
+            };
+            match receive_event(&mut ws).await {
+                ResponseEvent::SessionReplayComplete {
+                    session_id: sid,
+                    last_event_seq: replayed_through,
+                } => {
+                    assert_eq!(sid, session_id);
+                    assert_eq!(replayed_through, last_event_seq);
+                }
+                event => panic!("unexpected replay completion event: {event:?}"),
             }
 
             send_client_message(
@@ -186,6 +202,7 @@ async fn websocket_round_trip_streams_prompt_events_and_survives_reconnect() {
                     session_id: sid,
                     delta_type: DeltaType::Text,
                     content,
+                    ..
                 } if sid == &session_id && content == "echo: say hello again"
             )));
             assert!(reconnect_events.iter().any(|event| matches!(
@@ -193,8 +210,147 @@ async fn websocket_round_trip_streams_prompt_events_and_survives_reconnect() {
                 ResponseEvent::TurnEnd {
                     session_id: sid,
                     stop_reason,
+                    ..
                 } if sid == &session_id && stop_reason == "EndTurn"
             )));
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn websocket_attach_session_replays_events_after_cursor() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_harness(FakeAgentMode::Normal).await;
+            let mut ws = connect_ws(harness.port).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateSession {
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+            let session_id = expect_session_created(&mut ws).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::Prompt {
+                    session_id: session_id.clone(),
+                    content: "replay me".into(),
+                },
+            )
+            .await;
+
+            let events = collect_prompt_events(&mut ws, &session_id).await;
+            let after_seq = events
+                .first()
+                .and_then(ResponseEvent::event_seq)
+                .expect("expected at least one session event with event_seq");
+            let expected_replay = events
+                .iter()
+                .filter(|event| event.event_seq().unwrap_or(0) > after_seq)
+                .cloned()
+                .collect::<Vec<_>>();
+            let expected_tail = events
+                .last()
+                .and_then(ResponseEvent::event_seq)
+                .expect("expected turn_end with event_seq");
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+
+            let mut ws = connect_ws(harness.port).await;
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AttachSession {
+                    session_id: session_id.clone(),
+                    after_seq: Some(after_seq),
+                },
+            )
+            .await;
+
+            match receive_event(&mut ws).await {
+                ResponseEvent::SessionAttached { session_id: sid } => {
+                    assert_eq!(sid, session_id);
+                }
+                event => panic!("unexpected event while attaching session: {event:?}"),
+            }
+            match receive_event(&mut ws).await {
+                ResponseEvent::SessionSnapshot { snapshot } => {
+                    assert_eq!(snapshot.session_id, session_id);
+                    assert_eq!(snapshot.last_event_seq, expected_tail);
+                }
+                event => panic!("unexpected event while reading session snapshot: {event:?}"),
+            }
+
+            let mut replayed_events = Vec::new();
+            for _ in 0..expected_replay.len() {
+                replayed_events.push(receive_event(&mut ws).await);
+            }
+            assert_eq!(replayed_events, expected_replay);
+
+            match receive_event(&mut ws).await {
+                ResponseEvent::SessionReplayComplete {
+                    session_id: sid,
+                    last_event_seq,
+                } => {
+                    assert_eq!(sid, session_id);
+                    assert_eq!(last_event_seq, expected_tail);
+                }
+                event => panic!("unexpected replay completion event: {event:?}"),
+            }
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn websocket_attach_session_rejects_cursor_ahead_of_tail() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_harness(FakeAgentMode::Normal).await;
+            let mut ws = connect_ws(harness.port).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateSession {
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+            let session_id = expect_session_created(&mut ws).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AttachSession {
+                    session_id: session_id.clone(),
+                    after_seq: Some(999),
+                },
+            )
+            .await;
+
+            match receive_event(&mut ws).await {
+                ResponseEvent::Error {
+                    session_id: Some(sid),
+                    event_seq: None,
+                    code,
+                    ..
+                } => {
+                    assert_eq!(sid, session_id);
+                    assert_eq!(code, "replay_after_seq_ahead_of_tail");
+                }
+                event => panic!("unexpected event while validating replay cursor: {event:?}"),
+            }
 
             ws.send(Message::Close(None)).await.unwrap();
             drop(ws);
@@ -446,6 +602,7 @@ async fn websocket_injects_shared_and_agent_specific_skill_context() {
                             session_id: sid,
                             delta_type: DeltaType::Text,
                             content,
+                            ..
                         } if sid == &session_id => Some(content.clone()),
                         _ => None,
                     })
@@ -616,6 +773,7 @@ async fn websocket_injects_distilled_shared_and_agent_specific_skills_into_new_s
                         session_id: sid,
                         delta_type: DeltaType::Text,
                         content,
+                        ..
                     } if sid == &second_session_id => Some(content.clone()),
                     _ => None,
                 })
@@ -664,6 +822,7 @@ async fn websocket_disconnect_keeps_in_flight_prompt_running_until_explicit_canc
                     session_id: sid,
                     delta_type: DeltaType::Text,
                     content,
+                    ..
                 } => {
                     assert_eq!(sid, session_id);
                     assert_eq!(content, "waiting for cancel");
@@ -698,6 +857,7 @@ async fn websocket_disconnect_keeps_in_flight_prompt_running_until_explicit_canc
                 ResponseEvent::TurnEnd {
                     session_id: sid,
                     stop_reason,
+                    ..
                 } => {
                     assert_eq!(sid, session_id);
                     assert_eq!(stop_reason, "Cancelled");
@@ -737,7 +897,9 @@ async fn websocket_close_session_removes_it_from_session_list() {
             send_client_message(&mut ws, &ClientMessage::ListSessions).await;
             match receive_event(&mut ws).await {
                 ResponseEvent::SessionList { sessions } => {
-                    assert!(sessions.iter().any(|session| session.session_id == session_id));
+                    assert!(sessions
+                        .iter()
+                        .any(|session| session.session_id == session_id));
                 }
                 event => panic!("unexpected event while listing sessions: {event:?}"),
             }
@@ -759,12 +921,17 @@ async fn websocket_close_session_removes_it_from_session_list() {
             send_client_message(&mut ws, &ClientMessage::ListSessions).await;
             match receive_event(&mut ws).await {
                 ResponseEvent::SessionList { sessions } => {
-                    assert!(!sessions.iter().any(|session| session.session_id == session_id));
+                    assert!(!sessions
+                        .iter()
+                        .any(|session| session.session_id == session_id));
                 }
                 event => panic!("unexpected event while re-listing sessions: {event:?}"),
             }
 
-            assert_eq!(harness.manager.borrow().agent_for_session(&session_id), None);
+            assert_eq!(
+                harness.manager.borrow().agent_for_session(&session_id),
+                None
+            );
 
             ws.send(Message::Close(None)).await.unwrap();
             drop(ws);
@@ -793,6 +960,7 @@ async fn websocket_reports_agent_crash_to_the_client() {
             match receive_event(&mut ws).await {
                 ResponseEvent::Error {
                     session_id: None,
+                    event_seq: None,
                     code,
                     message,
                 } if code == "agent_crashed" => {
@@ -843,6 +1011,7 @@ async fn websocket_shutdown_cancels_in_flight_prompt() {
                     session_id: sid,
                     delta_type: DeltaType::Text,
                     content,
+                    ..
                 } => {
                     assert_eq!(sid, session_id);
                     assert_eq!(content, "waiting for cancel");
@@ -966,7 +1135,13 @@ async fn send_client_message(ws: &mut TestWebSocket, message: &ClientMessage) {
 
 async fn expect_session_created(ws: &mut TestWebSocket) -> String {
     match receive_event(ws).await {
-        ResponseEvent::SessionCreated { session_id } => session_id,
+        ResponseEvent::SessionCreated {
+            session_id,
+            event_seq,
+        } => {
+            assert!(event_seq > 0);
+            session_id
+        }
         event => panic!("expected session_created event, got {event:?}"),
     }
 }
@@ -1002,6 +1177,7 @@ async fn expect_distillation_status(
             session_id: sid,
             status: current_status,
             message,
+            ..
         } if sid == session_id && current_status == status => message,
         event => panic!("unexpected distillation event: {event:?}"),
     }

@@ -97,7 +97,7 @@ async fn main() {
     }
 
     let session_id = match receive_response_event(&mut client).await {
-        Ok(ResponseEvent::SessionCreated { session_id }) => session_id,
+        Ok(ResponseEvent::SessionCreated { session_id, .. }) => session_id,
         Ok(other) => {
             error!("expected session_created response, got {other:?}");
             std::process::exit(1);
@@ -140,6 +140,7 @@ async fn main() {
                 session_id: sid,
                 content,
                 delta_type,
+                ..
             } if sid == &session_id
                 && *delta_type == DeltaType::Text
                 && content == "echo: say hello" =>
@@ -150,6 +151,7 @@ async fn main() {
                 session_id: sid,
                 content,
                 delta_type,
+                ..
             } if sid == &session_id
                 && *delta_type == DeltaType::Thinking
                 && content == "thinking about the request" =>
@@ -172,6 +174,7 @@ async fn main() {
             ResponseEvent::TurnEnd {
                 session_id: sid,
                 stop_reason,
+                ..
             } if sid == &session_id => {
                 info!(session_id = %sid, stop_reason = %stop_reason, "relay prompt completed");
                 saw_turn_end = true;

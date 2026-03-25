@@ -11,6 +11,7 @@ use tracing::{error, warn};
 
 use agentchat_core::agent_manager::AgentManager;
 use agentchat_core::distiller::Distiller;
+use agentchat_core::session_event_log::SessionEventLog;
 use agentchat_core::session_store::SessionStore;
 use agentchat_core::skills::SkillStore;
 use agentchat_protocol::{
@@ -23,6 +24,7 @@ pub struct AppProtocolSession {
     session_store: Rc<RefCell<SessionStore>>,
     skill_store: Rc<SkillStore>,
     distiller: Rc<Distiller>,
+    session_event_log: Rc<RefCell<SessionEventLog>>,
     response_tx: broadcast::Sender<ResponseEvent>,
     internal_sessions: Rc<RefCell<HashMap<String, mpsc::UnboundedSender<SessionNotification>>>>,
     created_sessions: Vec<String>,
@@ -42,6 +44,7 @@ impl AppProtocolSession {
                 Some(agent_id) => match mgr.get_agent(&agent_id) {
                     Some(agent) if !agent.is_alive() => Err(ResponseEvent::Error {
                         session_id: None,
+                        event_seq: None,
                         code: "agent_crashed".into(),
                         message: "agent process exited".into(),
                     }),
@@ -49,18 +52,21 @@ impl AppProtocolSession {
                         Some(update_rx) => Ok((update_rx, agent.subscribe_health())),
                         None => Err(ResponseEvent::Error {
                             session_id: None,
+                            event_seq: None,
                             code: "update_stream_unavailable".into(),
                             message: "agent update stream is already in use".into(),
                         }),
                     },
                     None => Err(ResponseEvent::Error {
                         session_id: None,
+                        event_seq: None,
                         code: "no_agent".into(),
                         message: "no agent configured".into(),
                     }),
                 },
                 None => Err(ResponseEvent::Error {
                     session_id: None,
+                    event_seq: None,
                     code: "no_agent".into(),
                     message: "no agent configured".into(),
                 }),
@@ -69,6 +75,8 @@ impl AppProtocolSession {
 
         let (mut update_rx, mut health_rx) = setup?;
         let (response_tx, _) = broadcast::channel::<ResponseEvent>(1024);
+        let sessions_dir = session_store.borrow().sessions_dir().to_path_buf();
+        let session_event_log = Rc::new(RefCell::new(SessionEventLog::new(sessions_dir)));
         let internal_sessions = Rc::new(RefCell::new(HashMap::<
             String,
             mpsc::UnboundedSender<SessionNotification>,
@@ -76,6 +84,7 @@ impl AppProtocolSession {
 
         let response_tx_updates = response_tx.clone();
         let session_store_updates = session_store.clone();
+        let session_event_log_updates = session_event_log.clone();
         let internal_sessions_updates = internal_sessions.clone();
         tokio::task::spawn_local(async move {
             while let Some(notification) = update_rx.recv().await {
@@ -89,8 +98,13 @@ impl AppProtocolSession {
                 session_store_updates
                     .borrow_mut()
                     .record_notification(&sid, &notification);
-                let event = map_session_update(&notification);
-                let _ = response_tx_updates.send(event);
+                let event_seq = session_event_log_updates.borrow_mut().next_seq(&sid);
+                let event = map_session_update(&notification, event_seq);
+                journal_and_broadcast_event(
+                    &session_event_log_updates,
+                    &response_tx_updates,
+                    event,
+                );
             }
         });
 
@@ -99,6 +113,7 @@ impl AppProtocolSession {
             if !*health_rx.borrow() {
                 let _ = response_tx_health.send(ResponseEvent::Error {
                     session_id: None,
+                    event_seq: None,
                     code: "agent_crashed".into(),
                     message: "agent process exited".into(),
                 });
@@ -111,6 +126,7 @@ impl AppProtocolSession {
                         if !*health_rx.borrow() {
                             let _ = response_tx_health.send(ResponseEvent::Error {
                                 session_id: None,
+                                event_seq: None,
                                 code: "agent_crashed".into(),
                                 message: "agent process exited".into(),
                             });
@@ -120,6 +136,7 @@ impl AppProtocolSession {
                     Err(_) => {
                         let _ = response_tx_health.send(ResponseEvent::Error {
                             session_id: None,
+                            event_seq: None,
                             code: "agent_crashed".into(),
                             message: "agent process exited".into(),
                         });
@@ -134,6 +151,7 @@ impl AppProtocolSession {
             session_store,
             skill_store,
             distiller,
+            session_event_log,
             response_tx,
             internal_sessions,
             created_sessions: Vec::new(),
@@ -157,8 +175,11 @@ impl AppProtocolSession {
             ClientMessage::ListSessions => {
                 self.handle_list_sessions().await;
             }
-            ClientMessage::AttachSession { session_id } => {
-                self.handle_attach_session(session_id).await;
+            ClientMessage::AttachSession {
+                session_id,
+                after_seq,
+            } => {
+                self.handle_attach_session(session_id, after_seq).await;
             }
             ClientMessage::CloseSession { session_id } => {
                 self.handle_close_session(session_id).await;
@@ -183,6 +204,7 @@ impl AppProtocolSession {
                     self.response_tx.clone(),
                     self.manager.clone(),
                     self.session_store.clone(),
+                    self.session_event_log.clone(),
                     self.internal_sessions.clone(),
                     self.distiller.clone(),
                     session_id,
@@ -231,6 +253,7 @@ impl AppProtocolSession {
             (Some(_), Some(_), false) => {
                 let _ = self.response_tx.send(ResponseEvent::Error {
                     session_id: None,
+                    event_seq: None,
                     code: "agent_crashed".into(),
                     message: "agent process exited".into(),
                 });
@@ -245,13 +268,21 @@ impl AppProtocolSession {
                     self.session_store
                         .borrow_mut()
                         .start_session(&sid, &agent_id, &working_dir);
-                    let _ = self
-                        .response_tx
-                        .send(ResponseEvent::SessionCreated { session_id: sid });
+                    self.session_event_log.borrow_mut().init_session(&sid);
+                    let event_seq = self.session_event_log.borrow_mut().next_seq(&sid);
+                    journal_and_broadcast_event(
+                        &self.session_event_log,
+                        &self.response_tx,
+                        ResponseEvent::SessionCreated {
+                            session_id: sid,
+                            event_seq,
+                        },
+                    );
                 }
                 Err(err) => {
                     let _ = self.response_tx.send(ResponseEvent::Error {
                         session_id: None,
+                        event_seq: None,
                         code: "create_session_failed".into(),
                         message: err.to_string(),
                     });
@@ -260,6 +291,7 @@ impl AppProtocolSession {
             _ => {
                 let _ = self.response_tx.send(ResponseEvent::Error {
                     session_id: None,
+                    event_seq: None,
                     code: "no_agent".into(),
                     message: "no agent configured".into(),
                 });
@@ -283,20 +315,31 @@ impl AppProtocolSession {
             .collect::<Vec<_>>();
         sessions.sort_by(|left, right| left.created_at_ms.cmp(&right.created_at_ms));
 
-        let _ = self.response_tx.send(ResponseEvent::SessionList { sessions });
+        let _ = self
+            .response_tx
+            .send(ResponseEvent::SessionList { sessions });
     }
 
-    async fn handle_attach_session(&self, session_id: String) {
-        let snapshot = match self.session_store.borrow().get_transcript(&session_id).cloned() {
+    async fn handle_attach_session(&self, session_id: String, after_seq: Option<u64>) {
+        let snapshot = match self
+            .session_store
+            .borrow()
+            .get_transcript(&session_id)
+            .cloned()
+        {
             Some(transcript)
                 if self
                     .manager
                     .borrow()
                     .agent_for_session(&session_id)
-                    .is_some() => self.build_session_snapshot(&transcript),
+                    .is_some() =>
+            {
+                self.build_session_snapshot(&transcript)
+            }
             _ => {
                 let _ = self.response_tx.send(ResponseEvent::Error {
                     session_id: Some(session_id),
+                    event_seq: None,
                     code: "session_not_found".into(),
                     message: "no live session with this id".into(),
                 });
@@ -304,48 +347,100 @@ impl AppProtocolSession {
             }
         };
 
-        let _ = self
-            .response_tx
-            .send(ResponseEvent::SessionAttached { session_id });
-        let _ = self.response_tx.send(ResponseEvent::SessionSnapshot { snapshot });
-    }
-
-    async fn handle_close_session(&mut self, session_id: String) {
-        if self.active_prompt_session.borrow().as_deref() == Some(session_id.as_str()) {
+        let tail_seq = snapshot.last_event_seq;
+        let replay_after = after_seq.unwrap_or(tail_seq);
+        if replay_after > tail_seq {
             let _ = self.response_tx.send(ResponseEvent::Error {
                 session_id: Some(session_id),
-                code: "session_busy".into(),
-                message: "cannot close a session while a prompt is in progress".into(),
+                event_seq: None,
+                code: "replay_after_seq_ahead_of_tail".into(),
+                message: format!(
+                    "requested after_seq {} is ahead of current tail {}",
+                    replay_after, tail_seq
+                ),
             });
             return;
         }
 
-        if self.manager.borrow().agent_for_session(&session_id).is_none() {
+        let replay_events = self
+            .session_event_log
+            .borrow()
+            .replay_after(&session_id, replay_after);
+
+        let _ = self
+            .response_tx
+            .send(ResponseEvent::SessionAttached {
+                session_id: session_id.clone(),
+            });
+        let _ = self
+            .response_tx
+            .send(ResponseEvent::SessionSnapshot { snapshot });
+        for event in replay_events {
+            let _ = self.response_tx.send(event);
+        }
+        let _ = self.response_tx.send(ResponseEvent::SessionReplayComplete {
+            session_id,
+            last_event_seq: tail_seq,
+        });
+    }
+
+    async fn handle_close_session(&mut self, session_id: String) {
+        if self.active_prompt_session.borrow().as_deref() == Some(session_id.as_str()) {
+            let event_seq = Some(self.session_event_log.borrow_mut().next_seq(&session_id));
+            let error = ResponseEvent::Error {
+                session_id: Some(session_id),
+                event_seq,
+                code: "session_busy".into(),
+                message: "cannot close a session while a prompt is in progress".into(),
+            };
+            journal_and_broadcast_event(&self.session_event_log, &self.response_tx, error);
+            return;
+        }
+
+        if self
+            .manager
+            .borrow()
+            .agent_for_session(&session_id)
+            .is_none()
+        {
             let _ = self.response_tx.send(ResponseEvent::Error {
                 session_id: Some(session_id),
+                event_seq: None,
                 code: "session_not_found".into(),
                 message: "no live session with this id".into(),
             });
             return;
         }
 
-        if let Err(err) = flush_session_snapshot(self.session_store.clone(), session_id.clone()).await {
+        let _ = self.response_tx.send(ResponseEvent::SessionClosed {
+            session_id: session_id.clone(),
+        });
+
+        if let Err(err) =
+            flush_session_snapshot(self.session_store.clone(), session_id.clone()).await
+        {
             warn!("failed to flush session {session_id} before close: {err}");
         }
 
         self.session_store.borrow_mut().remove_session(&session_id);
+        self.session_event_log
+            .borrow_mut()
+            .remove_session(&session_id);
         self.manager.borrow_mut().remove_session(&session_id);
-        self.created_sessions.retain(|created| created != &session_id);
-        let _ = self.response_tx.send(ResponseEvent::SessionClosed { session_id });
+        self.created_sessions
+            .retain(|created| created != &session_id);
     }
 
     async fn handle_prompt(&mut self, session_id: String, content: String) {
         if self.active_prompt_session.borrow().is_some() {
-            let _ = self.response_tx.send(ResponseEvent::Error {
+            let event_seq = Some(self.session_event_log.borrow_mut().next_seq(&session_id));
+            let error = ResponseEvent::Error {
                 session_id: Some(session_id),
+                event_seq,
                 code: "prompt_in_progress".into(),
                 message: "another prompt is already running".into(),
-            });
+            };
+            journal_and_broadcast_event(&self.session_event_log, &self.response_tx, error);
             return;
         }
 
@@ -362,11 +457,14 @@ impl AppProtocolSession {
 
         match (agent_id, agent, is_alive) {
             (Some(_), Some(_), false) => {
-                let _ = self.response_tx.send(ResponseEvent::Error {
+                let event_seq = Some(self.session_event_log.borrow_mut().next_seq(&session_id));
+                let error = ResponseEvent::Error {
                     session_id: Some(session_id),
+                    event_seq,
                     code: "agent_crashed".into(),
                     message: "agent process exited".into(),
-                });
+                };
+                journal_and_broadcast_event(&self.session_event_log, &self.response_tx, error);
             }
             (Some(agent_id), Some(agent), true) => {
                 self.session_store
@@ -379,6 +477,7 @@ impl AppProtocolSession {
                 *self.active_prompt_session.borrow_mut() = Some(session_id.clone());
                 let response_tx = self.response_tx.clone();
                 let session_store = self.session_store.clone();
+                let session_event_log = self.session_event_log.clone();
                 let active_prompt_session = self.active_prompt_session.clone();
                 tokio::task::spawn_local(async move {
                     let result = agent
@@ -388,15 +487,25 @@ impl AppProtocolSession {
                         *active_prompt_session.borrow_mut() = None;
                     }
 
-                    handle_prompt_completion(response_tx, session_store, session_id, result).await;
+                    handle_prompt_completion(
+                        response_tx,
+                        session_store,
+                        session_event_log,
+                        session_id,
+                        result,
+                    )
+                    .await;
                 });
             }
             _ => {
-                let _ = self.response_tx.send(ResponseEvent::Error {
+                let event_seq = Some(self.session_event_log.borrow_mut().next_seq(&session_id));
+                let error = ResponseEvent::Error {
                     session_id: Some(session_id),
+                    event_seq,
                     code: "no_agent".into(),
                     message: "no agent for this session".into(),
-                });
+                };
+                journal_and_broadcast_event(&self.session_event_log, &self.response_tx, error);
             }
         }
     }
@@ -444,6 +553,7 @@ impl AppProtocolSession {
             Err(err) => {
                 let _ = self.response_tx.send(ResponseEvent::Error {
                     session_id: None,
+                    event_seq: None,
                     code: "skill_not_found".into(),
                     message: err,
                 });
@@ -458,6 +568,10 @@ impl AppProtocolSession {
             working_dir: transcript.working_dir.clone(),
             created_at_ms: transcript.created_at_ms,
             state: self.session_state(&transcript.session_id),
+            last_event_seq: self
+                .session_event_log
+                .borrow()
+                .tail_seq(&transcript.session_id),
             last_stop_reason: last_stop_reason(transcript),
         }
     }
@@ -469,6 +583,10 @@ impl AppProtocolSession {
             working_dir: transcript.working_dir.clone(),
             created_at_ms: transcript.created_at_ms,
             state: self.session_state(&transcript.session_id),
+            last_event_seq: self
+                .session_event_log
+                .borrow()
+                .tail_seq(&transcript.session_id),
             last_stop_reason: last_stop_reason(transcript),
             last_error: None,
         }
@@ -484,10 +602,72 @@ impl AppProtocolSession {
 }
 
 fn last_stop_reason(transcript: &SessionTranscript) -> Option<String> {
-    transcript.events.iter().rev().find_map(|event| match event {
-        SessionEvent::TurnEnd { stop_reason, .. } => Some(stop_reason.clone()),
-        _ => None,
-    })
+    transcript
+        .events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            SessionEvent::TurnEnd { stop_reason, .. } => Some(stop_reason.clone()),
+            _ => None,
+        })
+}
+
+fn journal_and_broadcast_event(
+    session_event_log: &Rc<RefCell<SessionEventLog>>,
+    response_tx: &broadcast::Sender<ResponseEvent>,
+    event: ResponseEvent,
+) {
+    persist_session_event(session_event_log, &event);
+    session_event_log.borrow_mut().append(event.clone());
+    let _ = response_tx.send(event);
+}
+
+fn persist_session_event(session_event_log: &Rc<RefCell<SessionEventLog>>, event: &ResponseEvent) {
+    let Some(session_id) = event.session_id().map(|id| id.to_string()) else {
+        return;
+    };
+
+    let Some(json) = serialize_event(event) else {
+        return;
+    };
+
+    let path = session_event_log.borrow().event_log_path(&session_id);
+    tokio::task::spawn_local(async move {
+        if let Some(parent) = path.parent() {
+            if let Err(err) = tokio::fs::create_dir_all(parent).await {
+                warn!(
+                    "failed to create session event log dir for {}: {}",
+                    session_id, err
+                );
+                return;
+            }
+        }
+
+        let line = format!("{json}\n");
+        let mut file = match tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .await
+        {
+            Ok(file) => file,
+            Err(err) => {
+                warn!(
+                    "failed to open session event log for {}: {}",
+                    session_id, err
+                );
+                return;
+            }
+        };
+
+        use tokio::io::AsyncWriteExt as _;
+        if let Err(err) = file.write_all(line.as_bytes()).await {
+            warn!(
+                "failed to append session event log for {}: {}",
+                session_id, err
+            );
+        }
+    });
 }
 
 pub fn serialize_event(event: &ResponseEvent) -> Option<String> {
@@ -503,6 +683,7 @@ pub fn serialize_event(event: &ResponseEvent) -> Option<String> {
 async fn handle_prompt_completion(
     response_tx: broadcast::Sender<ResponseEvent>,
     session_store: Rc<RefCell<SessionStore>>,
+    session_event_log: Rc<RefCell<SessionEventLog>>,
     session_id: String,
     result: agent_client_protocol::Result<PromptResponse>,
 ) {
@@ -511,10 +692,16 @@ async fn handle_prompt_completion(
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
 
             let stop_reason = format!("{:?}", resp.stop_reason);
-            let _ = response_tx.send(ResponseEvent::TurnEnd {
-                session_id: session_id.clone(),
-                stop_reason: stop_reason.clone(),
-            });
+            let event_seq = session_event_log.borrow_mut().next_seq(&session_id);
+            journal_and_broadcast_event(
+                &session_event_log,
+                &response_tx,
+                ResponseEvent::TurnEnd {
+                    session_id: session_id.clone(),
+                    event_seq,
+                    stop_reason: stop_reason.clone(),
+                },
+            );
             session_store
                 .borrow_mut()
                 .record_turn_end(&session_id, &stop_reason);
@@ -530,11 +717,17 @@ async fn handle_prompt_completion(
             });
         }
         Err(err) => {
-            let _ = response_tx.send(ResponseEvent::Error {
-                session_id: Some(session_id),
-                code: "prompt_failed".into(),
-                message: err.to_string(),
-            });
+            let event_seq = Some(session_event_log.borrow_mut().next_seq(&session_id));
+            journal_and_broadcast_event(
+                &session_event_log,
+                &response_tx,
+                ResponseEvent::Error {
+                    session_id: Some(session_id),
+                    event_seq,
+                    code: "prompt_failed".into(),
+                    message: err.to_string(),
+                },
+            );
         }
     }
 }
@@ -642,6 +835,7 @@ fn spawn_distillation_task(
     response_tx: broadcast::Sender<ResponseEvent>,
     manager: Rc<RefCell<AgentManager>>,
     session_store: Rc<RefCell<SessionStore>>,
+    session_event_log: Rc<RefCell<SessionEventLog>>,
     internal_sessions: Rc<RefCell<HashMap<String, mpsc::UnboundedSender<SessionNotification>>>>,
     distiller: Rc<Distiller>,
     session_id: String,
@@ -650,7 +844,13 @@ fn spawn_distillation_task(
         let transcript = match load_transcript(session_store.clone(), &session_id).await {
             Ok(transcript) => transcript,
             Err(err) => {
-                send_distillation_status(&response_tx, &session_id, "failed", err);
+                send_distillation_status(
+                    &session_event_log,
+                    &response_tx,
+                    &session_id,
+                    "failed",
+                    err,
+                );
                 return;
             }
         };
@@ -665,6 +865,7 @@ fn spawn_distillation_task(
         let agent = match (agent, is_alive) {
             (Some(_), false) => {
                 send_distillation_status(
+                    &session_event_log,
                     &response_tx,
                     &session_id,
                     "failed",
@@ -675,6 +876,7 @@ fn spawn_distillation_task(
             (Some(agent), true) => agent,
             (None, _) => {
                 send_distillation_status(
+                    &session_event_log,
                     &response_tx,
                     &session_id,
                     "failed",
@@ -691,6 +893,7 @@ fn spawn_distillation_task(
             Ok(resp) => resp,
             Err(err) => {
                 send_distillation_status(
+                    &session_event_log,
                     &response_tx,
                     &session_id,
                     "failed",
@@ -706,7 +909,13 @@ fn spawn_distillation_task(
             .borrow_mut()
             .insert(distill_session_id.clone(), distill_tx);
 
-        send_distillation_status(&response_tx, &session_id, "started", "distillation started");
+        send_distillation_status(
+            &session_event_log,
+            &response_tx,
+            &session_id,
+            "started",
+            "distillation started",
+        );
 
         let result = distiller
             .distill(agent, distill_session_id.clone(), transcript, distill_rx)
@@ -717,6 +926,7 @@ fn spawn_distillation_task(
         match result {
             Ok(skills) => {
                 send_distillation_status(
+                    &session_event_log,
                     &response_tx,
                     &session_id,
                     "completed",
@@ -724,26 +934,39 @@ fn spawn_distillation_task(
                 );
             }
             Err(err) => {
-                send_distillation_status(&response_tx, &session_id, "failed", err);
+                send_distillation_status(
+                    &session_event_log,
+                    &response_tx,
+                    &session_id,
+                    "failed",
+                    err,
+                );
             }
         }
     });
 }
 
 fn send_distillation_status(
+    session_event_log: &Rc<RefCell<SessionEventLog>>,
     response_tx: &broadcast::Sender<ResponseEvent>,
     session_id: &str,
     status: &str,
     message: impl Into<String>,
 ) {
-    let _ = response_tx.send(ResponseEvent::DistillationStatus {
-        session_id: session_id.to_string(),
-        status: status.to_string(),
-        message: message.into(),
-    });
+    let event_seq = session_event_log.borrow_mut().next_seq(session_id);
+    journal_and_broadcast_event(
+        session_event_log,
+        response_tx,
+        ResponseEvent::DistillationStatus {
+            session_id: session_id.to_string(),
+            event_seq,
+            status: status.to_string(),
+            message: message.into(),
+        },
+    );
 }
 
-fn map_session_update(notification: &SessionNotification) -> ResponseEvent {
+fn map_session_update(notification: &SessionNotification, event_seq: u64) -> ResponseEvent {
     let sid = notification.session_id.to_string();
 
     match &notification.update {
@@ -751,6 +974,7 @@ fn map_session_update(notification: &SessionNotification) -> ResponseEvent {
             let text = extract_text_from_content(&chunk.content);
             ResponseEvent::Delta {
                 session_id: sid,
+                event_seq,
                 content: text,
                 delta_type: DeltaType::Text,
             }
@@ -759,12 +983,14 @@ fn map_session_update(notification: &SessionNotification) -> ResponseEvent {
             let text = extract_text_from_content(&chunk.content);
             ResponseEvent::Delta {
                 session_id: sid,
+                event_seq,
                 content: text,
                 delta_type: DeltaType::Thinking,
             }
         }
         SessionUpdate::ToolCall(tc) => ResponseEvent::ToolUpdate {
             session_id: sid,
+            event_seq,
             tool_call_id: tc.tool_call_id.to_string(),
             title: tc.title.clone(),
             status: format!("{:?}", tc.status),
@@ -772,6 +998,7 @@ fn map_session_update(notification: &SessionNotification) -> ResponseEvent {
         },
         SessionUpdate::ToolCallUpdate(tcu) => ResponseEvent::ToolUpdate {
             session_id: sid,
+            event_seq,
             tool_call_id: tcu.tool_call_id.to_string(),
             title: tcu.fields.title.clone().unwrap_or_default(),
             status: tcu
@@ -784,10 +1011,12 @@ fn map_session_update(notification: &SessionNotification) -> ResponseEvent {
         },
         SessionUpdate::Plan(plan) => ResponseEvent::PlanUpdate {
             session_id: sid,
+            event_seq,
             plan_json: serde_json::to_value(plan).unwrap_or_default(),
         },
         _ => ResponseEvent::Delta {
             session_id: sid,
+            event_seq,
             content: String::new(),
             delta_type: DeltaType::Text,
         },
@@ -815,9 +1044,10 @@ mod tests {
         );
 
         assert_eq!(
-            map_session_update(&notification),
+            map_session_update(&notification, 1),
             ResponseEvent::Delta {
                 session_id: "session-1".into(),
+                event_seq: 1,
                 content: "hello".into(),
                 delta_type: DeltaType::Text,
             }
@@ -832,9 +1062,10 @@ mod tests {
         );
 
         assert_eq!(
-            map_session_update(&notification),
+            map_session_update(&notification, 2),
             ResponseEvent::Delta {
                 session_id: "session-1".into(),
+                event_seq: 2,
                 content: "thinking".into(),
                 delta_type: DeltaType::Thinking,
             }
@@ -851,9 +1082,10 @@ mod tests {
         );
 
         assert_eq!(
-            map_session_update(&notification),
+            map_session_update(&notification, 3),
             ResponseEvent::ToolUpdate {
                 session_id: "session-1".into(),
+                event_seq: 3,
                 tool_call_id: "tool-1".into(),
                 title: "Read file".into(),
                 status: "InProgress".into(),
@@ -870,9 +1102,10 @@ mod tests {
         );
 
         assert_eq!(
-            map_session_update(&notification),
+            map_session_update(&notification, 4),
             ResponseEvent::Delta {
                 session_id: "session-1".into(),
+                event_seq: 4,
                 content: String::new(),
                 delta_type: DeltaType::Text,
             }

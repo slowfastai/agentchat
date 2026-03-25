@@ -55,12 +55,14 @@ Copy the returned `session_id`, then send:
 
 What to expect:
 - `create_session` returns `session_created`.
+- Session-scoped streamed events now carry `event_seq`, which is monotonic within one `session_id`.
 - `prompt` streams `delta` / `tool_update` events and ends with `turn_end`.
 - `list_sessions` returns currently live daemon sessions.
-- `attach_session` returns `session_attached`, then `session_snapshot`.
+- `attach_session` returns `session_attached`, then `session_snapshot`, then optional replayed events, then `session_replay_complete`.
 - `distill_session` returns `distillation_status` with `started`, then `completed` or `failed`.
 - `close_session` returns `session_closed` and removes the live session from the daemon.
 - Session transcripts are written under `.agentchat/sessions/`.
+- Session event journals are appended under `.agentchat/sessions/<session_id>.events.jsonl`.
 - Distilled skills are written under `.agentchat/skills/shared/` for all agents, or `.agentchat/skills/agents/<agent-id>/` for agent-specific memory.
 
 ### Python Smoke Test
@@ -77,13 +79,13 @@ lines prefixed with `<` are representative daemon responses.
 ```text
 $ websocat ws://127.0.0.1:9390
 > {"type":"create_session","working_dir":"."}
-< {"type":"session_created","session_id":"session-1"}
+< {"type":"session_created","session_id":"session-1","event_seq":1}
 
 > {"type":"prompt","session_id":"session-1","content":"inspect the repo"}
-< {"type":"delta","session_id":"session-1","content":"thinking about the request","delta_type":"thinking"}
-< {"type":"tool_update","session_id":"session-1","tool_call_id":"tool-1","title":"Demo Tool","status":"InProgress","content":null}
-< {"type":"delta","session_id":"session-1","content":"echo: inspect the repo","delta_type":"text"}
-< {"type":"turn_end","session_id":"session-1","stop_reason":"EndTurn"}
+< {"type":"delta","session_id":"session-1","event_seq":2,"content":"thinking about the request","delta_type":"thinking"}
+< {"type":"tool_update","session_id":"session-1","event_seq":3,"tool_call_id":"tool-1","title":"Demo Tool","status":"InProgress","content":null}
+< {"type":"delta","session_id":"session-1","event_seq":4,"content":"echo: inspect the repo","delta_type":"text"}
+< {"type":"turn_end","session_id":"session-1","event_seq":5,"stop_reason":"EndTurn"}
 
 > {"type":"list_skills"}
 < {"type":"skill_list","skills":[]}
@@ -113,13 +115,13 @@ This example shows the same flow using its usual output format.
 $ wscat -c ws://127.0.0.1:9390
 Connected (press CTRL+C to quit)
 > {"type":"create_session","working_dir":"."}
-< {"type":"session_created","session_id":"session-1"}
+< {"type":"session_created","session_id":"session-1","event_seq":1}
 
 > {"type":"prompt","session_id":"session-1","content":"inspect the repo"}
-< {"type":"delta","session_id":"session-1","content":"thinking about the request","delta_type":"thinking"}
-< {"type":"tool_update","session_id":"session-1","tool_call_id":"tool-1","title":"Demo Tool","status":"InProgress","content":null}
-< {"type":"delta","session_id":"session-1","content":"echo: inspect the repo","delta_type":"text"}
-< {"type":"turn_end","session_id":"session-1","stop_reason":"EndTurn"}
+< {"type":"delta","session_id":"session-1","event_seq":2,"content":"thinking about the request","delta_type":"thinking"}
+< {"type":"tool_update","session_id":"session-1","event_seq":3,"tool_call_id":"tool-1","title":"Demo Tool","status":"InProgress","content":null}
+< {"type":"delta","session_id":"session-1","event_seq":4,"content":"echo: inspect the repo","delta_type":"text"}
+< {"type":"turn_end","session_id":"session-1","event_seq":5,"stop_reason":"EndTurn"}
 
 > {"type":"distill_session","session_id":"session-1"}
 < {"type":"distillation_status","session_id":"session-1","status":"started","message":"distillation started"}
@@ -151,6 +153,7 @@ Success response:
       "working_dir": ".",
       "created_at_ms": 1774257600000,
       "state": "idle",
+      "last_event_seq": 5,
       "last_stop_reason": "EndTurn"
     }
   ]
@@ -165,10 +168,16 @@ Notes:
 
 Attach the current client connection to an existing live session.
 
-Request:
+Request without replay:
 
 ```json
 {"type":"attach_session","session_id":"session-1"}
+```
+
+Request with replay cursor:
+
+```json
+{"type":"attach_session","session_id":"session-1","after_seq":3}
 ```
 
 Success responses:
@@ -186,13 +195,25 @@ Success responses:
     "working_dir": ".",
     "created_at_ms": 1774257600000,
     "state": "idle",
+    "last_event_seq": 5,
     "last_stop_reason": "EndTurn",
     "last_error": null
   }
 }
 ```
 
-Error response:
+If `after_seq` is provided and older than the current tail, the daemon replays all session events
+with `event_seq > after_seq`, then sends:
+
+```json
+{
+  "type": "session_replay_complete",
+  "session_id": "session-1",
+  "last_event_seq": 5
+}
+```
+
+Error response when the session does not exist:
 
 ```json
 {
@@ -200,6 +221,17 @@ Error response:
   "session_id": "session-1",
   "code": "session_not_found",
   "message": "no live session with this id"
+}
+```
+
+Error response when `after_seq` is ahead of the daemon tail:
+
+```json
+{
+  "type": "error",
+  "session_id": "session-1",
+  "code": "replay_after_seq_ahead_of_tail",
+  "message": "requested after_seq 999 is ahead of current tail 5"
 }
 ```
 

@@ -92,6 +92,7 @@ pub struct SessionSummary {
     pub working_dir: String,
     pub created_at_ms: u64,
     pub state: SessionState,
+    pub last_event_seq: u64,
     pub last_stop_reason: Option<String>,
 }
 
@@ -103,6 +104,7 @@ pub struct SessionSnapshot {
     pub working_dir: String,
     pub created_at_ms: u64,
     pub state: SessionState,
+    pub last_event_seq: u64,
     pub last_stop_reason: Option<String>,
     pub last_error: Option<String>,
 }
@@ -116,7 +118,7 @@ pub struct SessionSnapshot {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseEvent {
     /// Session created successfully.
-    SessionCreated { session_id: String },
+    SessionCreated { session_id: String, event_seq: u64 },
 
     /// List of live sessions known to the daemon.
     SessionList { sessions: Vec<SessionSummary> },
@@ -130,9 +132,16 @@ pub enum ResponseEvent {
     /// Session closed and removed from the daemon.
     SessionClosed { session_id: String },
 
+    /// Replay handoff is complete and live streaming resumes.
+    SessionReplayComplete {
+        session_id: String,
+        last_event_seq: u64,
+    },
+
     /// Incremental text from the agent.
     Delta {
         session_id: String,
+        event_seq: u64,
         content: String,
         delta_type: DeltaType,
     },
@@ -140,12 +149,14 @@ pub enum ResponseEvent {
     /// Agent's execution plan update.
     PlanUpdate {
         session_id: String,
+        event_seq: u64,
         plan_json: Value,
     },
 
     /// Tool call status update.
     ToolUpdate {
         session_id: String,
+        event_seq: u64,
         tool_call_id: String,
         title: String,
         status: String,
@@ -155,6 +166,7 @@ pub enum ResponseEvent {
     /// Prompt turn completed.
     TurnEnd {
         session_id: String,
+        event_seq: u64,
         stop_reason: String,
     },
 
@@ -167,6 +179,7 @@ pub enum ResponseEvent {
     /// Progress update for knowledge distillation.
     DistillationStatus {
         session_id: String,
+        event_seq: u64,
         status: String,
         message: String,
     },
@@ -174,6 +187,7 @@ pub enum ResponseEvent {
     /// Error.
     Error {
         session_id: Option<String>,
+        event_seq: Option<u64>,
         code: String,
         message: String,
     },
@@ -185,6 +199,46 @@ pub enum DeltaType {
     Text,
     Thinking,
     ToolUse,
+}
+
+impl ResponseEvent {
+    pub fn session_id(&self) -> Option<&str> {
+        match self {
+            ResponseEvent::SessionCreated { session_id, .. }
+            | ResponseEvent::SessionAttached { session_id, .. }
+            | ResponseEvent::SessionClosed { session_id, .. }
+            | ResponseEvent::SessionReplayComplete { session_id, .. }
+            | ResponseEvent::Delta { session_id, .. }
+            | ResponseEvent::PlanUpdate { session_id, .. }
+            | ResponseEvent::ToolUpdate { session_id, .. }
+            | ResponseEvent::TurnEnd { session_id, .. }
+            | ResponseEvent::DistillationStatus { session_id, .. } => Some(session_id),
+            ResponseEvent::SessionSnapshot { snapshot, .. } => Some(&snapshot.session_id),
+            ResponseEvent::Error { session_id, .. } => session_id.as_deref(),
+            ResponseEvent::SessionList { .. }
+            | ResponseEvent::SkillList { .. }
+            | ResponseEvent::SkillContent { .. } => None,
+        }
+    }
+
+    pub fn event_seq(&self) -> Option<u64> {
+        match self {
+            ResponseEvent::SessionCreated { event_seq, .. }
+            | ResponseEvent::Delta { event_seq, .. }
+            | ResponseEvent::PlanUpdate { event_seq, .. }
+            | ResponseEvent::ToolUpdate { event_seq, .. }
+            | ResponseEvent::TurnEnd { event_seq, .. }
+            | ResponseEvent::DistillationStatus { event_seq, .. } => Some(*event_seq),
+            ResponseEvent::Error { event_seq, .. } => *event_seq,
+            ResponseEvent::SessionAttached { .. }
+            | ResponseEvent::SessionSnapshot { .. }
+            | ResponseEvent::SessionClosed { .. }
+            | ResponseEvent::SessionReplayComplete { .. }
+            | ResponseEvent::SessionList { .. }
+            | ResponseEvent::SkillList { .. }
+            | ResponseEvent::SkillContent { .. } => None,
+        }
+    }
 }
 
 // ============================================================
@@ -200,7 +254,11 @@ pub enum ClientMessage {
     /// List live sessions known to the daemon.
     ListSessions,
     /// Attach the current client connection to an existing session.
-    AttachSession { session_id: String },
+    AttachSession {
+        session_id: String,
+        #[serde(default)]
+        after_seq: Option<u64>,
+    },
     /// Close and remove a live session from the daemon.
     CloseSession { session_id: String },
     /// Send a prompt.
@@ -242,6 +300,7 @@ mod tests {
             ClientMessage::ListSessions,
             ClientMessage::AttachSession {
                 session_id: "session-1".into(),
+                after_seq: Some(3),
             },
             ClientMessage::CloseSession {
                 session_id: "session-1".into(),
@@ -272,6 +331,7 @@ mod tests {
         let events = [
             ResponseEvent::SessionCreated {
                 session_id: "session-1".into(),
+                event_seq: 1,
             },
             ResponseEvent::SessionList {
                 sessions: vec![SessionSummary {
@@ -280,6 +340,7 @@ mod tests {
                     working_dir: "/tmp/project".into(),
                     created_at_ms: 123,
                     state: SessionState::Idle,
+                    last_event_seq: 4,
                     last_stop_reason: Some("EndTurn".into()),
                 }],
             },
@@ -293,6 +354,7 @@ mod tests {
                     working_dir: "/tmp/project".into(),
                     created_at_ms: 123,
                     state: SessionState::Prompting,
+                    last_event_seq: 4,
                     last_stop_reason: Some("EndTurn".into()),
                     last_error: None,
                 },
@@ -300,17 +362,24 @@ mod tests {
             ResponseEvent::SessionClosed {
                 session_id: "session-1".into(),
             },
+            ResponseEvent::SessionReplayComplete {
+                session_id: "session-1".into(),
+                last_event_seq: 4,
+            },
             ResponseEvent::Delta {
                 session_id: "session-1".into(),
+                event_seq: 5,
                 content: "chunk".into(),
                 delta_type: DeltaType::ToolUse,
             },
             ResponseEvent::PlanUpdate {
                 session_id: "session-1".into(),
+                event_seq: 6,
                 plan_json: json!({"steps": [{"title": "Inspect"}], "done": false}),
             },
             ResponseEvent::ToolUpdate {
                 session_id: "session-1".into(),
+                event_seq: 7,
                 tool_call_id: "tool-1".into(),
                 title: "Read file".into(),
                 status: "Completed".into(),
@@ -318,6 +387,7 @@ mod tests {
             },
             ResponseEvent::TurnEnd {
                 session_id: "session-1".into(),
+                event_seq: 8,
                 stop_reason: "end_turn".into(),
             },
             ResponseEvent::SkillList {
@@ -333,11 +403,13 @@ mod tests {
             },
             ResponseEvent::DistillationStatus {
                 session_id: "session-1".into(),
+                event_seq: 9,
                 status: "completed".into(),
                 message: "Updated 2 skills".into(),
             },
             ResponseEvent::Error {
                 session_id: Some("session-1".into()),
+                event_seq: Some(10),
                 code: "prompt_failed".into(),
                 message: "boom".into(),
             },
@@ -405,6 +477,7 @@ mod tests {
             working_dir: "/tmp/project".into(),
             created_at_ms: 123,
             state: SessionState::Idle,
+            last_event_seq: 5,
             last_stop_reason: Some("EndTurn".into()),
         };
 
@@ -419,6 +492,7 @@ mod tests {
             working_dir: "/tmp/project".into(),
             created_at_ms: 123,
             state: SessionState::Prompting,
+            last_event_seq: 5,
             last_stop_reason: Some("EndTurn".into()),
             last_error: None,
         };
