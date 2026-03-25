@@ -11,8 +11,8 @@ use agentchat_core::distiller::Distiller;
 use agentchat_core::session_store::SessionStore;
 use agentchat_core::skills::SkillStore;
 use agentchat_protocol::{
-    AgentConfig, AgentStatus, ClientMessage, DeltaType, ResponseEvent, SessionEvent, SessionState,
-    SessionTranscript,
+    AgentConfig, AgentStatus, AssistantMessageState, ClientMessage, DeltaType, ResponseEvent,
+    SessionEvent, SessionState, SessionTranscript,
 };
 use agentchat_server::ws::WebSocketServer;
 use futures::{SinkExt, StreamExt};
@@ -546,44 +546,37 @@ async fn websocket_thread_group_chat_fans_out_to_multiple_agents() {
             let mut saw_beta_end = false;
             for _ in 0..16 {
                 match receive_event(&mut ws).await {
-                    ResponseEvent::ThreadAgentDelta {
+                    ResponseEvent::ThreadAssistantMessage {
                         thread_id: tid,
                         participant_id,
                         session_id,
-                        content,
-                        delta_type: DeltaType::Text,
-                        ..
-                    } => {
-                        assert_eq!(tid, thread_id);
-                        if participant_id == alpha_participant_id {
-                            assert_eq!(session_id, alpha_session_id);
-                            assert_eq!(content, "echo: review this");
-                            saw_alpha_text = true;
-                        } else if participant_id == beta_participant_id {
-                            assert_eq!(session_id, beta_session_id);
-                            assert_eq!(content, "echo: review this");
-                            saw_beta_text = true;
-                        }
-                    }
-                    ResponseEvent::ThreadAgentTurnEnd {
-                        thread_id: tid,
-                        participant_id,
-                        session_id,
+                        response,
+                        state,
                         stop_reason,
                         ..
                     } => {
                         assert_eq!(tid, thread_id);
-                        assert_eq!(stop_reason, "EndTurn");
                         if participant_id == alpha_participant_id {
                             assert_eq!(session_id, alpha_session_id);
-                            saw_alpha_end = true;
+                            if response == "echo: review this" {
+                                saw_alpha_text = true;
+                            }
+                            if state == AssistantMessageState::Completed {
+                                assert_eq!(stop_reason.as_deref(), Some("EndTurn"));
+                                saw_alpha_end = true;
+                            }
                         } else if participant_id == beta_participant_id {
                             assert_eq!(session_id, beta_session_id);
-                            saw_beta_end = true;
+                            if response == "echo: review this" {
+                                saw_beta_text = true;
+                            }
+                            if state == AssistantMessageState::Completed {
+                                assert_eq!(stop_reason.as_deref(), Some("EndTurn"));
+                                saw_beta_end = true;
+                            }
                         }
                     }
                     ResponseEvent::ThreadAgentToolUpdate { .. }
-                    | ResponseEvent::ThreadAgentDelta { .. }
                     | ResponseEvent::Delta { .. }
                     | ResponseEvent::ToolUpdate { .. }
                     | ResponseEvent::TurnEnd { .. } => {}
@@ -699,31 +692,25 @@ async fn websocket_thread_targeted_send_and_attach_snapshot() {
             let mut saw_beta_end = false;
             for _ in 0..10 {
                 match receive_event(&mut ws).await {
-                    ResponseEvent::ThreadAgentDelta {
+                    ResponseEvent::ThreadAssistantMessage {
                         participant_id,
                         session_id,
-                        content,
-                        delta_type: DeltaType::Text,
-                        ..
-                    } => {
-                        assert_eq!(participant_id, beta_participant_id);
-                        assert_eq!(session_id, beta_session_id);
-                        assert_eq!(content, "echo: only beta");
-                        saw_beta_text = true;
-                    }
-                    ResponseEvent::ThreadAgentTurnEnd {
-                        participant_id,
-                        session_id,
+                        response,
+                        state,
                         stop_reason,
                         ..
                     } => {
                         assert_eq!(participant_id, beta_participant_id);
                         assert_eq!(session_id, beta_session_id);
-                        assert_eq!(stop_reason, "EndTurn");
-                        saw_beta_end = true;
+                        if response == "echo: only beta" {
+                            saw_beta_text = true;
+                        }
+                        if state == AssistantMessageState::Completed {
+                            assert_eq!(stop_reason.as_deref(), Some("EndTurn"));
+                            saw_beta_end = true;
+                        }
                     }
-                    ResponseEvent::ThreadAgentToolUpdate { participant_id, .. }
-                    | ResponseEvent::ThreadAgentDelta { participant_id, .. } => {
+                    ResponseEvent::ThreadAgentToolUpdate { participant_id, .. } => {
                         assert_ne!(participant_id, alpha_participant_id);
                     }
                     ResponseEvent::Delta { .. }
@@ -859,20 +846,26 @@ async fn websocket_attach_thread_replays_events_after_cursor() {
                     ResponseEvent::ThreadMessage { .. }
                     | ResponseEvent::ThreadParticipantAdded { .. }
                     | ResponseEvent::ThreadParticipantRemoved { .. }
-                    | ResponseEvent::ThreadAgentDelta { .. }
+                    | ResponseEvent::ThreadAssistantMessage { .. }
                     | ResponseEvent::ThreadAgentPlanUpdate { .. }
-                    | ResponseEvent::ThreadAgentToolUpdate { .. }
-                    | ResponseEvent::ThreadAgentTurnEnd { .. } => {
+                    | ResponseEvent::ThreadAgentToolUpdate { .. } => {
                         thread_events.push(event.clone());
                     }
                     _ => {}
                 }
 
-                if let ResponseEvent::ThreadAgentTurnEnd { participant_id, .. } = &event {
-                    if participant_id == &alpha_participant_id {
-                        saw_alpha_end = true;
-                    } else if participant_id == &beta_participant_id {
-                        saw_beta_end = true;
+                if let ResponseEvent::ThreadAssistantMessage {
+                    participant_id,
+                    state,
+                    ..
+                } = &event
+                {
+                    if *state == AssistantMessageState::Completed {
+                        if participant_id == &alpha_participant_id {
+                            saw_alpha_end = true;
+                        } else if participant_id == &beta_participant_id {
+                            saw_beta_end = true;
+                        }
                     }
                 }
                 if saw_alpha_end && saw_beta_end {
@@ -1088,15 +1081,15 @@ async fn websocket_close_thread_rejects_busy_thread() {
 
             loop {
                 match receive_event(&mut ws).await {
-                    ResponseEvent::ThreadAgentDelta {
+                    ResponseEvent::ThreadAssistantMessage {
                         thread_id: tid,
                         participant_id,
-                        content,
+                        response,
                         ..
                     } => {
                         assert_eq!(tid, thread_id);
                         assert_eq!(participant_id, expected_participant_id);
-                        assert_eq!(content, "waiting for cancel");
+                        assert_eq!(response, "waiting for cancel");
                         break;
                     }
                     ResponseEvent::Delta { .. } => {}

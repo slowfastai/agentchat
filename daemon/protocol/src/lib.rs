@@ -198,6 +198,15 @@ pub struct ThreadSender {
     pub display_name: String,
 }
 
+/// Delivery state for an assistant message snapshot in a thread timeline.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantMessageState {
+    Streaming,
+    Completed,
+    Failed,
+}
+
 // ============================================================
 // Response events (daemon -> iOS app via WebSocket)
 // ============================================================
@@ -280,6 +289,22 @@ pub enum ResponseEvent {
         sender: ThreadSender,
         content: String,
         target_participant_ids: Vec<String>,
+    },
+
+    /// Snapshot of a single assistant reply inside a thread.
+    ThreadAssistantMessage {
+        thread_id: String,
+        thread_seq: u64,
+        message_id: String,
+        turn_id: String,
+        participant_id: String,
+        agent_id: String,
+        session_id: String,
+        session_event_seq: u64,
+        thinking: String,
+        response: String,
+        state: AssistantMessageState,
+        stop_reason: Option<String>,
     },
 
     /// Incremental text from an agent participant inside a thread.
@@ -417,6 +442,7 @@ impl ResponseEvent {
             | ResponseEvent::ThreadParticipantAdded { .. }
             | ResponseEvent::ThreadParticipantRemoved { .. }
             | ResponseEvent::ThreadMessage { .. }
+            | ResponseEvent::ThreadAssistantMessage { .. }
             | ResponseEvent::ThreadAgentDelta { .. }
             | ResponseEvent::ThreadAgentPlanUpdate { .. }
             | ResponseEvent::ThreadAgentToolUpdate { .. }
@@ -436,6 +462,7 @@ impl ResponseEvent {
             | ResponseEvent::ThreadParticipantAdded { thread_id, .. }
             | ResponseEvent::ThreadParticipantRemoved { thread_id, .. }
             | ResponseEvent::ThreadMessage { thread_id, .. }
+            | ResponseEvent::ThreadAssistantMessage { thread_id, .. }
             | ResponseEvent::ThreadAgentDelta { thread_id, .. }
             | ResponseEvent::ThreadAgentPlanUpdate { thread_id, .. }
             | ResponseEvent::ThreadAgentToolUpdate { thread_id, .. }
@@ -483,6 +510,7 @@ impl ResponseEvent {
             | ResponseEvent::ThreadParticipantAdded { .. }
             | ResponseEvent::ThreadParticipantRemoved { .. }
             | ResponseEvent::ThreadMessage { .. }
+            | ResponseEvent::ThreadAssistantMessage { .. }
             | ResponseEvent::ThreadAgentDelta { .. }
             | ResponseEvent::ThreadAgentPlanUpdate { .. }
             | ResponseEvent::ThreadAgentToolUpdate { .. }
@@ -498,6 +526,7 @@ impl ResponseEvent {
             ResponseEvent::ThreadParticipantAdded { thread_seq, .. }
             | ResponseEvent::ThreadParticipantRemoved { thread_seq, .. }
             | ResponseEvent::ThreadMessage { thread_seq, .. }
+            | ResponseEvent::ThreadAssistantMessage { thread_seq, .. }
             | ResponseEvent::ThreadAgentDelta { thread_seq, .. }
             | ResponseEvent::ThreadAgentPlanUpdate { thread_seq, .. }
             | ResponseEvent::ThreadAgentToolUpdate { thread_seq, .. }
@@ -764,32 +793,46 @@ mod tests {
                 content: "hello group".into(),
                 target_participant_ids: vec!["participant-1".into()],
             },
-            ResponseEvent::ThreadAgentDelta {
+            ResponseEvent::ThreadAssistantMessage {
                 thread_id: "thread-1".into(),
                 thread_seq: 2,
+                message_id: "message-2".into(),
+                turn_id: "turn-1".into(),
                 participant_id: "participant-1".into(),
                 agent_id: "agent-1".into(),
                 session_id: "session-1".into(),
                 session_event_seq: 5,
-                content: "chunk".into(),
-                delta_type: DeltaType::Text,
+                thinking: "thinking".into(),
+                response: "final response".into(),
+                state: AssistantMessageState::Completed,
+                stop_reason: Some("end_turn".into()),
             },
-            ResponseEvent::ThreadAgentPlanUpdate {
+            ResponseEvent::ThreadAgentDelta {
                 thread_id: "thread-1".into(),
                 thread_seq: 3,
                 participant_id: "participant-1".into(),
                 agent_id: "agent-1".into(),
                 session_id: "session-1".into(),
                 session_event_seq: 6,
-                plan_json: json!({"steps": [{"title": "Inspect"}], "done": false}),
+                content: "chunk".into(),
+                delta_type: DeltaType::Text,
             },
-            ResponseEvent::ThreadAgentToolUpdate {
+            ResponseEvent::ThreadAgentPlanUpdate {
                 thread_id: "thread-1".into(),
                 thread_seq: 4,
                 participant_id: "participant-1".into(),
                 agent_id: "agent-1".into(),
                 session_id: "session-1".into(),
                 session_event_seq: 7,
+                plan_json: json!({"steps": [{"title": "Inspect"}], "done": false}),
+            },
+            ResponseEvent::ThreadAgentToolUpdate {
+                thread_id: "thread-1".into(),
+                thread_seq: 5,
+                participant_id: "participant-1".into(),
+                agent_id: "agent-1".into(),
+                session_id: "session-1".into(),
+                session_event_seq: 8,
                 tool_call_id: "tool-1".into(),
                 title: "Read file".into(),
                 status: "Completed".into(),
@@ -797,11 +840,11 @@ mod tests {
             },
             ResponseEvent::ThreadAgentTurnEnd {
                 thread_id: "thread-1".into(),
-                thread_seq: 5,
+                thread_seq: 6,
                 participant_id: "participant-1".into(),
                 agent_id: "agent-1".into(),
                 session_id: "session-1".into(),
-                session_event_seq: 8,
+                session_event_seq: 9,
                 stop_reason: "end_turn".into(),
             },
             ResponseEvent::SessionList {
@@ -993,6 +1036,17 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<DeltaType>(&json).unwrap(),
             DeltaType::ToolUse
+        );
+    }
+
+    #[test]
+    fn assistant_message_state_serializes_in_snake_case() {
+        let json = serde_json::to_string(&AssistantMessageState::Completed).unwrap();
+
+        assert_eq!(json, "\"completed\"");
+        assert_eq!(
+            serde_json::from_str::<AssistantMessageState>(&json).unwrap(),
+            AssistantMessageState::Completed
         );
     }
 

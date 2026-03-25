@@ -20,9 +20,9 @@ use agentchat_core::thread_store::{
     participant_to_protocol, thread_to_snapshot, thread_to_summary, ThreadStore,
 };
 use agentchat_protocol::{
-    AgentSummary, ClientMessage, DeltaType, ParticipantKind, ParticipantState, ResponseEvent,
-    SessionEvent, SessionSnapshot, SessionState, SessionSummary, SessionTranscript, SkillInfo,
-    ThreadParticipant, ThreadSender, ThreadSnapshot, ThreadState,
+    AgentSummary, AssistantMessageState, ClientMessage, DeltaType, ParticipantKind,
+    ParticipantState, ResponseEvent, SessionEvent, SessionSnapshot, SessionState, SessionSummary,
+    SessionTranscript, SkillInfo, ThreadParticipant, ThreadSender, ThreadSnapshot, ThreadState,
 };
 
 pub struct AppProtocolSession {
@@ -37,6 +37,26 @@ pub struct AppProtocolSession {
     internal_sessions: Rc<RefCell<HashMap<String, mpsc::UnboundedSender<SessionNotification>>>>,
     created_sessions: Vec<String>,
     active_prompt_sessions: Rc<RefCell<HashSet<String>>>,
+    active_assistant_messages: Rc<RefCell<HashMap<String, ActiveAssistantMessage>>>,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveAssistantMessage {
+    message_id: String,
+    turn_id: String,
+    thinking: String,
+    response: String,
+}
+
+impl ActiveAssistantMessage {
+    fn new() -> Self {
+        Self {
+            message_id: format!("message-{}", Uuid::new_v4().simple()),
+            turn_id: format!("turn-{}", Uuid::new_v4().simple()),
+            thinking: String::new(),
+            response: String::new(),
+        }
+    }
 }
 
 impl AppProtocolSession {
@@ -106,6 +126,10 @@ impl AppProtocolSession {
             String,
             mpsc::UnboundedSender<SessionNotification>,
         >::new()));
+        let active_assistant_messages = Rc::new(RefCell::new(HashMap::<
+            String,
+            ActiveAssistantMessage,
+        >::new()));
 
         for (agent_id, mut update_rx, mut health_rx) in setups {
             let manager_updates = manager.clone();
@@ -115,6 +139,7 @@ impl AppProtocolSession {
             let thread_store_updates = thread_store.clone();
             let thread_event_log_updates = thread_event_log.clone();
             let internal_sessions_updates = internal_sessions.clone();
+            let active_assistant_messages_updates = active_assistant_messages.clone();
             tokio::task::spawn_local(async move {
                 while let Some(notification) = update_rx.recv().await {
                     let upstream_session_id = notification.session_id.to_string();
@@ -158,6 +183,7 @@ impl AppProtocolSession {
                         &thread_store_updates,
                         &thread_event_log_updates,
                         &response_tx_updates,
+                        &active_assistant_messages_updates,
                         &event,
                     );
                 }
@@ -214,6 +240,7 @@ impl AppProtocolSession {
             internal_sessions,
             created_sessions: Vec::new(),
             active_prompt_sessions: Rc::new(RefCell::new(HashSet::new())),
+            active_assistant_messages,
         })
     }
 
@@ -969,6 +996,9 @@ impl AppProtocolSession {
                 self.session_store
                     .borrow_mut()
                     .record_prompt(&session_id, &content);
+                self.active_assistant_messages
+                    .borrow_mut()
+                    .remove(&session_id);
                 let prompt_content =
                     maybe_inject_skill_context(self.skill_store.as_ref(), Some(&agent_id), content)
                         .await;
@@ -982,6 +1012,7 @@ impl AppProtocolSession {
                 let thread_store = self.thread_store.clone();
                 let thread_event_log = self.thread_event_log.clone();
                 let active_prompt_sessions = self.active_prompt_sessions.clone();
+                let active_assistant_messages = self.active_assistant_messages.clone();
                 tokio::task::spawn_local(async move {
                     let result = agent
                         .prompt(SessionId::new(upstream_session_id), prompt_content)
@@ -994,6 +1025,7 @@ impl AppProtocolSession {
                         session_event_log,
                         thread_store,
                         thread_event_log,
+                        active_assistant_messages,
                         session_id,
                         result,
                     )
@@ -1193,6 +1225,7 @@ fn maybe_broadcast_thread_event_for_session_event(
     thread_store: &Rc<RefCell<ThreadStore>>,
     thread_event_log: &Rc<RefCell<ThreadEventLog>>,
     response_tx: &broadcast::Sender<ResponseEvent>,
+    active_assistant_messages: &Rc<RefCell<HashMap<String, ActiveAssistantMessage>>>,
     event: &ResponseEvent,
 ) {
     let Some(session_id) = event.session_id() else {
@@ -1208,36 +1241,64 @@ fn maybe_broadcast_thread_event_for_session_event(
     let Some(session_event_seq) = event.event_seq() else {
         return;
     };
-    let thread_seq = thread_event_log.borrow_mut().next_seq(&binding.thread_id);
-    let thread_event = match event {
+
+    match event {
         ResponseEvent::Delta {
             session_id,
             content,
             delta_type,
             ..
-        } => ResponseEvent::ThreadAgentDelta {
-            thread_id: binding.thread_id,
-            thread_seq,
-            participant_id: binding.participant_id,
-            agent_id: binding.agent_id,
-            session_id: session_id.clone(),
-            session_event_seq,
-            content: content.clone(),
-            delta_type: delta_type.clone(),
+        } => match delta_type {
+            DeltaType::Thinking | DeltaType::Text if !content.is_empty() => {
+                let thread_seq = thread_event_log.borrow_mut().next_seq(&binding.thread_id);
+                let mut active_messages = active_assistant_messages.borrow_mut();
+                let message = active_messages
+                    .entry(session_id.clone())
+                    .or_insert_with(ActiveAssistantMessage::new);
+                match delta_type {
+                    DeltaType::Thinking => message.thinking.push_str(content),
+                    DeltaType::Text => message.response.push_str(content),
+                    DeltaType::ToolUse => {}
+                }
+                let thread_event = ResponseEvent::ThreadAssistantMessage {
+                    thread_id: binding.thread_id,
+                    thread_seq,
+                    message_id: message.message_id.clone(),
+                    turn_id: message.turn_id.clone(),
+                    participant_id: binding.participant_id,
+                    agent_id: binding.agent_id,
+                    session_id: session_id.clone(),
+                    session_event_seq,
+                    thinking: message.thinking.clone(),
+                    response: message.response.clone(),
+                    state: AssistantMessageState::Streaming,
+                    stop_reason: None,
+                };
+                drop(active_messages);
+                journal_and_broadcast_thread_event(thread_event_log, response_tx, thread_event);
+            }
+            _ => {}
         },
         ResponseEvent::PlanUpdate {
             session_id,
             plan_json,
             ..
-        } => ResponseEvent::ThreadAgentPlanUpdate {
-            thread_id: binding.thread_id,
-            thread_seq,
-            participant_id: binding.participant_id,
-            agent_id: binding.agent_id,
-            session_id: session_id.clone(),
-            session_event_seq,
-            plan_json: plan_json.clone(),
-        },
+        } => {
+            let thread_seq = thread_event_log.borrow_mut().next_seq(&binding.thread_id);
+            journal_and_broadcast_thread_event(
+                thread_event_log,
+                response_tx,
+                ResponseEvent::ThreadAgentPlanUpdate {
+                    thread_id: binding.thread_id,
+                    thread_seq,
+                    participant_id: binding.participant_id,
+                    agent_id: binding.agent_id,
+                    session_id: session_id.clone(),
+                    session_event_seq,
+                    plan_json: plan_json.clone(),
+                },
+            );
+        }
         ResponseEvent::ToolUpdate {
             session_id,
             tool_call_id,
@@ -1245,34 +1306,85 @@ fn maybe_broadcast_thread_event_for_session_event(
             status,
             content,
             ..
-        } => ResponseEvent::ThreadAgentToolUpdate {
-            thread_id: binding.thread_id,
-            thread_seq,
-            participant_id: binding.participant_id,
-            agent_id: binding.agent_id,
-            session_id: session_id.clone(),
-            session_event_seq,
-            tool_call_id: tool_call_id.clone(),
-            title: title.clone(),
-            status: status.clone(),
-            content: content.clone(),
-        },
+        } => {
+            let thread_seq = thread_event_log.borrow_mut().next_seq(&binding.thread_id);
+            journal_and_broadcast_thread_event(
+                thread_event_log,
+                response_tx,
+                ResponseEvent::ThreadAgentToolUpdate {
+                    thread_id: binding.thread_id,
+                    thread_seq,
+                    participant_id: binding.participant_id,
+                    agent_id: binding.agent_id,
+                    session_id: session_id.clone(),
+                    session_event_seq,
+                    tool_call_id: tool_call_id.clone(),
+                    title: title.clone(),
+                    status: status.clone(),
+                    content: content.clone(),
+                },
+            );
+        }
         ResponseEvent::TurnEnd {
             session_id,
             stop_reason,
             ..
-        } => ResponseEvent::ThreadAgentTurnEnd {
+        } => finalize_active_assistant_message(
+            thread_store,
+            thread_event_log,
+            response_tx,
+            active_assistant_messages,
+            session_id,
+            session_event_seq,
+            AssistantMessageState::Completed,
+            Some(stop_reason.clone()),
+        ),
+        _ => {}
+    }
+}
+
+fn finalize_active_assistant_message(
+    thread_store: &Rc<RefCell<ThreadStore>>,
+    thread_event_log: &Rc<RefCell<ThreadEventLog>>,
+    response_tx: &broadcast::Sender<ResponseEvent>,
+    active_assistant_messages: &Rc<RefCell<HashMap<String, ActiveAssistantMessage>>>,
+    session_id: &str,
+    session_event_seq: u64,
+    state: AssistantMessageState,
+    stop_reason: Option<String>,
+) {
+    let Some(binding) = thread_store
+        .borrow()
+        .binding_for_session(session_id)
+        .cloned()
+    else {
+        active_assistant_messages.borrow_mut().remove(session_id);
+        return;
+    };
+
+    let Some(message) = active_assistant_messages.borrow_mut().remove(session_id) else {
+        return;
+    };
+
+    let thread_seq = thread_event_log.borrow_mut().next_seq(&binding.thread_id);
+    journal_and_broadcast_thread_event(
+        thread_event_log,
+        response_tx,
+        ResponseEvent::ThreadAssistantMessage {
             thread_id: binding.thread_id,
             thread_seq,
+            message_id: message.message_id,
+            turn_id: message.turn_id,
             participant_id: binding.participant_id,
             agent_id: binding.agent_id,
-            session_id: session_id.clone(),
+            session_id: session_id.to_string(),
             session_event_seq,
-            stop_reason: stop_reason.clone(),
+            thinking: message.thinking,
+            response: message.response,
+            state,
+            stop_reason,
         },
-        _ => return,
-    };
-    journal_and_broadcast_thread_event(thread_event_log, response_tx, thread_event);
+    );
 }
 
 fn journal_and_broadcast_event(
@@ -1404,6 +1516,7 @@ async fn handle_prompt_completion(
     session_event_log: Rc<RefCell<SessionEventLog>>,
     thread_store: Rc<RefCell<ThreadStore>>,
     thread_event_log: Rc<RefCell<ThreadEventLog>>,
+    active_assistant_messages: Rc<RefCell<HashMap<String, ActiveAssistantMessage>>>,
     session_id: String,
     result: agent_client_protocol::Result<PromptResponse>,
 ) {
@@ -1423,6 +1536,7 @@ async fn handle_prompt_completion(
                 &thread_store,
                 &thread_event_log,
                 &response_tx,
+                &active_assistant_messages,
                 &event,
             );
             session_store
@@ -1440,13 +1554,23 @@ async fn handle_prompt_completion(
             });
         }
         Err(err) => {
-            let event_seq = Some(session_event_log.borrow_mut().next_seq(&session_id));
+            let event_seq = session_event_log.borrow_mut().next_seq(&session_id);
+            finalize_active_assistant_message(
+                &thread_store,
+                &thread_event_log,
+                &response_tx,
+                &active_assistant_messages,
+                &session_id,
+                event_seq,
+                AssistantMessageState::Failed,
+                None,
+            );
             journal_and_broadcast_event(
                 &session_event_log,
                 &response_tx,
                 ResponseEvent::Error {
                     session_id: Some(session_id),
-                    event_seq,
+                    event_seq: Some(event_seq),
                     code: "prompt_failed".into(),
                     message: err.to_string(),
                 },

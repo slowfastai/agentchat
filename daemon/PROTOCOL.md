@@ -442,31 +442,40 @@ Success response sequence:
 }
 ```
 
-Then the daemon emits thread-scoped agent events such as:
+Then the daemon emits thread-scoped assistant message snapshots such as:
 
 ```json
 {
-  "type": "thread_agent_delta",
+  "type": "thread_assistant_message",
   "thread_id": "thread-1",
   "thread_seq": 2,
+  "message_id": "message-2",
+  "turn_id": "turn-1",
   "participant_id": "participant-1",
   "agent_id": "pi",
   "session_id": "session-1",
   "session_event_seq": 4,
-  "content": "echo: review this diff",
-  "delta_type": "text"
+  "thinking": "planning the answer",
+  "response": "echo: review this diff",
+  "state": "streaming",
+  "stop_reason": null
 }
 ```
 
 ```json
 {
-  "type": "thread_agent_turn_end",
+  "type": "thread_assistant_message",
   "thread_id": "thread-1",
   "thread_seq": 5,
+  "message_id": "message-2",
+  "turn_id": "turn-1",
   "participant_id": "participant-1",
   "agent_id": "pi",
   "session_id": "session-1",
   "session_event_seq": 7,
+  "thinking": "planning the answer",
+  "response": "echo: review this diff",
+  "state": "completed",
   "stop_reason": "EndTurn"
 }
 ```
@@ -474,6 +483,7 @@ Then the daemon emits thread-scoped agent events such as:
 Notes:
 - The daemon still emits session-scoped events for the backing sessions.
 - Thread events are the recommended stream for group chat UI.
+- `thread_assistant_message` is an upsert-style snapshot keyed by `message_id`; clients should replace the prior snapshot for the same message instead of rendering a new bubble.
 - Thread-scoped timeline events are appended under `.agentchat/threads/<thread_id>.events.jsonl`.
 - `attach_thread { after_seq }` is the recommended reconnect path for group chat UI.
 
