@@ -32,6 +32,7 @@ playground.xcworkspace
 .build/
 daemon/target/
 daemon/.agentchat/
+/.agentchat/
 relay/node_modules/
 relay/.wrangler/
 relay/.dev.vars*
