@@ -37,6 +37,7 @@ final class DaemonChatStore: ObservableObject {
     private var snapshotsByThread: [String: DaemonThreadSnapshot] = [:]
     private var timelineByThread: [String: [DaemonTimelineEntry]] = [:]
     private var cursorByThread: [String: UInt64] = [:]
+    private var legacyAssistantMessages = LegacyAssistantMessageReducer()
 
     init() {
         let defaults = UserDefaults.standard
@@ -408,20 +409,14 @@ final class DaemonChatStore: ObservableObject {
                     to: event.threadID
                 )
                 touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
+            case "thread_assistant_message":
+                let event = try decoder.decode(ThreadAssistantMessageEvent.self, from: data)
+                discardActiveLegacyAssistantMessage(threadID: event.threadID, sessionID: event.sessionID)
+                upsertAssistantMessage(event)
+                touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
             case "thread_agent_delta":
                 let event = try decoder.decode(ThreadAgentDeltaEvent.self, from: data)
-                let kind: DaemonTimelineEntry.Kind = event.deltaType == "thinking" ? .thinking : .agentMessage
-                appendTimeline(
-                    DaemonTimelineEntry(
-                        threadID: event.threadID,
-                        threadSeq: event.threadSeq,
-                        kind: kind,
-                        title: event.agentID.capitalized,
-                        body: event.content,
-                        tintName: colorName(for: event.agentID)
-                    ),
-                    to: event.threadID
-                )
+                upsertLegacyAssistantDelta(event)
                 touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
             case "thread_agent_tool_update":
                 let event = try decoder.decode(ThreadAgentToolUpdateEvent.self, from: data)
@@ -454,17 +449,7 @@ final class DaemonChatStore: ObservableObject {
                 touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
             case "thread_agent_turn_end":
                 let event = try decoder.decode(ThreadAgentTurnEndEvent.self, from: data)
-                appendTimeline(
-                    DaemonTimelineEntry(
-                        threadID: event.threadID,
-                        threadSeq: event.threadSeq,
-                        kind: .turnEnd,
-                        title: event.agentID.capitalized,
-                        body: event.stopReason,
-                        tintName: colorName(for: event.agentID)
-                    ),
-                    to: event.threadID
-                )
+                finalizeLegacyAssistantMessage(event)
                 touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
             case "error":
                 let event = try decoder.decode(ErrorEvent.self, from: data)
@@ -479,14 +464,74 @@ final class DaemonChatStore: ObservableObject {
 
     private func appendTimeline(_ entry: DaemonTimelineEntry, to threadID: String) {
         var entries = timelineByThread[threadID] ?? []
-        entries.removeAll { $0.threadSeq == entry.threadSeq }
+        entries.removeAll { $0.id == entry.id }
         entries.append(entry)
-        entries.sort { $0.threadSeq < $1.threadSeq }
+        entries.sort {
+            if $0.sortThreadSeq == $1.sortThreadSeq {
+                return $0.id < $1.id
+            }
+            return $0.sortThreadSeq < $1.sortThreadSeq
+        }
         timelineByThread[threadID] = entries
-        cursorByThread[threadID] = max(cursorByThread[threadID] ?? 0, entry.threadSeq)
+        cursorByThread[threadID] = max(cursorByThread[threadID] ?? 0, entry.lastThreadSeq)
         if activeThreadID == threadID {
             timeline = entries
         }
+    }
+
+    private func removeTimelineEntry(id: String, from threadID: String) {
+        guard var entries = timelineByThread[threadID] else { return }
+        entries.removeAll { $0.id == id }
+        timelineByThread[threadID] = entries
+        if activeThreadID == threadID {
+            timeline = entries
+        }
+    }
+
+    private func upsertAssistantMessage(_ event: ThreadAssistantMessageEvent) {
+        let existing = timelineByThread[event.threadID]?.first(where: { $0.id == event.messageID })
+        let entry = DaemonTimelineEntry(
+            id: event.messageID,
+            sortThreadSeq: existing?.sortThreadSeq ?? event.threadSeq,
+            lastThreadSeq: event.threadSeq,
+            kind: .assistantTurn,
+            title: event.agentID.capitalized,
+            body: event.response,
+            thinkingBody: event.thinking.isEmpty ? nil : event.thinking,
+            status: event.state,
+            tintName: colorName(for: event.agentID)
+        )
+        appendTimeline(entry, to: event.threadID)
+    }
+
+    private func upsertLegacyAssistantDelta(_ event: ThreadAgentDeltaEvent) {
+        guard let state = legacyAssistantMessages.consume(delta: event) else {
+            return
+        }
+        appendTimeline(
+            state.timelineEntry(status: "streaming", tintName: colorName(for: state.agentID)),
+            to: event.threadID
+        )
+    }
+
+    private func finalizeLegacyAssistantMessage(_ event: ThreadAgentTurnEndEvent) {
+        guard let state = legacyAssistantMessages.finish(turnEnd: event) else {
+            return
+        }
+        appendTimeline(
+            state.timelineEntry(status: "completed", tintName: colorName(for: state.agentID)),
+            to: event.threadID
+        )
+    }
+
+    private func discardActiveLegacyAssistantMessage(threadID: String, sessionID: String) {
+        guard let state = legacyAssistantMessages.removeActiveState(
+            threadID: threadID,
+            sessionID: sessionID
+        ) else {
+            return
+        }
+        removeTimelineEntry(id: state.entryID, from: threadID)
     }
 
     private func upsertParticipant(_ participant: DaemonThreadParticipant, in threadID: String) {
@@ -560,6 +605,7 @@ final class DaemonChatStore: ObservableObject {
         snapshotsByThread.removeValue(forKey: threadID)
         timelineByThread.removeValue(forKey: threadID)
         cursorByThread.removeValue(forKey: threadID)
+        legacyAssistantMessages.removeStates(for: threadID)
 
         if activeThreadID == threadID {
             activeThreadID = nil

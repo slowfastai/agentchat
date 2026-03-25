@@ -228,6 +228,36 @@ struct ThreadMessageEvent: Decodable {
     }
 }
 
+struct ThreadAssistantMessageEvent: Decodable {
+    let threadID: String
+    let threadSeq: UInt64
+    let messageID: String
+    let turnID: String
+    let participantID: String
+    let agentID: String
+    let sessionID: String
+    let sessionEventSeq: UInt64
+    let thinking: String
+    let response: String
+    let state: String
+    let stopReason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case threadID = "thread_id"
+        case threadSeq = "thread_seq"
+        case messageID = "message_id"
+        case turnID = "turn_id"
+        case participantID = "participant_id"
+        case agentID = "agent_id"
+        case sessionID = "session_id"
+        case sessionEventSeq = "session_event_seq"
+        case thinking
+        case response
+        case state
+        case stopReason = "stop_reason"
+    }
+}
+
 struct ThreadAgentDeltaEvent: Decodable {
     let threadID: String
     let threadSeq: UInt64
@@ -392,8 +422,7 @@ struct SendThreadMessageRequest: Encodable {
 struct DaemonTimelineEntry: Identifiable, Hashable {
     enum Kind: String, Hashable {
         case user
-        case agentMessage
-        case thinking
+        case assistantTurn
         case tool
         case plan
         case turnEnd
@@ -401,18 +430,145 @@ struct DaemonTimelineEntry: Identifiable, Hashable {
     }
 
     let id: String
-    let threadSeq: UInt64
+    let sortThreadSeq: UInt64
+    let lastThreadSeq: UInt64
     let kind: Kind
     let title: String
     let body: String
+    let thinkingBody: String?
+    let status: String?
     let tintName: String
 
-    init(threadID: String, threadSeq: UInt64, kind: Kind, title: String, body: String, tintName: String) {
+    init(
+        threadID: String,
+        threadSeq: UInt64,
+        kind: Kind,
+        title: String,
+        body: String,
+        thinkingBody: String? = nil,
+        status: String? = nil,
+        tintName: String
+    ) {
         self.id = "\(threadID)-\(threadSeq)-\(kind.rawValue)"
-        self.threadSeq = threadSeq
+        self.sortThreadSeq = threadSeq
+        self.lastThreadSeq = threadSeq
         self.kind = kind
         self.title = title
         self.body = body
+        self.thinkingBody = thinkingBody
+        self.status = status
         self.tintName = tintName
+    }
+
+    init(
+        id: String,
+        sortThreadSeq: UInt64,
+        lastThreadSeq: UInt64,
+        kind: Kind,
+        title: String,
+        body: String,
+        thinkingBody: String? = nil,
+        status: String? = nil,
+        tintName: String
+    ) {
+        self.id = id
+        self.sortThreadSeq = sortThreadSeq
+        self.lastThreadSeq = lastThreadSeq
+        self.kind = kind
+        self.title = title
+        self.body = body
+        self.thinkingBody = thinkingBody
+        self.status = status
+        self.tintName = tintName
+    }
+}
+
+struct LegacyAssistantMessageKey: Hashable {
+    let threadID: String
+    let sessionID: String
+}
+
+struct LegacyAssistantMessageState: Equatable {
+    let threadID: String
+    let sessionID: String
+    let entryID: String
+    let sortThreadSeq: UInt64
+    let agentID: String
+    var lastThreadSeq: UInt64
+    var thinking: String
+    var response: String
+
+    init(delta event: ThreadAgentDeltaEvent) {
+        self.threadID = event.threadID
+        self.sessionID = event.sessionID
+        self.entryID = "legacy-\(event.threadID)-\(event.sessionID)-\(event.threadSeq)"
+        self.sortThreadSeq = event.threadSeq
+        self.agentID = event.agentID
+        self.lastThreadSeq = event.threadSeq
+        self.thinking = event.deltaType == "thinking" ? event.content : ""
+        self.response = event.deltaType == "text" ? event.content : ""
+    }
+
+    func timelineEntry(status: String, tintName: String) -> DaemonTimelineEntry {
+        DaemonTimelineEntry(
+            id: entryID,
+            sortThreadSeq: sortThreadSeq,
+            lastThreadSeq: lastThreadSeq,
+            kind: .assistantTurn,
+            title: agentID.capitalized,
+            body: response,
+            thinkingBody: thinking.isEmpty ? nil : thinking,
+            status: status,
+            tintName: tintName
+        )
+    }
+}
+
+struct LegacyAssistantMessageReducer {
+    private(set) var activeStates: [LegacyAssistantMessageKey: LegacyAssistantMessageState] = [:]
+
+    mutating func consume(delta event: ThreadAgentDeltaEvent) -> LegacyAssistantMessageState? {
+        let key = LegacyAssistantMessageKey(threadID: event.threadID, sessionID: event.sessionID)
+
+        if var state = activeStates[key] {
+            state.lastThreadSeq = max(state.lastThreadSeq, event.threadSeq)
+            switch event.deltaType {
+            case "thinking":
+                state.thinking.append(event.content)
+            case "text":
+                state.response.append(event.content)
+            default:
+                break
+            }
+            activeStates[key] = state
+            return state
+        }
+
+        guard !event.content.isEmpty, event.deltaType == "thinking" || event.deltaType == "text" else {
+            return nil
+        }
+
+        let state = LegacyAssistantMessageState(delta: event)
+        activeStates[key] = state
+        return state
+    }
+
+    mutating func finish(turnEnd event: ThreadAgentTurnEndEvent) -> LegacyAssistantMessageState? {
+        let key = LegacyAssistantMessageKey(threadID: event.threadID, sessionID: event.sessionID)
+        guard var state = activeStates.removeValue(forKey: key) else {
+            return nil
+        }
+        state.lastThreadSeq = max(state.lastThreadSeq, event.threadSeq)
+        return state
+    }
+
+    mutating func removeActiveState(threadID: String, sessionID: String) -> LegacyAssistantMessageState? {
+        activeStates.removeValue(
+            forKey: LegacyAssistantMessageKey(threadID: threadID, sessionID: sessionID)
+        )
+    }
+
+    mutating func removeStates(for threadID: String) {
+        activeStates = activeStates.filter { $0.key.threadID != threadID }
     }
 }

@@ -915,7 +915,7 @@ private struct TimelineBubble: View {
 
                     Spacer(minLength: 8)
 
-                    Text("seq \(entry.threadSeq)")
+                    Text("seq \(entry.lastThreadSeq)")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.white.opacity(0.70))
                 }
@@ -951,7 +951,7 @@ private struct TimelineBubble: View {
 
                     Spacer(minLength: 8)
 
-                    Text("seq \(entry.threadSeq)")
+                    Text("seq \(entry.lastThreadSeq)")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(ClaudePalette.subtleInk)
                 }
@@ -1002,11 +1002,56 @@ private struct TimelineBubble: View {
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .stroke(toolBodyStroke, lineWidth: 1)
                 )
+            } else if entry.kind == .assistantTurn {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let thinkingBody = entry.thinkingBody, !thinkingBody.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Thinking", systemImage: "brain.head.profile")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(ClaudePalette.subtleInk)
+
+                            Text(thinkingBody)
+                                .font(.callout)
+                                .foregroundStyle(ClaudePalette.subtleInk)
+                                .lineSpacing(4)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(14)
+                        .background(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(ClaudePalette.panel.opacity(0.96))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .stroke(ClaudePalette.stroke, lineWidth: 1)
+                        )
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        if entry.thinkingBody != nil {
+                            Label("Response", systemImage: "text.bubble")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(ClaudePalette.mutedInk)
+                        }
+
+                        Text(entry.body.isEmpty ? "…" : entry.body)
+                            .font(.body)
+                            .foregroundStyle(ClaudePalette.ink)
+                            .lineSpacing(5)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    if let status = entry.status, status != "completed" {
+                        Text(status.replacingOccurrences(of: "_", with: " ").capitalized)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(ClaudePalette.subtleInk)
+                    }
+                }
             } else {
                 Text(entry.body.isEmpty ? "…" : entry.body)
-                    .font(entry.kind == .thinking ? .callout : .body)
+                    .font(.body)
                     .foregroundStyle(ClaudePalette.ink)
-                    .lineSpacing(entry.kind == .thinking ? 4 : 5)
+                    .lineSpacing(5)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -1050,8 +1095,7 @@ private struct TimelineBubble: View {
 
     private var typeLabel: String {
         switch entry.kind {
-        case .agentMessage: return "Assistant"
-        case .thinking: return "Thinking"
+        case .assistantTurn: return "Assistant"
         case .tool: return "Tool"
         case .plan: return "Plan"
         case .user: return "You"
@@ -1078,8 +1122,7 @@ private struct TimelineBubble: View {
     private var iconName: String {
         switch entry.kind {
         case .user: return "paperplane.fill"
-        case .agentMessage: return "sparkles"
-        case .thinking: return "brain.head.profile"
+        case .assistantTurn: return "sparkles"
         case .tool: return "wrench.and.screwdriver.fill"
         case .plan: return "list.bullet.clipboard"
         case .turnEnd: return "checkmark.circle"
@@ -1089,8 +1132,7 @@ private struct TimelineBubble: View {
 
     private var typeColor: Color {
         switch entry.kind {
-        case .agentMessage: return ClaudePalette.mutedInk
-        case .thinking: return ClaudePalette.subtleInk
+        case .assistantTurn: return ClaudePalette.mutedInk
         case .tool: return ClaudePalette.accent
         case .plan: return Color(red: 0.463, green: 0.392, blue: 0.361)
         case .user: return .white
@@ -1101,13 +1143,11 @@ private struct TimelineBubble: View {
 
     private var cardFill: Color {
         switch entry.kind {
-        case .thinking:
-            return ClaudePalette.panel.opacity(0.96)
         case .tool:
             return ClaudePalette.toolPanel
         case .plan:
             return ClaudePalette.planPanel
-        case .agentMessage:
+        case .assistantTurn:
             return ClaudePalette.paper
         case .user, .turnEnd, .system:
             return ClaudePalette.paper
@@ -1120,7 +1160,7 @@ private struct TimelineBubble: View {
             return ClaudePalette.accent.opacity(0.22)
         case .plan:
             return Color(red: 0.463, green: 0.392, blue: 0.361).opacity(0.16)
-        case .agentMessage, .thinking, .user, .turnEnd, .system:
+        case .assistantTurn, .user, .turnEnd, .system:
             return ClaudePalette.stroke
         }
     }
