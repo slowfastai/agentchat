@@ -68,6 +68,7 @@ Copy the returned `session_id`, then send:
 {"type":"list_skills"}
 {"type":"get_skill","name":"<skill-name>.md"}
 {"type":"close_session","session_id":"<session-id>"}
+{"type":"close_thread","thread_id":"<thread-id>"}
 ```
 
 What to expect:
@@ -79,6 +80,7 @@ What to expect:
 - `attach_session` returns `session_attached`, then `session_snapshot`, then optional replayed events, then `session_replay_complete`.
 - `distill_session` returns `distillation_status` with `started`, then `completed` or `failed`.
 - `close_session` returns `session_closed` and removes the live session from the daemon.
+- `close_thread` returns `thread_closed`, removes the live thread from the daemon, and tears down its backing live sessions.
 - Session transcripts are written under `.agentchat/sessions/`.
 - Session event journals are appended under `.agentchat/sessions/<session_id>.events.jsonl`.
 - Distilled skills are written under `.agentchat/skills/shared/` for all agents, or `.agentchat/skills/agents/<agent-id>/` for agent-specific memory.
@@ -372,6 +374,37 @@ Success response:
     "session_id": "session-1",
     "state": "idle"
   }
+}
+```
+
+## `close_thread`
+
+Close and remove one live thread from the daemon.
+
+Request:
+
+```json
+{"type":"close_thread","thread_id":"thread-1"}
+```
+
+Success response:
+
+```json
+{"type":"thread_closed","thread_id":"thread-1"}
+```
+
+Notes:
+- `close_thread` is currently **idle-only**. If any backing agent session is still running a prompt, the daemon rejects the request.
+- Closing a thread also removes its live backing sessions from the daemon.
+- Thread and session journal files are retained on disk for now; this is a live close, not a permanent wipe.
+
+Busy-thread error:
+
+```json
+{
+  "type": "error",
+  "code": "thread_busy",
+  "message": "cannot close a thread while agent work is in progress"
 }
 ```
 

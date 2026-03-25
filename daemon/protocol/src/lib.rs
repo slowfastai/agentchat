@@ -231,6 +231,9 @@ pub enum ResponseEvent {
     /// Compact snapshot of a live thread.
     ThreadSnapshot { snapshot: ThreadSnapshot },
 
+    /// Thread closed and removed from the daemon's live thread set.
+    ThreadClosed { thread_id: String },
+
     /// Replay handoff is complete and live thread streaming resumes.
     ThreadReplayComplete {
         thread_id: String,
@@ -409,6 +412,7 @@ impl ResponseEvent {
             | ResponseEvent::ThreadList { .. }
             | ResponseEvent::ThreadAttached { .. }
             | ResponseEvent::ThreadSnapshot { .. }
+            | ResponseEvent::ThreadClosed { .. }
             | ResponseEvent::ThreadReplayComplete { .. }
             | ResponseEvent::ThreadParticipantAdded { .. }
             | ResponseEvent::ThreadParticipantRemoved { .. }
@@ -427,6 +431,7 @@ impl ResponseEvent {
         match self {
             ResponseEvent::ThreadCreated { thread_id, .. }
             | ResponseEvent::ThreadAttached { thread_id, .. }
+            | ResponseEvent::ThreadClosed { thread_id, .. }
             | ResponseEvent::ThreadReplayComplete { thread_id, .. }
             | ResponseEvent::ThreadParticipantAdded { thread_id, .. }
             | ResponseEvent::ThreadParticipantRemoved { thread_id, .. }
@@ -473,6 +478,7 @@ impl ResponseEvent {
             | ResponseEvent::ThreadList { .. }
             | ResponseEvent::ThreadAttached { .. }
             | ResponseEvent::ThreadSnapshot { .. }
+            | ResponseEvent::ThreadClosed { .. }
             | ResponseEvent::ThreadReplayComplete { .. }
             | ResponseEvent::ThreadParticipantAdded { .. }
             | ResponseEvent::ThreadParticipantRemoved { .. }
@@ -502,6 +508,7 @@ impl ResponseEvent {
             | ResponseEvent::ThreadList { .. }
             | ResponseEvent::ThreadAttached { .. }
             | ResponseEvent::ThreadSnapshot { .. }
+            | ResponseEvent::ThreadClosed { .. }
             | ResponseEvent::ThreadReplayComplete { .. }
             | ResponseEvent::SessionList { .. }
             | ResponseEvent::SessionAttached { .. }
@@ -557,6 +564,8 @@ pub enum ClientMessage {
         thread_id: String,
         participant_id: String,
     },
+    /// Close and remove a live thread from the daemon.
+    CloseThread { thread_id: String },
     /// Send a user message into a thread and fan it out to selected participants.
     SendThreadMessage {
         thread_id: String,
@@ -628,6 +637,9 @@ mod tests {
             ClientMessage::RemoveThreadParticipant {
                 thread_id: "thread-1".into(),
                 participant_id: "participant-1".into(),
+            },
+            ClientMessage::CloseThread {
+                thread_id: "thread-1".into(),
             },
             ClientMessage::SendThreadMessage {
                 thread_id: "thread-1".into(),
@@ -715,6 +727,9 @@ mod tests {
                         state: ParticipantState::Idle,
                     }],
                 },
+            },
+            ResponseEvent::ThreadClosed {
+                thread_id: "thread-1".into(),
             },
             ResponseEvent::ThreadReplayComplete {
                 thread_id: "thread-1".into(),

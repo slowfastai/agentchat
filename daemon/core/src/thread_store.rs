@@ -122,6 +122,16 @@ impl ThreadStore {
         Some(participant)
     }
 
+    pub fn remove_thread(&mut self, thread_id: &str) -> Option<ThreadRecord> {
+        let thread = self.threads.remove(thread_id)?;
+        for participant in &thread.participants {
+            if let Some(session_id) = &participant.session_id {
+                self.session_to_binding.remove(session_id);
+            }
+        }
+        Some(thread)
+    }
+
     pub fn binding_for_session(&self, session_id: &str) -> Option<&ThreadSessionBinding> {
         self.session_to_binding.get(session_id)
     }

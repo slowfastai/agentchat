@@ -946,6 +946,195 @@ async fn websocket_attach_thread_replays_events_after_cursor() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn websocket_close_thread_removes_it_from_thread_list() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_multi_agent_harness(&[("alpha", FakeAgentMode::Normal)]).await;
+            let mut ws = connect_ws(harness.port).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateThread {
+                    title: Some("Closable".into()),
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+            let thread_id = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadCreated { thread_id, .. } => thread_id,
+                event => panic!("unexpected event while creating thread: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AddThreadParticipant {
+                    thread_id: thread_id.clone(),
+                    agent_id: "alpha".into(),
+                },
+            )
+            .await;
+            let session_id = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadParticipantAdded { participant, .. } => participant
+                    .session_id
+                    .expect("missing participant session id"),
+                event => panic!("unexpected event while adding thread participant: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CloseThread {
+                    thread_id: thread_id.clone(),
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::ThreadClosed { thread_id: tid } => assert_eq!(tid, thread_id),
+                event => panic!("unexpected event while closing thread: {event:?}"),
+            }
+
+            send_client_message(&mut ws, &ClientMessage::ListThreads).await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::ThreadList { threads } => {
+                    assert!(!threads.iter().any(|thread| thread.thread_id == thread_id));
+                }
+                event => panic!("unexpected event while re-listing threads: {event:?}"),
+            }
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AttachThread {
+                    thread_id: thread_id.clone(),
+                    after_seq: None,
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::Error {
+                    session_id: None,
+                    event_seq: None,
+                    code,
+                    message,
+                } => {
+                    assert_eq!(code, "thread_not_found");
+                    assert_eq!(message, "no live thread with this id");
+                }
+                event => panic!("unexpected event while attaching closed thread: {event:?}"),
+            }
+
+            assert_eq!(
+                harness.manager.borrow().agent_for_session(&session_id),
+                None
+            );
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn websocket_close_thread_rejects_busy_thread() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness =
+                start_multi_agent_harness(&[("alpha", FakeAgentMode::WaitForCancel)]).await;
+            let mut ws = connect_ws(harness.port).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateThread {
+                    title: Some("Busy".into()),
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+            let thread_id = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadCreated { thread_id, .. } => thread_id,
+                event => panic!("unexpected event while creating thread: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AddThreadParticipant {
+                    thread_id: thread_id.clone(),
+                    agent_id: "alpha".into(),
+                },
+            )
+            .await;
+            let expected_participant_id = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadParticipantAdded { participant, .. } => {
+                    participant.participant_id
+                }
+                event => panic!("unexpected event while adding thread participant: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::SendThreadMessage {
+                    thread_id: thread_id.clone(),
+                    content: "wait".into(),
+                    target_participant_ids: None,
+                },
+            )
+            .await;
+
+            match receive_event(&mut ws).await {
+                ResponseEvent::ThreadMessage { thread_id: tid, .. } => assert_eq!(tid, thread_id),
+                event => panic!("unexpected event while starting busy thread prompt: {event:?}"),
+            }
+
+            loop {
+                match receive_event(&mut ws).await {
+                    ResponseEvent::ThreadAgentDelta {
+                        thread_id: tid,
+                        participant_id,
+                        content,
+                        ..
+                    } => {
+                        assert_eq!(tid, thread_id);
+                        assert_eq!(participant_id, expected_participant_id);
+                        assert_eq!(content, "waiting for cancel");
+                        break;
+                    }
+                    ResponseEvent::Delta { .. } => {}
+                    event => panic!("unexpected event while waiting for busy prompt: {event:?}"),
+                }
+            }
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CloseThread {
+                    thread_id: thread_id.clone(),
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::Error {
+                    session_id: None,
+                    event_seq: None,
+                    code,
+                    message,
+                } => {
+                    assert_eq!(code, "thread_busy");
+                    assert_eq!(
+                        message,
+                        "cannot close a thread while agent work is in progress"
+                    );
+                }
+                event => panic!("unexpected event while closing busy thread: {event:?}"),
+            }
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn websocket_attach_thread_rejects_cursor_ahead_of_tail() {
     let local = tokio::task::LocalSet::new();
     local

@@ -57,6 +57,11 @@ impl ThreadEventLog {
             .collect()
     }
 
+    pub fn remove_thread(&mut self, thread_id: &str) {
+        self.next_seq.remove(thread_id);
+        self.events.remove(thread_id);
+    }
+
     pub fn event_log_path(&self, thread_id: &str) -> PathBuf {
         self.threads_dir.join(format!("{thread_id}.events.jsonl"))
     }

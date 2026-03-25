@@ -262,6 +262,9 @@ impl AppProtocolSession {
                 self.handle_remove_thread_participant(thread_id, participant_id)
                     .await;
             }
+            ClientMessage::CloseThread { thread_id } => {
+                self.handle_close_thread(thread_id).await;
+            }
             ClientMessage::SendThreadMessage {
                 thread_id,
                 content,
@@ -666,6 +669,70 @@ impl AppProtocolSession {
                 participant_id,
             },
         );
+    }
+
+    async fn handle_close_thread(&mut self, thread_id: String) {
+        let thread = match self.thread_store.borrow().get_thread(&thread_id).cloned() {
+            Some(thread) => thread,
+            None => {
+                let _ = self.response_tx.send(ResponseEvent::Error {
+                    session_id: None,
+                    event_seq: None,
+                    code: "thread_not_found".into(),
+                    message: "no live thread with this id".into(),
+                });
+                return;
+            }
+        };
+
+        let session_ids = thread
+            .participants
+            .iter()
+            .filter_map(|participant| participant.session_id.clone())
+            .collect::<Vec<_>>();
+        if session_ids
+            .iter()
+            .any(|session_id| self.active_prompt_sessions.borrow().contains(session_id))
+        {
+            let _ = self.response_tx.send(ResponseEvent::Error {
+                session_id: None,
+                event_seq: None,
+                code: "thread_busy".into(),
+                message: "cannot close a thread while agent work is in progress".into(),
+            });
+            return;
+        }
+
+        let _ = self.response_tx.send(ResponseEvent::ThreadClosed {
+            thread_id: thread_id.clone(),
+        });
+
+        let removed_thread = self
+            .thread_store
+            .borrow_mut()
+            .remove_thread(&thread_id)
+            .expect("thread must still exist after preflight");
+
+        for session_id in removed_thread
+            .participants
+            .into_iter()
+            .filter_map(|participant| participant.session_id)
+        {
+            if let Err(err) =
+                flush_session_snapshot(self.session_store.clone(), session_id.clone()).await
+            {
+                warn!("failed to flush session {session_id} before close_thread: {err}");
+            }
+            self.session_store.borrow_mut().remove_session(&session_id);
+            self.session_event_log
+                .borrow_mut()
+                .remove_session(&session_id);
+            self.manager.borrow_mut().remove_session(&session_id);
+            self.created_sessions
+                .retain(|created| created != &session_id);
+        }
+
+        self.thread_event_log.borrow_mut().remove_thread(&thread_id);
     }
 
     async fn handle_send_thread_message(
