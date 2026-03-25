@@ -168,6 +168,14 @@ struct ThreadSnapshotEvent: Decodable {
     let snapshot: DaemonThreadSnapshot
 }
 
+struct ThreadClosedEvent: Decodable {
+    let threadID: String
+
+    enum CodingKeys: String, CodingKey {
+        case threadID = "thread_id"
+    }
+}
+
 struct ThreadReplayCompleteEvent: Decodable {
     let threadID: String
     let lastThreadSeq: UInt64
@@ -354,6 +362,16 @@ struct AddThreadParticipantRequest: Encodable {
         case type
         case threadID = "thread_id"
         case agentID = "agent_id"
+    }
+}
+
+struct CloseThreadRequest: Encodable {
+    let type = "close_thread"
+    let threadID: String
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case threadID = "thread_id"
     }
 }
 

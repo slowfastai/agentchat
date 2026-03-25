@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var draft = ""
     @State private var isScannerPresented = false
     @State private var compactPresentedThreadID: String?
+    @State private var pendingCloseThread: DaemonThreadSummary?
     @State private var selectedTab: AppTab = .feed
 
     var body: some View {
@@ -67,6 +68,33 @@ struct ContentView: View {
                             }
                         }
                     }
+            }
+        }
+        .confirmationDialog(
+            "Close Thread?",
+            isPresented: Binding(
+                get: { pendingCloseThread != nil },
+                set: { newValue in
+                    if !newValue {
+                        pendingCloseThread = nil
+                    }
+                }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let thread = pendingCloseThread {
+                Button("Close in Daemon", role: .destructive) {
+                    store.closeThread(thread.threadID)
+                    pendingCloseThread = nil
+                }
+            }
+
+            Button("Cancel", role: .cancel) {
+                pendingCloseThread = nil
+            }
+        } message: {
+            if let thread = pendingCloseThread {
+                Text("\"\(thread.title ?? thread.threadID)\" will be closed in the daemon and removed for every client, not just hidden on this device.")
             }
         }
     }
@@ -172,9 +200,34 @@ struct ContentView: View {
                     Button {
                         openThread(thread.threadID)
                     } label: {
-                        ThreadFeedRow(thread: thread, isActive: store.activeThreadID == thread.threadID)
+                        ThreadFeedRow(
+                            thread: thread,
+                            isActive: store.activeThreadID == thread.threadID,
+                            isPinned: store.isPinnedThread(thread.threadID)
+                        )
                     }
                     .buttonStyle(.plain)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button {
+                            store.togglePinnedThread(thread.threadID)
+                        } label: {
+                            Label(store.isPinnedThread(thread.threadID) ? "Unpin" : "Pin", systemImage: store.isPinnedThread(thread.threadID) ? "pin.slash" : "pin")
+                        }
+                        .tint(.orange)
+
+                        Button {
+                            store.hideThread(thread.threadID)
+                        } label: {
+                            Label("Hide", systemImage: "eye.slash")
+                        }
+                        .tint(.gray)
+
+                        Button(role: .destructive) {
+                            pendingCloseThread = thread
+                        } label: {
+                            Label("Close", systemImage: "xmark.circle")
+                        }
+                    }
                 }
             }
         }
@@ -272,6 +325,38 @@ struct ContentView: View {
                 )
             }
         }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if let thread = activeClosableThread {
+                    Button(role: .destructive) {
+                        pendingCloseThread = thread
+                    } label: {
+                        Label("Close", systemImage: "xmark.circle")
+                    }
+                }
+            }
+        }
+    }
+
+    private var activeClosableThread: DaemonThreadSummary? {
+        if let threadID = store.activeThreadID,
+           let summary = store.threads.first(where: { $0.threadID == threadID }) {
+            return summary
+        }
+
+        if let snapshot = store.activeThreadSnapshot {
+            return DaemonThreadSummary(
+                threadID: snapshot.threadID,
+                title: snapshot.title,
+                workingDir: snapshot.workingDir,
+                createdAtMS: snapshot.createdAtMS,
+                state: "idle",
+                participantCount: snapshot.participants.count,
+                lastThreadSeq: snapshot.lastThreadSeq
+            )
+        }
+
+        return nil
     }
 
     private func header(snapshot: DaemonThreadSnapshot) -> some View {
@@ -404,6 +489,7 @@ private struct CompactPresentedThread: Identifiable {
 private struct ThreadFeedRow: View {
     let thread: DaemonThreadSummary
     let isActive: Bool
+    let isPinned: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -423,6 +509,12 @@ private struct ThreadFeedRow: View {
                         .font(.body.weight(.medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
+
+                    if isPinned {
+                        Image(systemName: "pin.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
 
                     Spacer(minLength: 8)
 

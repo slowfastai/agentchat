@@ -20,14 +20,26 @@ final class DaemonChatStore: ObservableObject {
         daemonURLString
     }
 
+    private let pinnedThreadsKey = "agentchat_pinned_thread_ids"
+    private let hiddenThreadsKey = "agentchat_hidden_thread_ids"
+
     private var socketTask: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var pendingThreadAgentIDs: [String] = []
     private var hasStarted = false
+    private var allThreads: [DaemonThreadSummary] = []
+    private var pinnedThreadIDs: Set<String>
+    private var hiddenThreadIDs: Set<String>
     private var snapshotsByThread: [String: DaemonThreadSnapshot] = [:]
     private var timelineByThread: [String: [DaemonTimelineEntry]] = [:]
     private var cursorByThread: [String: UInt64] = [:]
+
+    init() {
+        let defaults = UserDefaults.standard
+        self.pinnedThreadIDs = Set(defaults.stringArray(forKey: pinnedThreadsKey) ?? [])
+        self.hiddenThreadIDs = Set(defaults.stringArray(forKey: hiddenThreadsKey) ?? [])
+    }
 
     func start() {
         guard !hasStarted else { return }
@@ -41,6 +53,33 @@ final class DaemonChatStore: ObservableObject {
         let title = chosenAgentIDs.isEmpty ? "New Chat" : chosenAgentIDs.joined(separator: " + ")
         Task {
             await send(CreateThreadRequest(title: title, workingDir: "."))
+        }
+    }
+
+    func isPinnedThread(_ threadID: String) -> Bool {
+        pinnedThreadIDs.contains(threadID)
+    }
+
+    func togglePinnedThread(_ threadID: String) {
+        if pinnedThreadIDs.contains(threadID) {
+            pinnedThreadIDs.remove(threadID)
+        } else {
+            pinnedThreadIDs.insert(threadID)
+        }
+        persistThreadPreferences()
+        applyThreadPresentation()
+    }
+
+    func hideThread(_ threadID: String) {
+        hiddenThreadIDs.insert(threadID)
+        pinnedThreadIDs.remove(threadID)
+        persistThreadPreferences()
+        removeThreadFromLocalState(threadID)
+    }
+
+    func closeThread(_ threadID: String) {
+        Task {
+            await send(CloseThreadRequest(threadID: threadID))
         }
     }
 
@@ -248,8 +287,9 @@ final class DaemonChatStore: ObservableObject {
                     participantCount: 1,
                     lastThreadSeq: 0
                 )
-                threads.removeAll { $0.threadID == event.threadID }
-                threads.insert(summary, at: 0)
+                allThreads.removeAll { $0.threadID == event.threadID }
+                allThreads.insert(summary, at: 0)
+                applyThreadPresentation()
                 activeThreadID = event.threadID
                 activeThreadSnapshot = nil
                 timelineByThread[event.threadID] = []
@@ -264,8 +304,8 @@ final class DaemonChatStore: ObservableObject {
                     await send(AttachThreadRequest(threadID: event.threadID, afterSeq: nil))
                 }
             case "thread_list":
-                threads = try decoder.decode(ThreadListEvent.self, from: data).threads
-                    .sorted { $0.createdAtMS > $1.createdAtMS }
+                allThreads = try decoder.decode(ThreadListEvent.self, from: data).threads
+                applyThreadPresentation()
                 if activeThreadID == nil, let firstThread = threads.first {
                     attachThread(firstThread.threadID)
                 }
@@ -284,6 +324,12 @@ final class DaemonChatStore: ObservableObject {
                         selectedParticipantIDs = allParticipants
                     }
                 }
+            case "thread_closed":
+                let event = try decoder.decode(ThreadClosedEvent.self, from: data)
+                pinnedThreadIDs.remove(event.threadID)
+                hiddenThreadIDs.remove(event.threadID)
+                persistThreadPreferences()
+                removeThreadFromLocalState(event.threadID)
             case "thread_replay_complete":
                 let event = try decoder.decode(ThreadReplayCompleteEvent.self, from: data)
                 cursorByThread[event.threadID] = max(cursorByThread[event.threadID] ?? 0, event.lastThreadSeq)
@@ -493,10 +539,49 @@ final class DaemonChatStore: ObservableObject {
     }
 
     private func updateThreadSummary(threadID: String, transform: (DaemonThreadSummary) -> DaemonThreadSummary) {
-        if let index = threads.firstIndex(where: { $0.threadID == threadID }) {
-            threads[index] = transform(threads[index])
-            threads.sort { $0.createdAtMS > $1.createdAtMS }
+        if let index = allThreads.firstIndex(where: { $0.threadID == threadID }) {
+            allThreads[index] = transform(allThreads[index])
+            applyThreadPresentation()
         }
+    }
+
+    private func removeThreadFromLocalState(_ threadID: String) {
+        allThreads.removeAll { $0.threadID == threadID }
+        snapshotsByThread.removeValue(forKey: threadID)
+        timelineByThread.removeValue(forKey: threadID)
+        cursorByThread.removeValue(forKey: threadID)
+
+        if activeThreadID == threadID {
+            activeThreadID = nil
+            activeThreadSnapshot = nil
+            timeline = []
+            selectedParticipantIDs = []
+        }
+
+        applyThreadPresentation()
+
+        if activeThreadID == nil, let firstThread = threads.first {
+            attachThread(firstThread.threadID)
+        }
+    }
+
+    private func applyThreadPresentation() {
+        threads = allThreads
+            .filter { !hiddenThreadIDs.contains($0.threadID) }
+            .sorted { lhs, rhs in
+                let lhsPinned = pinnedThreadIDs.contains(lhs.threadID)
+                let rhsPinned = pinnedThreadIDs.contains(rhs.threadID)
+                if lhsPinned != rhsPinned {
+                    return lhsPinned && !rhsPinned
+                }
+                return lhs.createdAtMS > rhs.createdAtMS
+            }
+    }
+
+    private func persistThreadPreferences() {
+        let defaults = UserDefaults.standard
+        defaults.set(Array(pinnedThreadIDs).sorted(), forKey: pinnedThreadsKey)
+        defaults.set(Array(hiddenThreadIDs).sorted(), forKey: hiddenThreadsKey)
     }
 
     private func colorName(for agentID: String) -> String {
