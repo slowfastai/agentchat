@@ -4,6 +4,9 @@ This document covers the memory-layer WebSocket messages added on top of the exi
 session lifecycle (`create_session`, `prompt`, `cancel`). All messages are JSON objects
 with a top-level `type` field.
 
+For the next-step design that keeps the daemon alive across iOS disconnects and adds
+session re-attach / replay semantics, see `daemon/RECONNECT.md`.
+
 ## Manual Smoke Test
 
 You do not need an iOS app to try these messages. Any WebSocket client works.
@@ -41,16 +44,22 @@ Copy the returned `session_id`, then send:
 
 ```json
 {"type":"prompt","session_id":"<session-id>","content":"inspect the repo"}
+{"type":"list_sessions"}
+{"type":"attach_session","session_id":"<session-id>"}
 {"type":"list_skills"}
 {"type":"distill_session","session_id":"<session-id>"}
 {"type":"list_skills"}
 {"type":"get_skill","name":"<skill-name>.md"}
+{"type":"close_session","session_id":"<session-id>"}
 ```
 
 What to expect:
 - `create_session` returns `session_created`.
 - `prompt` streams `delta` / `tool_update` events and ends with `turn_end`.
+- `list_sessions` returns currently live daemon sessions.
+- `attach_session` returns `session_attached`, then `session_snapshot`.
 - `distill_session` returns `distillation_status` with `started`, then `completed` or `failed`.
+- `close_session` returns `session_closed` and removes the live session from the daemon.
 - Session transcripts are written under `.agentchat/sessions/`.
 - Distilled skills are written under `.agentchat/skills/shared/` for all agents, or `.agentchat/skills/agents/<agent-id>/` for agent-specific memory.
 
@@ -119,6 +128,107 @@ Connected (press CTRL+C to quit)
 
 Tip:
 - `wscat` is handy when you just want to paste one JSON message at a time and inspect raw responses.
+
+## `list_sessions`
+
+List live sessions currently owned by the daemon.
+
+Request:
+
+```json
+{"type":"list_sessions"}
+```
+
+Success response:
+
+```json
+{
+  "type": "session_list",
+  "sessions": [
+    {
+      "session_id": "session-1",
+      "agent_id": "fake",
+      "working_dir": ".",
+      "created_at_ms": 1774257600000,
+      "state": "idle",
+      "last_stop_reason": "EndTurn"
+    }
+  ]
+}
+```
+
+Notes:
+- Only live daemon sessions are returned.
+- Session discovery after daemon restart will be expanded further in the reconnect work described in `daemon/RECONNECT.md`.
+
+## `attach_session`
+
+Attach the current client connection to an existing live session.
+
+Request:
+
+```json
+{"type":"attach_session","session_id":"session-1"}
+```
+
+Success responses:
+
+```json
+{"type":"session_attached","session_id":"session-1"}
+```
+
+```json
+{
+  "type": "session_snapshot",
+  "snapshot": {
+    "session_id": "session-1",
+    "agent_id": "fake",
+    "working_dir": ".",
+    "created_at_ms": 1774257600000,
+    "state": "idle",
+    "last_stop_reason": "EndTurn",
+    "last_error": null
+  }
+}
+```
+
+Error response:
+
+```json
+{
+  "type": "error",
+  "session_id": "session-1",
+  "code": "session_not_found",
+  "message": "no live session with this id"
+}
+```
+
+## `close_session`
+
+Close a live session and remove it from the daemon.
+
+Request:
+
+```json
+{"type":"close_session","session_id":"session-1"}
+```
+
+Success response:
+
+```json
+{"type":"session_closed","session_id":"session-1"}
+```
+
+Possible error response:
+
+```json
+{
+  "type": "error",
+  "session_id": "session-1",
+  "code": "session_busy",
+  "message": "cannot close a session while a prompt is in progress"
+}
+```
 
 ## `list_skills`
 

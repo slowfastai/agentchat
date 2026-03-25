@@ -10,7 +10,8 @@ use agentchat_core::distiller::Distiller;
 use agentchat_core::session_store::SessionStore;
 use agentchat_core::skills::SkillStore;
 use agentchat_protocol::{
-    AgentConfig, ClientMessage, DeltaType, ResponseEvent, SessionEvent, SessionTranscript,
+    AgentConfig, ClientMessage, DeltaType, ResponseEvent, SessionEvent, SessionState,
+    SessionTranscript,
 };
 use agentchat_server::ws::WebSocketServer;
 use futures::{SinkExt, StreamExt};
@@ -65,7 +66,7 @@ impl TestHarness {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn websocket_round_trip_streams_prompt_events_and_cleans_up_sessions() {
+async fn websocket_round_trip_streams_prompt_events_and_survives_reconnect() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -128,14 +129,75 @@ async fn websocket_round_trip_streams_prompt_events_and_cleans_up_sessions() {
             ws.send(Message::Close(None)).await.unwrap();
             drop(ws);
 
-            wait_for(|| {
-                harness
-                    .manager
-                    .borrow()
-                    .agent_for_session(&session_id)
-                    .is_none()
-            })
+            assert_eq!(
+                harness.manager.borrow().agent_for_session(&session_id),
+                Some("fake")
+            );
+
+            let mut ws = connect_ws(harness.port).await;
+            send_client_message(&mut ws, &ClientMessage::ListSessions).await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::SessionList { sessions } => {
+                    assert!(sessions.iter().any(|session| {
+                        session.session_id == session_id
+                            && session.agent_id == "fake"
+                            && session.working_dir == "."
+                    }));
+                }
+                event => panic!("unexpected event while listing sessions: {event:?}"),
+            }
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AttachSession {
+                    session_id: session_id.clone(),
+                },
+            )
             .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::SessionAttached { session_id: sid } => {
+                    assert_eq!(sid, session_id);
+                }
+                event => panic!("unexpected event while attaching session: {event:?}"),
+            }
+            match receive_event(&mut ws).await {
+                ResponseEvent::SessionSnapshot { snapshot } => {
+                    assert_eq!(snapshot.session_id, session_id);
+                    assert_eq!(snapshot.agent_id, "fake");
+                    assert_eq!(snapshot.working_dir, ".");
+                    assert_eq!(snapshot.state, SessionState::Idle);
+                }
+                event => panic!("unexpected event while reading session snapshot: {event:?}"),
+            }
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::Prompt {
+                    session_id: session_id.clone(),
+                    content: "say hello again".into(),
+                },
+            )
+            .await;
+
+            let reconnect_events = collect_prompt_events(&mut ws, &session_id).await;
+            assert!(reconnect_events.iter().any(|event| matches!(
+                event,
+                ResponseEvent::Delta {
+                    session_id: sid,
+                    delta_type: DeltaType::Text,
+                    content,
+                } if sid == &session_id && content == "echo: say hello again"
+            )));
+            assert!(reconnect_events.iter().any(|event| matches!(
+                event,
+                ResponseEvent::TurnEnd {
+                    session_id: sid,
+                    stop_reason,
+                } if sid == &session_id && stop_reason == "EndTurn"
+            )));
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
             harness.finish().await;
         })
         .await;
@@ -572,7 +634,7 @@ async fn websocket_injects_distilled_shared_and_agent_specific_skills_into_new_s
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn websocket_disconnect_cancels_in_flight_prompt_and_removes_session() {
+async fn websocket_disconnect_keeps_in_flight_prompt_running_until_explicit_cancel() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -612,15 +674,100 @@ async fn websocket_disconnect_cancels_in_flight_prompt_and_removes_session() {
             ws.send(Message::Close(None)).await.unwrap();
             drop(ws);
 
-            wait_for_file_line(&harness.events_path, &format!("cancel:{session_id}")).await;
-            wait_for(|| {
-                harness
-                    .manager
-                    .borrow()
-                    .agent_for_session(&session_id)
-                    .is_none()
-            })
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            assert!(
+                !file_contains_line(&harness.events_path, &format!("cancel:{session_id}")),
+                "disconnect should not implicitly cancel the prompt"
+            );
+            assert_eq!(
+                harness.manager.borrow().agent_for_session(&session_id),
+                Some("fake")
+            );
+
+            let mut ws = connect_ws(harness.port).await;
+            send_client_message(
+                &mut ws,
+                &ClientMessage::Cancel {
+                    session_id: session_id.clone(),
+                },
+            )
             .await;
+
+            wait_for_file_line(&harness.events_path, &format!("cancel:{session_id}")).await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::TurnEnd {
+                    session_id: sid,
+                    stop_reason,
+                } => {
+                    assert_eq!(sid, session_id);
+                    assert_eq!(stop_reason, "Cancelled");
+                }
+                event => panic!("unexpected event after explicit cancel: {event:?}"),
+            }
+
+            assert_eq!(
+                harness.manager.borrow().agent_for_session(&session_id),
+                Some("fake")
+            );
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn websocket_close_session_removes_it_from_session_list() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_harness(FakeAgentMode::Normal).await;
+            let mut ws = connect_ws(harness.port).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateSession {
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+            let session_id = expect_session_created(&mut ws).await;
+
+            send_client_message(&mut ws, &ClientMessage::ListSessions).await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::SessionList { sessions } => {
+                    assert!(sessions.iter().any(|session| session.session_id == session_id));
+                }
+                event => panic!("unexpected event while listing sessions: {event:?}"),
+            }
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CloseSession {
+                    session_id: session_id.clone(),
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::SessionClosed { session_id: sid } => {
+                    assert_eq!(sid, session_id);
+                }
+                event => panic!("unexpected event while closing session: {event:?}"),
+            }
+
+            send_client_message(&mut ws, &ClientMessage::ListSessions).await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::SessionList { sessions } => {
+                    assert!(!sessions.iter().any(|session| session.session_id == session_id));
+                }
+                event => panic!("unexpected event while re-listing sessions: {event:?}"),
+            }
+
+            assert_eq!(harness.manager.borrow().agent_for_session(&session_id), None);
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
             harness.finish().await;
         })
         .await;
@@ -892,11 +1039,12 @@ async fn wait_for(mut predicate: impl FnMut() -> bool) {
     .expect("timed out waiting for condition");
 }
 
+fn file_contains_line(path: &Path, expected_line: &str) -> bool {
+    std::fs::read_to_string(path)
+        .map(|content| content.lines().any(|line| line == expected_line))
+        .unwrap_or(false)
+}
+
 async fn wait_for_file_line(path: &Path, expected_line: &str) {
-    wait_for(|| {
-        std::fs::read_to_string(path)
-            .map(|content| content.lines().any(|line| line == expected_line))
-            .unwrap_or(false)
-    })
-    .await;
+    wait_for(|| file_contains_line(path, expected_line)).await;
 }

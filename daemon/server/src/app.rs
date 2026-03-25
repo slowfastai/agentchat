@@ -6,22 +6,24 @@ use std::rc::Rc;
 use agent_client_protocol::{
     ContentBlock, PromptResponse, SessionId, SessionNotification, SessionUpdate,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tracing::{error, warn};
 
 use agentchat_core::agent_manager::AgentManager;
 use agentchat_core::distiller::Distiller;
 use agentchat_core::session_store::SessionStore;
 use agentchat_core::skills::SkillStore;
-use agentchat_protocol::{ClientMessage, DeltaType, ResponseEvent, SessionTranscript, SkillInfo};
+use agentchat_protocol::{
+    ClientMessage, DeltaType, ResponseEvent, SessionEvent, SessionSnapshot, SessionState,
+    SessionSummary, SessionTranscript, SkillInfo,
+};
 
 pub struct AppProtocolSession {
     manager: Rc<RefCell<AgentManager>>,
     session_store: Rc<RefCell<SessionStore>>,
     skill_store: Rc<SkillStore>,
     distiller: Rc<Distiller>,
-    response_tx: mpsc::UnboundedSender<ResponseEvent>,
-    response_rx: Option<mpsc::UnboundedReceiver<ResponseEvent>>,
+    response_tx: broadcast::Sender<ResponseEvent>,
     internal_sessions: Rc<RefCell<HashMap<String, mpsc::UnboundedSender<SessionNotification>>>>,
     created_sessions: Vec<String>,
     active_prompt_session: Rc<RefCell<Option<String>>>,
@@ -66,7 +68,7 @@ impl AppProtocolSession {
         };
 
         let (mut update_rx, mut health_rx) = setup?;
-        let (response_tx, response_rx) = mpsc::unbounded_channel::<ResponseEvent>();
+        let (response_tx, _) = broadcast::channel::<ResponseEvent>(1024);
         let internal_sessions = Rc::new(RefCell::new(HashMap::<
             String,
             mpsc::UnboundedSender<SessionNotification>,
@@ -88,9 +90,7 @@ impl AppProtocolSession {
                     .borrow_mut()
                     .record_notification(&sid, &notification);
                 let event = map_session_update(&notification);
-                if response_tx_updates.send(event).is_err() {
-                    break;
-                }
+                let _ = response_tx_updates.send(event);
             }
         });
 
@@ -135,21 +135,33 @@ impl AppProtocolSession {
             skill_store,
             distiller,
             response_tx,
-            response_rx: Some(response_rx),
             internal_sessions,
             created_sessions: Vec::new(),
             active_prompt_session: Rc::new(RefCell::new(None)),
         })
     }
 
-    pub fn take_response_rx(&mut self) -> Option<mpsc::UnboundedReceiver<ResponseEvent>> {
-        self.response_rx.take()
+    pub fn subscribe_events(&self) -> broadcast::Receiver<ResponseEvent> {
+        self.response_tx.subscribe()
+    }
+
+    pub fn event_sender(&self) -> broadcast::Sender<ResponseEvent> {
+        self.response_tx.clone()
     }
 
     pub async fn handle_client_message(&mut self, client_msg: ClientMessage) {
         match client_msg {
             ClientMessage::CreateSession { working_dir } => {
                 self.handle_create_session(working_dir).await;
+            }
+            ClientMessage::ListSessions => {
+                self.handle_list_sessions().await;
+            }
+            ClientMessage::AttachSession { session_id } => {
+                self.handle_attach_session(session_id).await;
+            }
+            ClientMessage::CloseSession { session_id } => {
+                self.handle_close_session(session_id).await;
             }
             ClientMessage::Prompt {
                 session_id,
@@ -253,6 +265,78 @@ impl AppProtocolSession {
                 });
             }
         }
+    }
+
+    async fn handle_list_sessions(&self) {
+        let mut sessions = self
+            .session_store
+            .borrow()
+            .list_transcripts()
+            .into_iter()
+            .filter(|transcript| {
+                self.manager
+                    .borrow()
+                    .agent_for_session(&transcript.session_id)
+                    .is_some()
+            })
+            .map(|transcript| self.build_session_summary(&transcript))
+            .collect::<Vec<_>>();
+        sessions.sort_by(|left, right| left.created_at_ms.cmp(&right.created_at_ms));
+
+        let _ = self.response_tx.send(ResponseEvent::SessionList { sessions });
+    }
+
+    async fn handle_attach_session(&self, session_id: String) {
+        let snapshot = match self.session_store.borrow().get_transcript(&session_id).cloned() {
+            Some(transcript)
+                if self
+                    .manager
+                    .borrow()
+                    .agent_for_session(&session_id)
+                    .is_some() => self.build_session_snapshot(&transcript),
+            _ => {
+                let _ = self.response_tx.send(ResponseEvent::Error {
+                    session_id: Some(session_id),
+                    code: "session_not_found".into(),
+                    message: "no live session with this id".into(),
+                });
+                return;
+            }
+        };
+
+        let _ = self
+            .response_tx
+            .send(ResponseEvent::SessionAttached { session_id });
+        let _ = self.response_tx.send(ResponseEvent::SessionSnapshot { snapshot });
+    }
+
+    async fn handle_close_session(&mut self, session_id: String) {
+        if self.active_prompt_session.borrow().as_deref() == Some(session_id.as_str()) {
+            let _ = self.response_tx.send(ResponseEvent::Error {
+                session_id: Some(session_id),
+                code: "session_busy".into(),
+                message: "cannot close a session while a prompt is in progress".into(),
+            });
+            return;
+        }
+
+        if self.manager.borrow().agent_for_session(&session_id).is_none() {
+            let _ = self.response_tx.send(ResponseEvent::Error {
+                session_id: Some(session_id),
+                code: "session_not_found".into(),
+                message: "no live session with this id".into(),
+            });
+            return;
+        }
+
+        if let Err(err) = flush_session_snapshot(self.session_store.clone(), session_id.clone()).await {
+            warn!("failed to flush session {session_id} before close: {err}");
+        }
+
+        self.session_store.borrow_mut().remove_session(&session_id);
+        self.manager.borrow_mut().remove_session(&session_id);
+        self.created_sessions.retain(|created| created != &session_id);
+        let _ = self.response_tx.send(ResponseEvent::SessionClosed { session_id });
     }
 
     async fn handle_prompt(&mut self, session_id: String, content: String) {
@@ -366,6 +450,44 @@ impl AppProtocolSession {
             }
         }
     }
+
+    fn build_session_summary(&self, transcript: &SessionTranscript) -> SessionSummary {
+        SessionSummary {
+            session_id: transcript.session_id.clone(),
+            agent_id: transcript.agent_id.clone(),
+            working_dir: transcript.working_dir.clone(),
+            created_at_ms: transcript.created_at_ms,
+            state: self.session_state(&transcript.session_id),
+            last_stop_reason: last_stop_reason(transcript),
+        }
+    }
+
+    fn build_session_snapshot(&self, transcript: &SessionTranscript) -> SessionSnapshot {
+        SessionSnapshot {
+            session_id: transcript.session_id.clone(),
+            agent_id: transcript.agent_id.clone(),
+            working_dir: transcript.working_dir.clone(),
+            created_at_ms: transcript.created_at_ms,
+            state: self.session_state(&transcript.session_id),
+            last_stop_reason: last_stop_reason(transcript),
+            last_error: None,
+        }
+    }
+
+    fn session_state(&self, session_id: &str) -> SessionState {
+        if self.active_prompt_session.borrow().as_deref() == Some(session_id) {
+            SessionState::Prompting
+        } else {
+            SessionState::Idle
+        }
+    }
+}
+
+fn last_stop_reason(transcript: &SessionTranscript) -> Option<String> {
+    transcript.events.iter().rev().find_map(|event| match event {
+        SessionEvent::TurnEnd { stop_reason, .. } => Some(stop_reason.clone()),
+        _ => None,
+    })
 }
 
 pub fn serialize_event(event: &ResponseEvent) -> Option<String> {
@@ -379,7 +501,7 @@ pub fn serialize_event(event: &ResponseEvent) -> Option<String> {
 }
 
 async fn handle_prompt_completion(
-    response_tx: mpsc::UnboundedSender<ResponseEvent>,
+    response_tx: broadcast::Sender<ResponseEvent>,
     session_store: Rc<RefCell<SessionStore>>,
     session_id: String,
     result: agent_client_protocol::Result<PromptResponse>,
@@ -517,7 +639,7 @@ async fn load_transcript(
 }
 
 fn spawn_distillation_task(
-    response_tx: mpsc::UnboundedSender<ResponseEvent>,
+    response_tx: broadcast::Sender<ResponseEvent>,
     manager: Rc<RefCell<AgentManager>>,
     session_store: Rc<RefCell<SessionStore>>,
     internal_sessions: Rc<RefCell<HashMap<String, mpsc::UnboundedSender<SessionNotification>>>>,
@@ -609,7 +731,7 @@ fn spawn_distillation_task(
 }
 
 fn send_distillation_status(
-    response_tx: &mpsc::UnboundedSender<ResponseEvent>,
+    response_tx: &broadcast::Sender<ResponseEvent>,
     session_id: &str,
     status: &str,
     message: impl Into<String>,

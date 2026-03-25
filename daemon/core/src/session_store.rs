@@ -107,6 +107,10 @@ impl SessionStore {
         self.transcripts.get(session_id)
     }
 
+    pub fn list_transcripts(&self) -> Vec<SessionTranscript> {
+        self.transcripts.values().cloned().collect()
+    }
+
     pub fn remove_session(&mut self, session_id: &str) -> Option<SessionTranscript> {
         self.transcripts.remove(session_id)
     }

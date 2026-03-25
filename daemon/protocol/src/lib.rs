@@ -76,6 +76,37 @@ pub struct SkillInfo {
     pub size_bytes: u64,
 }
 
+/// Coarse session execution state exposed to reconnecting clients.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionState {
+    Idle,
+    Prompting,
+}
+
+/// Compact summary of an attachable daemon session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionSummary {
+    pub session_id: String,
+    pub agent_id: String,
+    pub working_dir: String,
+    pub created_at_ms: u64,
+    pub state: SessionState,
+    pub last_stop_reason: Option<String>,
+}
+
+/// Snapshot used by clients to rebuild session UI after reconnect.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionSnapshot {
+    pub session_id: String,
+    pub agent_id: String,
+    pub working_dir: String,
+    pub created_at_ms: u64,
+    pub state: SessionState,
+    pub last_stop_reason: Option<String>,
+    pub last_error: Option<String>,
+}
+
 // ============================================================
 // Response events (daemon -> iOS app via WebSocket)
 // ============================================================
@@ -86,6 +117,18 @@ pub struct SkillInfo {
 pub enum ResponseEvent {
     /// Session created successfully.
     SessionCreated { session_id: String },
+
+    /// List of live sessions known to the daemon.
+    SessionList { sessions: Vec<SessionSummary> },
+
+    /// Session attachment acknowledged.
+    SessionAttached { session_id: String },
+
+    /// Compact snapshot of a live session.
+    SessionSnapshot { snapshot: SessionSnapshot },
+
+    /// Session closed and removed from the daemon.
+    SessionClosed { session_id: String },
 
     /// Incremental text from the agent.
     Delta {
@@ -154,6 +197,12 @@ pub enum DeltaType {
 pub enum ClientMessage {
     /// Create a new session.
     CreateSession { working_dir: String },
+    /// List live sessions known to the daemon.
+    ListSessions,
+    /// Attach the current client connection to an existing session.
+    AttachSession { session_id: String },
+    /// Close and remove a live session from the daemon.
+    CloseSession { session_id: String },
     /// Send a prompt.
     Prompt { session_id: String, content: String },
     /// Cancel an ongoing prompt turn.
@@ -190,6 +239,13 @@ mod tests {
             ClientMessage::CreateSession {
                 working_dir: "/tmp/project".into(),
             },
+            ClientMessage::ListSessions,
+            ClientMessage::AttachSession {
+                session_id: "session-1".into(),
+            },
+            ClientMessage::CloseSession {
+                session_id: "session-1".into(),
+            },
             ClientMessage::Prompt {
                 session_id: "session-1".into(),
                 content: "hello".into(),
@@ -215,6 +271,33 @@ mod tests {
     fn response_events_round_trip_through_json() {
         let events = [
             ResponseEvent::SessionCreated {
+                session_id: "session-1".into(),
+            },
+            ResponseEvent::SessionList {
+                sessions: vec![SessionSummary {
+                    session_id: "session-1".into(),
+                    agent_id: "agent-1".into(),
+                    working_dir: "/tmp/project".into(),
+                    created_at_ms: 123,
+                    state: SessionState::Idle,
+                    last_stop_reason: Some("EndTurn".into()),
+                }],
+            },
+            ResponseEvent::SessionAttached {
+                session_id: "session-1".into(),
+            },
+            ResponseEvent::SessionSnapshot {
+                snapshot: SessionSnapshot {
+                    session_id: "session-1".into(),
+                    agent_id: "agent-1".into(),
+                    working_dir: "/tmp/project".into(),
+                    created_at_ms: 123,
+                    state: SessionState::Prompting,
+                    last_stop_reason: Some("EndTurn".into()),
+                    last_error: None,
+                },
+            },
+            ResponseEvent::SessionClosed {
                 session_id: "session-1".into(),
             },
             ResponseEvent::Delta {
@@ -312,6 +395,35 @@ mod tests {
         };
 
         assert_round_trip(&skill);
+    }
+
+    #[test]
+    fn session_summary_round_trips_through_json() {
+        let summary = SessionSummary {
+            session_id: "session-1".into(),
+            agent_id: "agent-1".into(),
+            working_dir: "/tmp/project".into(),
+            created_at_ms: 123,
+            state: SessionState::Idle,
+            last_stop_reason: Some("EndTurn".into()),
+        };
+
+        assert_round_trip(&summary);
+    }
+
+    #[test]
+    fn session_snapshot_round_trips_through_json() {
+        let snapshot = SessionSnapshot {
+            session_id: "session-1".into(),
+            agent_id: "agent-1".into(),
+            working_dir: "/tmp/project".into(),
+            created_at_ms: 123,
+            state: SessionState::Prompting,
+            last_stop_reason: Some("EndTurn".into()),
+            last_error: None,
+        };
+
+        assert_round_trip(&snapshot);
     }
 
     #[test]

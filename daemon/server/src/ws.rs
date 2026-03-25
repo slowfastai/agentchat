@@ -9,7 +9,7 @@ use std::rc::Rc;
 use futures::stream::StreamExt;
 use futures::SinkExt;
 use tokio::net::TcpListener;
-use tokio::sync::watch;
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
@@ -47,6 +47,19 @@ impl WebSocketServer {
             .map_err(|e| format!("failed to bind {addr}: {e}"))?;
         info!("WebSocket server listening on {}", addr);
 
+        let mut app_session =
+            AppProtocolSession::new(manager, session_store, skill_store, distiller)
+                .map_err(|event| format!("failed to initialize app protocol session: {event:?}"))?;
+        let event_tx = app_session.event_sender();
+        let (client_tx, mut client_rx) = mpsc::unbounded_channel::<ClientMessage>();
+        let app_task = tokio::task::spawn_local(async move {
+            while let Some(client_msg) = client_rx.recv().await {
+                app_session.handle_client_message(client_msg).await;
+            }
+
+            app_session.shutdown().await;
+        });
+
         loop {
             let accepted = tokio::select! {
                 accepted = listener.accept() => accepted,
@@ -74,16 +87,14 @@ impl WebSocketServer {
                 }
             };
 
-            self.handle_connection(
-                ws,
-                manager.clone(),
-                shutdown_rx.clone(),
-                session_store.clone(),
-                skill_store.clone(),
-                distiller.clone(),
-            )
-            .await;
+            self.handle_connection(ws, client_tx.clone(), event_tx.clone(), shutdown_rx.clone())
+                .await;
         }
+
+        drop(client_tx);
+        app_task
+            .await
+            .map_err(|err| format!("app protocol session task panicked: {err}"))?;
 
         Ok(())
     }
@@ -91,31 +102,24 @@ impl WebSocketServer {
     async fn handle_connection(
         &self,
         ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
-        manager: Rc<RefCell<AgentManager>>,
+        client_tx: mpsc::UnboundedSender<ClientMessage>,
+        event_tx: broadcast::Sender<agentchat_protocol::ResponseEvent>,
         mut shutdown_rx: watch::Receiver<bool>,
-        session_store: Rc<RefCell<SessionStore>>,
-        skill_store: Rc<SkillStore>,
-        distiller: Rc<Distiller>,
     ) {
         let (mut ws_tx, mut ws_rx) = ws.split();
+        let mut response_rx = event_tx.subscribe();
 
-        let mut session =
-            match AppProtocolSession::new(manager, session_store, skill_store, distiller) {
-                Ok(session) => session,
-                Err(event) => {
-                    if let Some(message) = serialize_event(&event) {
-                        let _ = ws_tx.send(Message::Text(message.into())).await;
+        let writer_task = tokio::task::spawn_local(async move {
+            loop {
+                let event = match response_rx.recv().await {
+                    Ok(event) => event,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!("websocket event subscriber lagged and skipped {skipped} events");
+                        continue;
                     }
-                    return;
-                }
-            };
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
 
-        let mut response_rx = session
-            .take_response_rx()
-            .expect("response channel must exist when protocol session is created");
-
-        tokio::task::spawn_local(async move {
-            while let Some(event) = response_rx.recv().await {
                 let Some(json) = serialize_event(&event) else {
                     continue;
                 };
@@ -151,7 +155,10 @@ impl WebSocketServer {
                         }
                     };
 
-                    session.handle_client_message(client_msg).await;
+                    if client_tx.send(client_msg).is_err() {
+                        warn!("app protocol session is unavailable");
+                        break;
+                    }
                 }
                 _ = shutdown_rx.changed() => {
                     info!("closing client connection for shutdown");
@@ -160,7 +167,8 @@ impl WebSocketServer {
             }
         }
 
-        session.shutdown().await;
+        writer_task.abort();
+        let _ = writer_task.await;
         info!("client disconnected");
     }
 }

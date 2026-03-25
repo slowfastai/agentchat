@@ -65,15 +65,18 @@ impl RelayTransportServer {
                 ));
                 }
             };
-        let mut response_rx = session
-            .take_response_rx()
-            .expect("response channel must exist when protocol session is created");
+        let mut response_rx = session.subscribe_events();
 
         loop {
             tokio::select! {
-                maybe_event = response_rx.recv() => {
-                    let Some(event) = maybe_event else {
-                        break;
+                result = response_rx.recv() => {
+                    let event = match result {
+                        Ok(event) => event,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            warn!("relay event subscriber lagged and skipped {skipped} events");
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     };
 
                     if let Err(err) = relay_client.send_encrypted_json(&event).await {
