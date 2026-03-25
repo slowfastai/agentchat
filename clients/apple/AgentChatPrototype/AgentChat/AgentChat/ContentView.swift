@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var store = DaemonChatStore()
     @State private var draft = ""
+    @State private var isScannerPresented = false
 
     var body: some View {
         NavigationSplitView {
@@ -27,6 +28,11 @@ struct ContentView: View {
         } message: {
             Text(store.errorMessage ?? "Unknown error")
         }
+        .sheet(isPresented: $isScannerPresented) {
+            DaemonQRCodeScannerSheet { payload in
+                store.applyScannedConnectionPayload(payload)
+            }
+        }
     }
 
     private var sidebar: some View {
@@ -48,6 +54,36 @@ struct ContentView: View {
                     .font(.subheadline)
             }
             .padding(.vertical, 4)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Daemon URL")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(store.daemonURL)
+                    .font(.footnote.monospaced())
+                    .textSelection(.enabled)
+            }
+            .padding(.vertical, 4)
+
+            HStack {
+                Button {
+                    isScannerPresented = true
+                } label: {
+                    Label("Scan QR", systemImage: "qrcode.viewfinder")
+                }
+
+                Spacer()
+
+                Button {
+                    store.reconnectNow()
+                } label: {
+                    Label("Reconnect", systemImage: "arrow.clockwise")
+                }
+            }
+
+            Text("Encode the QR as ws://..., wss://..., or agentchat://connect?url=<websocket-url>.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
 

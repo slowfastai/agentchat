@@ -11,8 +11,8 @@ use agentchat_core::distiller::Distiller;
 use agentchat_core::session_store::SessionStore;
 use agentchat_core::skills::SkillStore;
 use agentchat_protocol::{
-    AgentConfig, AgentStatus, ClientMessage, DeltaType, ResponseEvent, SessionEvent,
-    SessionState, SessionTranscript,
+    AgentConfig, AgentStatus, ClientMessage, DeltaType, ResponseEvent, SessionEvent, SessionState,
+    SessionTranscript,
 };
 use agentchat_server::ws::WebSocketServer;
 use futures::{SinkExt, StreamExt};
@@ -420,7 +420,9 @@ async fn websocket_allows_concurrent_prompts_for_different_sessions() {
                         assert_eq!(stop_reason, "Cancelled");
                         saw_beta_end = true;
                     }
-                    other => panic!("unexpected event while draining concurrent cancels: {other:?}"),
+                    other => {
+                        panic!("unexpected event while draining concurrent cancels: {other:?}")
+                    }
                 }
                 if saw_alpha_end && saw_beta_end {
                     break;
@@ -469,12 +471,18 @@ async fn websocket_thread_group_chat_fans_out_to_multiple_agents() {
             )
             .await;
             let (alpha_participant_id, alpha_session_id) = match receive_event(&mut ws).await {
-                ResponseEvent::ThreadParticipantAdded { thread_id: tid, participant, .. } => {
+                ResponseEvent::ThreadParticipantAdded {
+                    thread_id: tid,
+                    participant,
+                    ..
+                } => {
                     assert_eq!(tid, thread_id);
                     assert_eq!(participant.agent_id.as_deref(), Some("alpha"));
                     (
                         participant.participant_id,
-                        participant.session_id.expect("missing participant session id"),
+                        participant
+                            .session_id
+                            .expect("missing participant session id"),
                     )
                 }
                 event => panic!("unexpected event while adding alpha participant: {event:?}"),
@@ -489,12 +497,18 @@ async fn websocket_thread_group_chat_fans_out_to_multiple_agents() {
             )
             .await;
             let (beta_participant_id, beta_session_id) = match receive_event(&mut ws).await {
-                ResponseEvent::ThreadParticipantAdded { thread_id: tid, participant, .. } => {
+                ResponseEvent::ThreadParticipantAdded {
+                    thread_id: tid,
+                    participant,
+                    ..
+                } => {
                     assert_eq!(tid, thread_id);
                     assert_eq!(participant.agent_id.as_deref(), Some("beta"));
                     (
                         participant.participant_id,
-                        participant.session_id.expect("missing participant session id"),
+                        participant
+                            .session_id
+                            .expect("missing participant session id"),
                     )
                 }
                 event => panic!("unexpected event while adding beta participant: {event:?}"),
@@ -742,11 +756,13 @@ async fn websocket_thread_targeted_send_and_attach_snapshot() {
                     assert!(snapshot
                         .participants
                         .iter()
-                        .any(|participant| participant.session_id.as_deref() == Some(alpha_session_id.as_str())));
+                        .any(|participant| participant.session_id.as_deref()
+                            == Some(alpha_session_id.as_str())));
                     assert!(snapshot
                         .participants
                         .iter()
-                        .any(|participant| participant.session_id.as_deref() == Some(beta_session_id.as_str())));
+                        .any(|participant| participant.session_id.as_deref()
+                            == Some(beta_session_id.as_str())));
                     snapshot.last_thread_seq
                 }
                 event => panic!("unexpected thread snapshot event: {event:?}"),
@@ -803,7 +819,9 @@ async fn websocket_attach_thread_replays_events_after_cursor() {
             )
             .await;
             let alpha_participant_id = match receive_event(&mut ws).await {
-                ResponseEvent::ThreadParticipantAdded { participant, .. } => participant.participant_id,
+                ResponseEvent::ThreadParticipantAdded { participant, .. } => {
+                    participant.participant_id
+                }
                 event => panic!("unexpected event while adding alpha participant: {event:?}"),
             };
 
@@ -816,7 +834,9 @@ async fn websocket_attach_thread_replays_events_after_cursor() {
             )
             .await;
             let beta_participant_id = match receive_event(&mut ws).await {
-                ResponseEvent::ThreadParticipantAdded { participant, .. } => participant.participant_id,
+                ResponseEvent::ThreadParticipantAdded { participant, .. } => {
+                    participant.participant_id
+                }
                 event => panic!("unexpected event while adding beta participant: {event:?}"),
             };
 
@@ -964,7 +984,9 @@ async fn websocket_attach_thread_rejects_cursor_ahead_of_tail() {
                 } => {
                     assert_eq!(code, "thread_replay_after_seq_ahead_of_tail");
                 }
-                event => panic!("unexpected event while validating thread replay cursor: {event:?}"),
+                event => {
+                    panic!("unexpected event while validating thread replay cursor: {event:?}")
+                }
             }
 
             ws.send(Message::Close(None)).await.unwrap();
@@ -1606,7 +1628,10 @@ async fn websocket_disconnect_keeps_in_flight_prompt_running_until_explicit_canc
                 .to_string();
             tokio::time::sleep(Duration::from_millis(250)).await;
             assert!(
-                !file_contains_line(&harness.events_path, &format!("cancel:{upstream_session_id}")),
+                !file_contains_line(
+                    &harness.events_path,
+                    &format!("cancel:{upstream_session_id}")
+                ),
                 "disconnect should not implicitly cancel the prompt"
             );
             assert_eq!(
@@ -1623,7 +1648,11 @@ async fn websocket_disconnect_keeps_in_flight_prompt_running_until_explicit_canc
             )
             .await;
 
-            wait_for_file_line(&harness.events_path, &format!("cancel:{upstream_session_id}")).await;
+            wait_for_file_line(
+                &harness.events_path,
+                &format!("cancel:{upstream_session_id}"),
+            )
+            .await;
             match receive_event(&mut ws).await {
                 ResponseEvent::TurnEnd {
                     session_id: sid,
@@ -1807,7 +1836,11 @@ async fn websocket_shutdown_cancels_in_flight_prompt() {
                 "server returned error: {server_result:?}"
             );
 
-            wait_for_file_line(&harness.events_path, &format!("cancel:{upstream_session_id}")).await;
+            wait_for_file_line(
+                &harness.events_path,
+                &format!("cancel:{upstream_session_id}"),
+            )
+            .await;
             wait_for(|| {
                 harness
                     .manager
@@ -1830,7 +1863,10 @@ async fn start_harness(mode: FakeAgentMode) -> TestHarness {
 
 async fn start_multi_agent_harness(agents: &[(&str, FakeAgentMode)]) -> TestHarness {
     let temp_dir = tempfile::tempdir().unwrap();
-    let primary_agent_id = agents.first().map(|(agent_id, _)| *agent_id).unwrap_or("fake");
+    let primary_agent_id = agents
+        .first()
+        .map(|(agent_id, _)| *agent_id)
+        .unwrap_or("fake");
     let events_path = temp_dir
         .path()
         .join(format!("{primary_agent_id}-events.log"));
@@ -1876,17 +1912,18 @@ async fn start_multi_agent_harness(agents: &[(&str, FakeAgentMode)]) -> TestHarn
     }
 }
 
-fn fake_agent_config_with_id(agent_id: &str, mode: FakeAgentMode, events_path: &Path) -> AgentConfig {
+fn fake_agent_config_with_id(
+    agent_id: &str,
+    mode: FakeAgentMode,
+    events_path: &Path,
+) -> AgentConfig {
     let mut env_vars = HashMap::new();
     env_vars.insert("FAKE_ACP_MODE".into(), mode.as_env_value().into());
     env_vars.insert(
         "FAKE_ACP_EVENTS_PATH".into(),
         events_path.display().to_string(),
     );
-    env_vars.insert(
-        "FAKE_ACP_SESSION_PREFIX".into(),
-        format!("{agent_id}-"),
-    );
+    env_vars.insert("FAKE_ACP_SESSION_PREFIX".into(), format!("{agent_id}-"));
 
     let mut extra = serde_json::Map::new();
     extra.insert("kind".into(), serde_json::Value::String("fake".into()));

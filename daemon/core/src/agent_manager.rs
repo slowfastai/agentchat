@@ -54,20 +54,17 @@ impl AgentManager {
             .await
             .map_err(|e| format!("ACP init failed: {e}"))?;
 
-        self.agents.insert(
-            agent_id.clone(),
-            ManagedAgent {
-                config,
-                agent,
-            },
-        );
+        self.agents
+            .insert(agent_id.clone(), ManagedAgent { config, agent });
         info!("agent '{}' registered and initialized", agent_id);
         Ok(())
     }
 
     /// Get an agent by ID.
     pub fn get_agent(&self, agent_id: &str) -> Option<Rc<AcpAgent>> {
-        self.agents.get(agent_id).map(|managed| managed.agent.clone())
+        self.agents
+            .get(agent_id)
+            .map(|managed| managed.agent.clone())
     }
 
     /// Get the first registered agent ID.
@@ -227,11 +224,7 @@ mod tests {
     #[test]
     fn register_lookup_and_remove_session() {
         let mut manager = AgentManager::new();
-        manager.register_session(
-            "session-1".into(),
-            "agent-1".into(),
-            "upstream-1".into(),
-        );
+        manager.register_session("session-1".into(), "agent-1".into(), "upstream-1".into());
 
         assert_eq!(manager.agent_for_session("session-1"), Some("agent-1"));
         assert_eq!(
@@ -255,16 +248,8 @@ mod tests {
     #[test]
     fn remove_sessions_clears_multiple_mappings() {
         let mut manager = AgentManager::new();
-        manager.register_session(
-            "session-1".into(),
-            "agent-1".into(),
-            "upstream-1".into(),
-        );
-        manager.register_session(
-            "session-2".into(),
-            "agent-1".into(),
-            "upstream-2".into(),
-        );
+        manager.register_session("session-1".into(), "agent-1".into(), "upstream-1".into());
+        manager.register_session("session-2".into(), "agent-1".into(), "upstream-2".into());
 
         manager.remove_sessions(&["session-1".into(), "session-2".into()]);
 

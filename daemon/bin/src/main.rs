@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::env;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -14,6 +15,8 @@ use agentchat_protocol::relay_crypto::{
 use agentchat_protocol::AgentConfig;
 use agentchat_server::relay::RelayTransportServer;
 use agentchat_server::ws::WebSocketServer;
+use if_addrs::{get_if_addrs, IfAddr, Interface};
+use qrcode::{render::unicode, QrCode};
 use tokio::sync::watch;
 use tracing::{error, info};
 
@@ -21,6 +24,11 @@ const DEV_DAEMON_IDENTITY_LABEL: &str = "agentchat-dev-daemon-identity-v1";
 const DEV_APP_IDENTITY_LABEL: &str = "agentchat-dev-app-identity-v1";
 
 const DEFAULT_PORT: u16 = 9390;
+
+#[derive(Clone, Copy, Debug, Default)]
+struct CliOptions {
+    mobile_qr: bool,
+}
 
 fn env_or_default(key: &str, default: &str) -> String {
     env::var(key)
@@ -37,6 +45,33 @@ fn env_flag(key: &str) -> bool {
     optional_env(key)
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
         .unwrap_or(false)
+}
+
+fn parse_cli_options() -> Result<Option<CliOptions>, String> {
+    let mut options = CliOptions::default();
+
+    for arg in env::args().skip(1) {
+        match arg.as_str() {
+            "--mobile" => options.mobile_qr = true,
+            "-h" | "--help" => {
+                print_usage();
+                return Ok(None);
+            }
+            other => {
+                return Err(format!(
+                    "unknown argument `{other}`\n\nRun `agentchat-daemon --help` for usage."
+                ));
+            }
+        }
+    }
+
+    Ok(Some(options))
+}
+
+fn print_usage() {
+    println!(
+        "agentchat-daemon\n\nUsage:\n  agentchat-daemon [--mobile]\n\nOptions:\n  --mobile            Print a terminal QR code for the local WebSocket URL so the iOS app can scan it\n  -h, --help          Show this help text\n\nEnvironment:\n  AGENTCHAT_MOBILE_WS_URL  Override the QR payload (must be ws://... or wss://...)\n\nExample:\n  AGENTCHAT_AGENT_ID=opencode \\\n  AGENTCHAT_AGENT_NAME=\"OpenCode (ACP)\" \\\n  AGENTCHAT_AGENT_COMMAND=opencode \\\n  AGENTCHAT_AGENT_ARGS=\"acp\" \\\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon -- --mobile"
+    );
 }
 
 fn parse_agent_args() -> Vec<String> {
@@ -127,6 +162,123 @@ fn load_relay_client_config() -> Result<Option<RelayClientConfig>, String> {
     }
 }
 
+fn resolve_mobile_ws_url(port: u16) -> Result<String, String> {
+    if let Some(ws_url) = optional_env("AGENTCHAT_MOBILE_WS_URL") {
+        return validate_mobile_ws_url(&ws_url).map(|_| ws_url);
+    }
+
+    let ip = detect_mobile_ip()?;
+    Ok(format_mobile_ws_url(ip, port))
+}
+
+fn validate_mobile_ws_url(ws_url: &str) -> Result<(), String> {
+    if ws_url.starts_with("ws://") || ws_url.starts_with("wss://") {
+        Ok(())
+    } else {
+        Err(
+            "AGENTCHAT_MOBILE_WS_URL must start with ws:// or wss:// so the iOS app can connect"
+                .into(),
+        )
+    }
+}
+
+fn detect_mobile_ip() -> Result<IpAddr, String> {
+    let mut interfaces =
+        get_if_addrs().map_err(|err| format!("failed to inspect network interfaces: {err}"))?;
+    interfaces.sort_by_key(mobile_interface_sort_key);
+
+    for interface in interfaces {
+        if should_skip_mobile_interface(&interface) {
+            continue;
+        }
+
+        match interface.addr {
+            IfAddr::V4(addr) if is_usable_mobile_ipv4(addr.ip) => return Ok(IpAddr::V4(addr.ip)),
+            IfAddr::V6(addr) if is_usable_mobile_ipv6(addr.ip) => return Ok(IpAddr::V6(addr.ip)),
+            _ => {}
+        }
+    }
+
+    Err(
+        "could not determine a non-loopback LAN IP automatically; set AGENTCHAT_MOBILE_WS_URL=ws://<your-mac-ip>:9390 explicitly"
+            .into(),
+    )
+}
+
+fn mobile_interface_sort_key(interface: &Interface) -> (u8, u8, String) {
+    let family_rank = match interface.addr {
+        IfAddr::V4(_) => 0,
+        IfAddr::V6(_) => 1,
+    };
+
+    (
+        mobile_interface_name_rank(&interface.name),
+        family_rank,
+        interface.name.clone(),
+    )
+}
+
+fn mobile_interface_name_rank(name: &str) -> u8 {
+    if name.starts_with("en") {
+        0
+    } else if name.starts_with("eth") || name.starts_with("wlan") {
+        1
+    } else if name.starts_with("bridge") {
+        2
+    } else if name.starts_with("awdl") || name.starts_with("llw") || name.starts_with("utun") {
+        9
+    } else {
+        3
+    }
+}
+
+fn should_skip_mobile_interface(interface: &Interface) -> bool {
+    let name = interface.name.as_str();
+    name.starts_with("lo")
+        || name.starts_with("utun")
+        || name.starts_with("awdl")
+        || name.starts_with("llw")
+        || name.starts_with("docker")
+        || name.starts_with("veth")
+}
+
+fn is_usable_mobile_ipv4(ip: Ipv4Addr) -> bool {
+    !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified()
+}
+
+fn is_usable_mobile_ipv6(ip: Ipv6Addr) -> bool {
+    !ip.is_loopback() && !ip.is_unspecified() && !ip.is_unicast_link_local()
+}
+
+fn format_mobile_ws_url(ip: IpAddr, port: u16) -> String {
+    match ip {
+        IpAddr::V4(ip) => format!("ws://{ip}:{port}"),
+        IpAddr::V6(ip) => format!("ws://[{ip}]:{port}"),
+    }
+}
+
+fn print_mobile_qr(port: u16) -> Result<(), String> {
+    let ws_url = resolve_mobile_ws_url(port)?;
+    let qr = QrCode::new(ws_url.as_bytes())
+        .map_err(|err| format!("failed to generate mobile QR code: {err}"))?
+        .render::<unicode::Dense1x2>()
+        .quiet_zone(true)
+        .build();
+
+    println!();
+    println!("════════════════════════════════════════════════════════════");
+    println!(" AgentChat mobile login");
+    println!(" Scan this QR from the iPhone app: Connection → Scan QR");
+    println!(" WebSocket URL: {ws_url}");
+    println!(" Tip: phone and Mac must be on the same Wi-Fi / LAN");
+    println!("════════════════════════════════════════════════════════════");
+    println!("{qr}");
+    println!("{ws_url}");
+    println!();
+
+    Ok(())
+}
+
 async fn wait_for_shutdown_signal() -> Result<(), String> {
     #[cfg(unix)]
     {
@@ -155,6 +307,15 @@ async fn wait_for_shutdown_signal() -> Result<(), String> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    let cli_options = match parse_cli_options() {
+        Ok(Some(options)) => options,
+        Ok(None) => return,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    };
+
     tracing_subscriber::fmt::init();
 
     info!("agentchat daemon v0.1.0");
@@ -174,6 +335,13 @@ async fn main() {
             std::process::exit(1);
         }
     };
+
+    if cli_options.mobile_qr && relay_config.is_some() {
+        eprintln!(
+            "--mobile currently supports the direct local WebSocket server only; unset relay mode and try again"
+        );
+        std::process::exit(1);
+    }
 
     // Use current directory as project root (M0 default).
     let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -221,6 +389,13 @@ async fn main() {
                     .await
             } else {
                 info!("agent initialized, starting WebSocket server");
+                if cli_options.mobile_qr {
+                    if let Err(err) = print_mobile_qr(DEFAULT_PORT) {
+                        error!("failed to prepare mobile QR output: {err}");
+                        eprintln!("failed to prepare mobile QR output: {err}");
+                        return 1;
+                    }
+                }
                 WebSocketServer::new(DEFAULT_PORT)
                     .run(
                         manager.clone(),

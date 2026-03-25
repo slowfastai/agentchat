@@ -15,8 +15,24 @@ Start the daemon in one terminal:
 
 ```bash
 cd daemon
-cargo run -p agentchat-daemon
+cargo run -p agentchat-daemon --bin agentchat-daemon
 ```
+
+If you want to connect the iPhone app directly over LAN, you can also ask the daemon to print a scannable QR code in the terminal:
+
+```bash
+cd /path/to/agentchat
+AGENTCHAT_AGENT_ID=opencode \
+AGENTCHAT_AGENT_NAME="OpenCode (ACP)" \
+AGENTCHAT_AGENT_COMMAND=opencode \
+AGENTCHAT_AGENT_ARGS="acp" \
+cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon -- --mobile
+```
+
+Notes:
+- The QR encodes `ws://<detected-lan-ip>:9390` by default.
+- Override it explicitly with `AGENTCHAT_MOBILE_WS_URL=ws://<your-mac-ip>:9390` if auto-detection picks the wrong interface.
+- Your phone and Mac must be on the same Wi-Fi / LAN.
 
 Then connect from another terminal with either tool:
 

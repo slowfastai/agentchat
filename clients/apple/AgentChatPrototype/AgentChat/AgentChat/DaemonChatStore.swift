@@ -16,6 +16,10 @@ final class DaemonChatStore: ObservableObject {
 
     @AppStorage("agentchat_daemon_ws_url") private var daemonURLString = "ws://127.0.0.1:9390"
 
+    var daemonURL: String {
+        daemonURLString
+    }
+
     private var socketTask: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
@@ -100,6 +104,32 @@ final class DaemonChatStore: ObservableObject {
 
     func isSelectedParticipant(_ participantID: String) -> Bool {
         selectedParticipantIDs.contains(participantID)
+    }
+
+    func reconnectNow() {
+        connect()
+    }
+
+    func updateDaemonURL(_ newValue: String) {
+        let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        daemonURLString = trimmed
+        errorMessage = nil
+        connect()
+    }
+
+    func applyScannedConnectionPayload(_ payload: String) {
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            errorMessage = "Scanned QR code was empty."
+            return
+        }
+
+        if let url = normalizedDaemonURL(from: trimmed) {
+            updateDaemonURL(url)
+        } else {
+            errorMessage = "Unsupported QR payload. Encode either a ws:// or wss:// URL, or agentchat://connect?url=<percent-encoded websocket-url>."
+        }
     }
 
     private func connect() {
@@ -452,6 +482,26 @@ final class DaemonChatStore: ObservableObject {
         case "opencode": return "orange"
         default: return "indigo"
         }
+    }
+
+    private func normalizedDaemonURL(from payload: String) -> String? {
+        if payload.hasPrefix("ws://") || payload.hasPrefix("wss://") {
+            return payload
+        }
+
+        guard let components = URLComponents(string: payload) else {
+            return nil
+        }
+
+        guard components.scheme?.lowercased() == "agentchat",
+              components.host?.lowercased() == "connect",
+              let urlItem = components.queryItems?.first(where: { $0.name == "url" })?.value,
+              urlItem.hasPrefix("ws://") || urlItem.hasPrefix("wss://")
+        else {
+            return nil
+        }
+
+        return urlItem
     }
 
     private func send<Request: Encodable>(_ request: Request) async {

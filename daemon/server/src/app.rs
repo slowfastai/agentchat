@@ -140,7 +140,8 @@ impl AppProtocolSession {
                         continue;
                     };
 
-                    let translated = rewrite_notification_session_id(&notification, &public_session_id);
+                    let translated =
+                        rewrite_notification_session_id(&notification, &public_session_id);
                     session_store_updates
                         .borrow_mut()
                         .record_notification(&public_session_id, &translated);
@@ -247,8 +248,12 @@ impl AppProtocolSession {
             } => {
                 self.handle_attach_thread(thread_id, after_seq).await;
             }
-            ClientMessage::AddThreadParticipant { thread_id, agent_id } => {
-                self.handle_add_thread_participant(thread_id, agent_id).await;
+            ClientMessage::AddThreadParticipant {
+                thread_id,
+                agent_id,
+            } => {
+                self.handle_add_thread_participant(thread_id, agent_id)
+                    .await;
             }
             ClientMessage::RemoveThreadParticipant {
                 thread_id,
@@ -410,7 +415,11 @@ impl AppProtocolSession {
         }
     }
 
-    async fn handle_create_session(&mut self, requested_agent_id: Option<String>, working_dir: String) {
+    async fn handle_create_session(
+        &mut self,
+        requested_agent_id: Option<String>,
+        working_dir: String,
+    ) {
         match self
             .create_session_for_agent(requested_agent_id, working_dir)
             .await
@@ -507,11 +516,9 @@ impl AppProtocolSession {
             .borrow()
             .replay_after(&thread_id, replay_after);
 
-        let _ = self
-            .response_tx
-            .send(ResponseEvent::ThreadAttached {
-                thread_id: thread_id.clone(),
-            });
+        let _ = self.response_tx.send(ResponseEvent::ThreadAttached {
+            thread_id: thread_id.clone(),
+        });
         let _ = self
             .response_tx
             .send(ResponseEvent::ThreadSnapshot { snapshot });
@@ -589,7 +596,11 @@ impl AppProtocolSession {
         );
     }
 
-    async fn handle_remove_thread_participant(&mut self, thread_id: String, participant_id: String) {
+    async fn handle_remove_thread_participant(
+        &mut self,
+        thread_id: String,
+        participant_id: String,
+    ) {
         let participant = match self.thread_store.borrow().get_thread(&thread_id) {
             Some(thread) => thread
                 .participants
@@ -629,13 +640,20 @@ impl AppProtocolSession {
             .expect("participant must still exist after preflight");
 
         if let Some(session_id) = participant.session_id {
-            if let Err(err) = flush_session_snapshot(self.session_store.clone(), session_id.clone()).await {
-                warn!("failed to flush session {session_id} before thread participant removal: {err}");
+            if let Err(err) =
+                flush_session_snapshot(self.session_store.clone(), session_id.clone()).await
+            {
+                warn!(
+                    "failed to flush session {session_id} before thread participant removal: {err}"
+                );
             }
             self.session_store.borrow_mut().remove_session(&session_id);
-            self.session_event_log.borrow_mut().remove_session(&session_id);
+            self.session_event_log
+                .borrow_mut()
+                .remove_session(&session_id);
             self.manager.borrow_mut().remove_session(&session_id);
-            self.created_sessions.retain(|created| created != &session_id);
+            self.created_sessions
+                .retain(|created| created != &session_id);
         }
 
         let thread_seq = self.thread_event_log.borrow_mut().next_seq(&thread_id);
@@ -656,10 +674,11 @@ impl AppProtocolSession {
         content: String,
         target_participant_ids: Option<Vec<String>>,
     ) {
-        let participants = match self.thread_store.borrow().target_agent_participants(
-            &thread_id,
-            target_participant_ids.as_deref(),
-        ) {
+        let participants = match self
+            .thread_store
+            .borrow()
+            .target_agent_participants(&thread_id, target_participant_ids.as_deref())
+        {
             Ok(participants) => participants,
             Err(err) if err == "thread not found" => {
                 let _ = self.response_tx.send(ResponseEvent::Error {
@@ -778,11 +797,9 @@ impl AppProtocolSession {
             .borrow()
             .replay_after(&session_id, replay_after);
 
-        let _ = self
-            .response_tx
-            .send(ResponseEvent::SessionAttached {
-                session_id: session_id.clone(),
-            });
+        let _ = self.response_tx.send(ResponseEvent::SessionAttached {
+            session_id: session_id.clone(),
+        });
         let _ = self
             .response_tx
             .send(ResponseEvent::SessionSnapshot { snapshot });
@@ -1114,7 +1131,11 @@ fn maybe_broadcast_thread_event_for_session_event(
     let Some(session_id) = event.session_id() else {
         return;
     };
-    let Some(binding) = thread_store.borrow().binding_for_session(session_id).cloned() else {
+    let Some(binding) = thread_store
+        .borrow()
+        .binding_for_session(session_id)
+        .cloned()
+    else {
         return;
     };
     let Some(session_event_seq) = event.event_seq() else {
@@ -1285,10 +1306,7 @@ fn persist_thread_event(thread_event_log: &Rc<RefCell<ThreadEventLog>>, event: &
         {
             Ok(file) => file,
             Err(err) => {
-                warn!(
-                    "failed to open thread event log for {}: {}",
-                    thread_id, err
-                );
+                warn!("failed to open thread event log for {}: {}", thread_id, err);
                 return;
             }
         };
