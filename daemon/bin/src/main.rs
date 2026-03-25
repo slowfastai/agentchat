@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::env;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -41,6 +42,13 @@ fn optional_env(key: &str) -> Option<String> {
     env::var(key).ok().filter(|value| !value.trim().is_empty())
 }
 
+fn command_name(command: &str) -> &str {
+    Path::new(command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(command)
+}
+
 fn env_flag(key: &str) -> bool {
     optional_env(key)
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
@@ -70,11 +78,11 @@ fn parse_cli_options() -> Result<Option<CliOptions>, String> {
 
 fn print_usage() {
     println!(
-        "agentchat-daemon\n\nUsage:\n  agentchat-daemon [--mobile]\n\nOptions:\n  --mobile            Print a terminal QR code for the local WebSocket URL so the iOS app can scan it\n  -h, --help          Show this help text\n\nEnvironment:\n  AGENTCHAT_MOBILE_WS_URL  Override the QR payload (must be ws://... or wss://...)\n\nExample:\n  AGENTCHAT_AGENT_ID=opencode \\\n  AGENTCHAT_AGENT_NAME=\"OpenCode (ACP)\" \\\n  AGENTCHAT_AGENT_COMMAND=opencode \\\n  AGENTCHAT_AGENT_ARGS=\"acp\" \\\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon -- --mobile"
+        "agentchat-daemon\n\nUsage:\n  agentchat-daemon [--mobile]\n\nOptions:\n  --mobile            Print a terminal QR code for the local WebSocket URL so the iOS app can scan it\n  -h, --help          Show this help text\n\nEnvironment:\n  AGENTCHAT_MOBILE_WS_URL   Override the QR payload (must be ws://... or wss://...)\n  AGENTCHAT_AGENT_BACKEND   Select the agent backend adapter (default: acp)\n\nExample:\n  AGENTCHAT_AGENT_ID=opencode \\\n  AGENTCHAT_AGENT_NAME=\"OpenCode (ACP)\" \\\n  AGENTCHAT_AGENT_BACKEND=acp \\\n  AGENTCHAT_AGENT_COMMAND=opencode \\\n  AGENTCHAT_AGENT_ARGS=\"acp\" \\\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon -- --mobile"
     );
 }
 
-fn parse_agent_args() -> Vec<String> {
+fn configured_agent_args() -> Option<Vec<String>> {
     env::var("AGENTCHAT_AGENT_ARGS")
         .ok()
         .map(|value| {
@@ -84,20 +92,82 @@ fn parse_agent_args() -> Vec<String> {
                 .collect::<Vec<_>>()
         })
         .filter(|args| !args.is_empty())
-        .unwrap_or_else(|| vec!["acp".into()])
+}
+
+fn default_agent_args(backend: &str) -> Vec<String> {
+    match backend {
+        "acp" => vec!["acp".into()],
+        _ => Vec::new(),
+    }
+}
+
+fn detect_agent_backend(command: &str, args: &[String]) -> String {
+    if let Some(backend) = optional_env("AGENTCHAT_AGENT_BACKEND") {
+        return backend;
+    }
+
+    let command_name = command_name(command);
+    if matches!(command_name, "codex" | "codex.exe")
+        || args.first().map(String::as_str) == Some("app-server")
+    {
+        "codex_app_server".into()
+    } else {
+        "acp".into()
+    }
 }
 
 fn load_agent_config() -> AgentConfig {
+    let command = env_or_default("AGENTCHAT_AGENT_COMMAND", "opencode");
+    let configured_args = configured_agent_args();
+    let backend = detect_agent_backend(&command, configured_args.as_deref().unwrap_or(&[]));
+    let args = configured_args.unwrap_or_else(|| default_agent_args(&backend));
+    let mut extra = std::collections::HashMap::new();
+
+    if let Some(approval_policy) = optional_env("AGENTCHAT_AGENT_APPROVAL_POLICY") {
+        extra.insert(
+            "approval_policy".into(),
+            serde_json::Value::String(approval_policy),
+        );
+    }
+    if let Some(approval_strategy) = optional_env("AGENTCHAT_AGENT_APPROVAL_STRATEGY") {
+        extra.insert(
+            "approval_strategy".into(),
+            serde_json::Value::String(approval_strategy),
+        );
+    }
+    if let Some(approvals_reviewer) = optional_env("AGENTCHAT_AGENT_APPROVALS_REVIEWER") {
+        extra.insert(
+            "approvals_reviewer".into(),
+            serde_json::Value::String(approvals_reviewer),
+        );
+    }
+    if let Some(sandbox) = optional_env("AGENTCHAT_AGENT_SANDBOX") {
+        extra.insert("sandbox".into(), serde_json::Value::String(sandbox));
+    }
+    if env_flag("AGENTCHAT_AGENT_EXPERIMENTAL_RAW_EVENTS") {
+        extra.insert(
+            "experimental_raw_events".into(),
+            serde_json::Value::Bool(true),
+        );
+    }
+    if env_flag("AGENTCHAT_AGENT_PERSIST_EXTENDED_HISTORY") {
+        extra.insert(
+            "persist_extended_history".into(),
+            serde_json::Value::Bool(true),
+        );
+    }
+
     AgentConfig {
         id: env_or_default("AGENTCHAT_AGENT_ID", "opencode"),
         name: env_or_default("AGENTCHAT_AGENT_NAME", "OpenCode (ACP)"),
-        command: env_or_default("AGENTCHAT_AGENT_COMMAND", "opencode"),
-        args: parse_agent_args(),
+        backend,
+        command,
+        args,
         working_dir: env::var("AGENTCHAT_AGENT_WORKING_DIR")
             .ok()
             .filter(|value| !value.trim().is_empty()),
         env_vars: Default::default(),
-        extra: Default::default(),
+        extra,
     }
 }
 
@@ -179,6 +249,26 @@ fn validate_mobile_ws_url(ws_url: &str) -> Result<(), String> {
             "AGENTCHAT_MOBILE_WS_URL must start with ws:// or wss:// so the iOS app can connect"
                 .into(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_agent_backend_recognizes_codex_binary_without_explicit_args() {
+        assert_eq!(detect_agent_backend("codex", &[]), "codex_app_server");
+        assert_eq!(
+            detect_agent_backend("/usr/local/bin/codex", &[]),
+            "codex_app_server"
+        );
+    }
+
+    #[test]
+    fn default_agent_args_are_backend_specific() {
+        assert_eq!(default_agent_args("acp"), vec!["acp".to_string()]);
+        assert!(default_agent_args("codex_app_server").is_empty());
     }
 }
 
@@ -320,7 +410,7 @@ async fn main() {
 
     info!("agentchat daemon v0.1.0");
 
-    // M0+: launch one or more ACP-capable agents, configurable via environment.
+    // Launch one or more configured agent backends from the environment.
     let agent_configs = match load_agent_configs() {
         Ok(configs) => configs,
         Err(err) => {
@@ -343,7 +433,7 @@ async fn main() {
         std::process::exit(1);
     }
 
-    // Use current directory as project root (M0 default).
+    // Use the current directory as the default project root.
     let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
     let local = tokio::task::LocalSet::new();
@@ -357,7 +447,7 @@ async fn main() {
                 let agent_id = config.id.clone();
                 if let Err(e) = manager.add_agent(config, project_root.clone()).await {
                     error!("failed to start agent '{agent_id}': {e}");
-                    eprintln!("make sure the ACP agent is installed and in PATH");
+                    eprintln!("make sure the configured agent command is installed and in PATH");
                     return 1;
                 }
             }
