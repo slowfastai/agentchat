@@ -165,30 +165,46 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(store.agents, id: \.agentID) { agent in
-                    Button {
-                        store.toggleAgentSelection(agent.agentID)
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: store.isSelectedAgent(agent.agentID) ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(store.isSelectedAgent(agent.agentID) ? Color.accentColor : Color.secondary)
+                    HStack(alignment: .top, spacing: 12) {
+                        Button {
+                            store.toggleAgentSelection(agent.agentID)
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: store.isSelectedAgent(agent.agentID) ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(store.isSelectedAgent(agent.agentID) ? Color.accentColor : Color.secondary)
 
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack {
+                                VStack(alignment: .leading, spacing: 2) {
                                     Text(agent.name)
                                         .font(.body.weight(.medium))
-                                    Spacer()
-                                    Text(agent.status.replacingOccurrences(of: "_", with: " ").capitalized)
+
+                                    Text(agent.capabilities.joined(separator: " · "))
                                         .font(.caption)
-                                        .foregroundStyle(agent.isOnline ? .green : .secondary)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
                                 }
-                                Text(agent.capabilities.joined(separator: " · "))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+
+                        VStack(alignment: .trailing, spacing: 6) {
+                            Text(agent.status.replacingOccurrences(of: "_", with: " ").capitalized)
+                                .font(.caption)
+                                .foregroundStyle(agentStatusColor(for: agent))
+
+                            if agent.isOffline {
+                                Button {
+                                    store.reconnectNow()
+                                } label: {
+                                    Text("Reconnect")
+                                        .font(.caption2.weight(.semibold))
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .disabled(!store.hasConfiguredDaemonURL)
                             }
                         }
                     }
-                    .buttonStyle(.plain)
                 }
 
                 Text("Selected agents are used by Feed → menu → Create Thread / Add Agent.")
@@ -410,6 +426,16 @@ struct ContentView: View {
         }
         if store.connectionStatus.contains("Not configured") {
             return .gray
+        }
+        return .orange
+    }
+
+    private func agentStatusColor(for agent: DaemonAgentSummary) -> Color {
+        if agent.isOnline {
+            return .green
+        }
+        if agent.isOffline {
+            return .secondary
         }
         return .orange
     }

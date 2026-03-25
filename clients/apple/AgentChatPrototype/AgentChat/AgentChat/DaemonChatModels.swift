@@ -59,6 +59,18 @@ struct DaemonAgentSummary: Codable, Identifiable, Hashable {
 
     var id: String { agentID }
     var isOnline: Bool { status == "online" }
+    var isOffline: Bool { status == "offline" }
+
+    func withStatus(_ status: String) -> Self {
+        Self(
+            agentID: agentID,
+            name: name,
+            kind: kind,
+            status: status,
+            defaultWorkingDir: defaultWorkingDir,
+            capabilities: capabilities
+        )
+    }
 }
 
 struct DaemonThreadSummary: Codable, Identifiable, Hashable {

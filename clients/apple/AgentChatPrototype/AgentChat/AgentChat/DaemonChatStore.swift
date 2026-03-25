@@ -53,7 +53,16 @@ final class DaemonChatStore: ObservableObject {
     }
 
     func createThreadWithSelectedAgents() {
-        let chosenAgentIDs = Array(selectedAgentIDs.isEmpty ? Set(agents.map(\.agentID)) : selectedAgentIDs)
+        let onlineAgentIDs = Set(agents.filter(\.isOnline).map(\.agentID))
+        let chosenAgentIDs = Array(
+            selectedAgentIDs.isEmpty
+                ? onlineAgentIDs
+                : selectedAgentIDs.intersection(onlineAgentIDs)
+        )
+        guard !chosenAgentIDs.isEmpty else {
+            errorMessage = "No online agents available. Reconnect to the daemon and try again."
+            return
+        }
         pendingThreadAgentIDs = chosenAgentIDs.sorted()
         let title = chosenAgentIDs.isEmpty ? "New Chat" : chosenAgentIDs.joined(separator: " + ")
         Task {
@@ -95,7 +104,14 @@ final class DaemonChatStore: ObservableObject {
         }
 
         let existingAgentIDs = Set(activeThreadSnapshot?.participants.compactMap(\.agentID) ?? [])
-        let selectedOrAllAgents = selectedAgentIDs.isEmpty ? Set(agents.map(\.agentID)) : selectedAgentIDs
+        let onlineAgentIDs = Set(agents.filter(\.isOnline).map(\.agentID))
+        let selectedOrAllAgents = selectedAgentIDs.isEmpty
+            ? onlineAgentIDs
+            : selectedAgentIDs.intersection(onlineAgentIDs)
+        guard !selectedOrAllAgents.isEmpty else {
+            errorMessage = "No online agents available. Reconnect to the daemon and try again."
+            return
+        }
         let agentIDsToAdd = selectedOrAllAgents.subtracting(existingAgentIDs).sorted()
 
         guard !agentIDsToAdd.isEmpty else {
@@ -195,6 +211,7 @@ final class DaemonChatStore: ObservableObject {
         receiveTask = nil
         socketTask?.cancel(with: .goingAway, reason: nil)
         socketTask = nil
+        markAgentsOffline()
         refreshIdleConnectionStatus()
     }
 
@@ -235,18 +252,12 @@ final class DaemonChatStore: ObservableObject {
         let task = URLSession.shared.webSocketTask(with: url)
         socketTask = task
         task.resume()
-        connectionStatus = "Connected"
-
-        Task {
-            await send(ListAgentsRequest())
-            await send(ListThreadsRequest())
-            if let activeThreadID {
-                await send(AttachThreadRequest(threadID: activeThreadID, afterSeq: cursorByThread[activeThreadID]))
-            }
-        }
-
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
+        }
+
+        Task { [weak self] in
+            await self?.bootstrapConnection(using: task)
         }
     }
 
@@ -267,6 +278,10 @@ final class DaemonChatStore: ObservableObject {
                     break
                 }
             } catch {
+                guard socketTask === task else { break }
+                socketTask = nil
+                receiveTask = nil
+                markAgentsOffline()
                 connectionStatus = "Disconnected"
                 break
             }
@@ -651,6 +666,53 @@ final class DaemonChatStore: ObservableObject {
         }
     }
 
+    private func bootstrapConnection(using task: URLSessionWebSocketTask) async {
+        do {
+            try await ping(task)
+            guard socketTask === task else { return }
+            connectionStatus = "Connected"
+            await refreshDaemonState()
+        } catch {
+            guard socketTask === task else { return }
+            handleConnectionFailure(message: "Failed to connect to daemon: \(error.localizedDescription)")
+        }
+    }
+
+    private func refreshDaemonState() async {
+        await send(ListAgentsRequest())
+        await send(ListThreadsRequest())
+        if let activeThreadID {
+            await send(AttachThreadRequest(threadID: activeThreadID, afterSeq: cursorByThread[activeThreadID]))
+        }
+    }
+
+    private func ping(_ task: URLSessionWebSocketTask) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            task.sendPing { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: ())
+                }
+            }
+        }
+    }
+
+    private func markAgentsOffline() {
+        guard !agents.isEmpty else { return }
+        agents = agents.map { $0.withStatus("offline") }
+    }
+
+    private func handleConnectionFailure(message: String) {
+        errorMessage = message
+        receiveTask?.cancel()
+        receiveTask = nil
+        socketTask?.cancel(with: .goingAway, reason: nil)
+        socketTask = nil
+        markAgentsOffline()
+        connectionStatus = "Disconnected"
+    }
+
     private var hasActiveConnection: Bool {
         guard socketTask != nil else { return false }
         switch connectionStatus {
@@ -687,6 +749,7 @@ final class DaemonChatStore: ObservableObject {
 
     private func send<Request: Encodable>(_ request: Request) async {
         guard let socketTask else {
+            markAgentsOffline()
             refreshIdleConnectionStatus()
             errorMessage = hasConfiguredDaemonURL
                 ? "Not connected to a daemon. Tap Reconnect, scan a QR code, or enter a URL first."
@@ -698,8 +761,7 @@ final class DaemonChatStore: ObservableObject {
             guard let text = String(data: data, encoding: .utf8) else { return }
             try await socketTask.send(.string(text))
         } catch {
-            errorMessage = "Send failed: \(error.localizedDescription)"
-            connectionStatus = "Disconnected"
+            handleConnectionFailure(message: "Send failed: \(error.localizedDescription)")
         }
     }
 }
