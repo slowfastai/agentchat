@@ -1031,40 +1031,56 @@ private struct TimelineBubble: View {
             } else if entry.kind == .assistantTurn {
                 VStack(alignment: .leading, spacing: 12) {
                     if let thinkingBody = entry.thinkingBody, !thinkingBody.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Label("Thinking", systemImage: "brain.head.profile")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(ClaudePalette.subtleInk)
-
-                            Text(thinkingBody)
-                                .font(.callout)
-                                .foregroundStyle(ClaudePalette.subtleInk)
-                                .lineSpacing(4)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .padding(14)
-                        .background(
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .fill(ClaudePalette.panel.opacity(0.96))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .stroke(ClaudePalette.stroke, lineWidth: 1)
+                        assistantActivityPanel(
+                            title: "Thinking",
+                            systemImage: "brain.head.profile",
+                            titleColor: ClaudePalette.subtleInk,
+                            body: thinkingBody,
+                            bodyFont: .callout,
+                            bodyColor: ClaudePalette.subtleInk,
+                            fill: ClaudePalette.panel.opacity(0.96),
+                            stroke: ClaudePalette.stroke
                         )
                     }
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        if entry.thinkingBody != nil {
+                    if let planBody = entry.planBody, !planBody.isEmpty {
+                        assistantActivityPanel(
+                            title: "Plan draft",
+                            systemImage: "list.bullet.clipboard",
+                            titleColor: Color(red: 0.463, green: 0.392, blue: 0.361),
+                            body: planBody,
+                            bodyFont: .system(.body, design: .monospaced),
+                            bodyColor: ClaudePalette.ink,
+                            fill: ClaudePalette.planPanel.opacity(0.72),
+                            stroke: Color(red: 0.463, green: 0.392, blue: 0.361).opacity(0.14)
+                        )
+                    }
+
+                    ForEach(entry.toolActivities) { activity in
+                        assistantActivityPanel(
+                            title: "Tool activity",
+                            systemImage: "hammer",
+                            titleColor: ClaudePalette.accent,
+                            body: toolBody(for: activity),
+                            bodyFont: .system(.body, design: .monospaced),
+                            bodyColor: ClaudePalette.ink,
+                            fill: ClaudePalette.toolPanel.opacity(0.72),
+                            stroke: ClaudePalette.accent.opacity(0.18)
+                        )
+                    }
+
+                    if !entry.body.isEmpty || (entry.thinkingBody == nil && entry.planBody == nil && entry.toolActivities.isEmpty) {
+                        VStack(alignment: .leading, spacing: 8) {
                             Label("Response", systemImage: "text.bubble")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(ClaudePalette.mutedInk)
-                        }
 
-                        Text(entry.body.isEmpty ? "…" : entry.body)
-                            .font(.body)
-                            .foregroundStyle(ClaudePalette.ink)
-                            .lineSpacing(5)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            Text(entry.body.isEmpty ? "…" : entry.body)
+                                .font(.body)
+                                .foregroundStyle(ClaudePalette.ink)
+                                .lineSpacing(5)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
 
                     if let status = entry.status, status != "completed" {
@@ -1081,6 +1097,49 @@ private struct TimelineBubble: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+
+    private func toolBody(for activity: DaemonToolActivity) -> String {
+        let headline = activity.title.isEmpty
+            ? activity.status
+            : "\(activity.title) · \(activity.status)"
+        guard let content = activity.content, !content.isEmpty else {
+            return headline
+        }
+        return "\(headline)\n\(content)"
+    }
+
+    private func assistantActivityPanel(
+        title: String,
+        systemImage: String,
+        titleColor: Color,
+        body: String,
+        bodyFont: Font,
+        bodyColor: Color,
+        fill: Color,
+        stroke: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: systemImage)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(titleColor)
+
+            Text(body)
+                .font(bodyFont)
+                .foregroundStyle(bodyColor)
+                .lineSpacing(4)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(fill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(stroke, lineWidth: 1)
+        )
     }
 
     private var centeredEvent: some View {
