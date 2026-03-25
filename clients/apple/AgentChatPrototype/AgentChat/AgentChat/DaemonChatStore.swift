@@ -37,7 +37,7 @@ final class DaemonChatStore: ObservableObject {
     private var snapshotsByThread: [String: DaemonThreadSnapshot] = [:]
     private var timelineByThread: [String: [DaemonTimelineEntry]] = [:]
     private var cursorByThread: [String: UInt64] = [:]
-    private var legacyAssistantMessages = LegacyAssistantMessageReducer()
+    private var assistantTurns = AssistantTurnReducer()
 
     init() {
         let defaults = UserDefaults.standard
@@ -426,45 +426,23 @@ final class DaemonChatStore: ObservableObject {
                 touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
             case "thread_assistant_message":
                 let event = try decoder.decode(ThreadAssistantMessageEvent.self, from: data)
-                discardActiveLegacyAssistantMessage(threadID: event.threadID, sessionID: event.sessionID)
                 upsertAssistantMessage(event)
                 touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
             case "thread_agent_delta":
                 let event = try decoder.decode(ThreadAgentDeltaEvent.self, from: data)
-                upsertLegacyAssistantDelta(event)
+                upsertAssistantDelta(event)
                 touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
             case "thread_agent_tool_update":
                 let event = try decoder.decode(ThreadAgentToolUpdateEvent.self, from: data)
-                let body = event.content.map { "\(event.title) · \(event.status)\n\($0)" } ?? "\(event.title) · \(event.status)"
-                appendTimeline(
-                    DaemonTimelineEntry(
-                        threadID: event.threadID,
-                        threadSeq: event.threadSeq,
-                        kind: .tool,
-                        title: event.agentID.capitalized,
-                        body: body,
-                        tintName: colorName(for: event.agentID)
-                    ),
-                    to: event.threadID
-                )
+                upsertAssistantToolUpdate(event)
                 touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
             case "thread_agent_plan_update":
                 let event = try decoder.decode(ThreadAgentPlanUpdateEvent.self, from: data)
-                appendTimeline(
-                    DaemonTimelineEntry(
-                        threadID: event.threadID,
-                        threadSeq: event.threadSeq,
-                        kind: .plan,
-                        title: event.agentID.capitalized,
-                        body: String(describing: event.planJSON),
-                        tintName: colorName(for: event.agentID)
-                    ),
-                    to: event.threadID
-                )
+                upsertAssistantPlanUpdate(event)
                 touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
             case "thread_agent_turn_end":
                 let event = try decoder.decode(ThreadAgentTurnEndEvent.self, from: data)
-                finalizeLegacyAssistantMessage(event)
+                finalizeAssistantTurn(event)
                 touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
             case "error":
                 let event = try decoder.decode(ErrorEvent.self, from: data)
@@ -494,59 +472,48 @@ final class DaemonChatStore: ObservableObject {
         }
     }
 
-    private func removeTimelineEntry(id: String, from threadID: String) {
-        guard var entries = timelineByThread[threadID] else { return }
-        entries.removeAll { $0.id == id }
-        timelineByThread[threadID] = entries
-        if activeThreadID == threadID {
-            timeline = entries
-        }
-    }
-
     private func upsertAssistantMessage(_ event: ThreadAssistantMessageEvent) {
-        let existing = timelineByThread[event.threadID]?.first(where: { $0.id == event.messageID })
-        let entry = DaemonTimelineEntry(
-            id: event.messageID,
-            sortThreadSeq: existing?.sortThreadSeq ?? event.threadSeq,
-            lastThreadSeq: event.threadSeq,
-            kind: .assistantTurn,
-            title: event.agentID.capitalized,
-            body: event.response,
-            thinkingBody: event.thinking.isEmpty ? nil : event.thinking,
-            status: event.state,
-            tintName: colorName(for: event.agentID)
-        )
-        appendTimeline(entry, to: event.threadID)
-    }
-
-    private func upsertLegacyAssistantDelta(_ event: ThreadAgentDeltaEvent) {
-        guard let state = legacyAssistantMessages.consume(delta: event) else {
-            return
-        }
+        let state = assistantTurns.consume(snapshot: event)
         appendTimeline(
-            state.timelineEntry(status: "streaming", tintName: colorName(for: state.agentID)),
+            state.timelineEntry(tintName: colorName(for: state.agentID)),
             to: event.threadID
         )
     }
 
-    private func finalizeLegacyAssistantMessage(_ event: ThreadAgentTurnEndEvent) {
-        guard let state = legacyAssistantMessages.finish(turnEnd: event) else {
+    private func upsertAssistantDelta(_ event: ThreadAgentDeltaEvent) {
+        guard let state = assistantTurns.consume(delta: event) else {
             return
         }
         appendTimeline(
-            state.timelineEntry(status: "completed", tintName: colorName(for: state.agentID)),
+            state.timelineEntry(tintName: colorName(for: state.agentID)),
             to: event.threadID
         )
     }
 
-    private func discardActiveLegacyAssistantMessage(threadID: String, sessionID: String) {
-        guard let state = legacyAssistantMessages.removeActiveState(
-            threadID: threadID,
-            sessionID: sessionID
-        ) else {
+    private func upsertAssistantToolUpdate(_ event: ThreadAgentToolUpdateEvent) {
+        let state = assistantTurns.consume(toolUpdate: event)
+        appendTimeline(
+            state.timelineEntry(tintName: colorName(for: state.agentID)),
+            to: event.threadID
+        )
+    }
+
+    private func upsertAssistantPlanUpdate(_ event: ThreadAgentPlanUpdateEvent) {
+        let state = assistantTurns.consume(planUpdate: event)
+        appendTimeline(
+            state.timelineEntry(tintName: colorName(for: state.agentID)),
+            to: event.threadID
+        )
+    }
+
+    private func finalizeAssistantTurn(_ event: ThreadAgentTurnEndEvent) {
+        guard let state = assistantTurns.finish(turnEnd: event) else {
             return
         }
-        removeTimelineEntry(id: state.entryID, from: threadID)
+        appendTimeline(
+            state.timelineEntry(tintName: colorName(for: state.agentID)),
+            to: event.threadID
+        )
     }
 
     private func upsertParticipant(_ participant: DaemonThreadParticipant, in threadID: String) {
@@ -620,7 +587,7 @@ final class DaemonChatStore: ObservableObject {
         snapshotsByThread.removeValue(forKey: threadID)
         timelineByThread.removeValue(forKey: threadID)
         cursorByThread.removeValue(forKey: threadID)
-        legacyAssistantMessages.removeStates(for: threadID)
+        assistantTurns.removeStates(for: threadID)
 
         if activeThreadID == threadID {
             activeThreadID = nil
