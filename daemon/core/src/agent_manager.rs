@@ -14,20 +14,29 @@ struct ManagedAgent {
     agent: Rc<AcpAgent>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionBinding {
+    pub agent_id: String,
+    pub upstream_session_id: String,
+}
+
 /// Manages ACP agent instances.
 ///
 /// For M0: single agent support. Post-M0: multi-agent with GroupChat routing.
 pub struct AgentManager {
     agents: HashMap<String, ManagedAgent>,
-    /// Map session IDs to agent IDs for routing.
-    session_to_agent: HashMap<String, String>,
+    /// Map public daemon session IDs to their owning agent and upstream session IDs.
+    session_bindings: HashMap<String, SessionBinding>,
+    /// Reverse lookup from (agent_id, upstream_session_id) to the public daemon session ID.
+    upstream_to_public: HashMap<(String, String), String>,
 }
 
 impl AgentManager {
     pub fn new() -> Self {
         Self {
             agents: HashMap::new(),
-            session_to_agent: HashMap::new(),
+            session_bindings: HashMap::new(),
+            upstream_to_public: HashMap::new(),
         }
     }
 
@@ -108,25 +117,68 @@ impl AgentManager {
         summaries
     }
 
-    /// Register a session -> agent mapping.
-    pub fn register_session(&mut self, session_id: String, agent_id: String) {
-        self.session_to_agent.insert(session_id, agent_id);
+    /// Register a public daemon session ID and bind it to the owning agent and upstream session.
+    pub fn register_session(
+        &mut self,
+        public_session_id: String,
+        agent_id: String,
+        upstream_session_id: String,
+    ) {
+        self.upstream_to_public.insert(
+            (agent_id.clone(), upstream_session_id.clone()),
+            public_session_id.clone(),
+        );
+        self.session_bindings.insert(
+            public_session_id,
+            SessionBinding {
+                agent_id,
+                upstream_session_id,
+            },
+        );
     }
 
-    /// Look up which agent owns a session.
+    /// Look up the full binding for a public daemon session.
+    pub fn session_binding(&self, session_id: &str) -> Option<&SessionBinding> {
+        self.session_bindings.get(session_id)
+    }
+
+    /// Look up which agent owns a public daemon session.
     pub fn agent_for_session(&self, session_id: &str) -> Option<&str> {
-        self.session_to_agent.get(session_id).map(|s| s.as_str())
+        self.session_binding(session_id)
+            .map(|binding| binding.agent_id.as_str())
     }
 
-    /// Remove a session -> agent mapping.
-    pub fn remove_session(&mut self, session_id: &str) -> Option<String> {
-        self.session_to_agent.remove(session_id)
+    /// Look up the upstream agent session ID for a public daemon session.
+    pub fn upstream_session_for_session(&self, session_id: &str) -> Option<&str> {
+        self.session_binding(session_id)
+            .map(|binding| binding.upstream_session_id.as_str())
     }
 
-    /// Remove multiple session -> agent mappings.
+    /// Resolve a public daemon session ID from an agent ID and upstream session ID.
+    pub fn public_session_for_upstream(
+        &self,
+        agent_id: &str,
+        upstream_session_id: &str,
+    ) -> Option<&str> {
+        self.upstream_to_public
+            .get(&(agent_id.to_string(), upstream_session_id.to_string()))
+            .map(|session_id| session_id.as_str())
+    }
+
+    /// Remove a session binding.
+    pub fn remove_session(&mut self, session_id: &str) -> Option<SessionBinding> {
+        let binding = self.session_bindings.remove(session_id)?;
+        self.upstream_to_public.remove(&(
+            binding.agent_id.clone(),
+            binding.upstream_session_id.clone(),
+        ));
+        Some(binding)
+    }
+
+    /// Remove multiple session bindings.
     pub fn remove_sessions(&mut self, session_ids: &[String]) {
         for session_id in session_ids {
-            self.session_to_agent.remove(session_id);
+            let _ = self.remove_session(session_id);
         }
     }
 
@@ -175,22 +227,56 @@ mod tests {
     #[test]
     fn register_lookup_and_remove_session() {
         let mut manager = AgentManager::new();
-        manager.register_session("session-1".into(), "agent-1".into());
+        manager.register_session(
+            "session-1".into(),
+            "agent-1".into(),
+            "upstream-1".into(),
+        );
 
         assert_eq!(manager.agent_for_session("session-1"), Some("agent-1"));
-        assert_eq!(manager.remove_session("session-1"), Some("agent-1".into()));
+        assert_eq!(
+            manager.upstream_session_for_session("session-1"),
+            Some("upstream-1")
+        );
+        assert_eq!(
+            manager.public_session_for_upstream("agent-1", "upstream-1"),
+            Some("session-1")
+        );
+        assert_eq!(
+            manager.remove_session("session-1"),
+            Some(SessionBinding {
+                agent_id: "agent-1".into(),
+                upstream_session_id: "upstream-1".into(),
+            })
+        );
         assert_eq!(manager.agent_for_session("session-1"), None);
     }
 
     #[test]
     fn remove_sessions_clears_multiple_mappings() {
         let mut manager = AgentManager::new();
-        manager.register_session("session-1".into(), "agent-1".into());
-        manager.register_session("session-2".into(), "agent-1".into());
+        manager.register_session(
+            "session-1".into(),
+            "agent-1".into(),
+            "upstream-1".into(),
+        );
+        manager.register_session(
+            "session-2".into(),
+            "agent-1".into(),
+            "upstream-2".into(),
+        );
 
         manager.remove_sessions(&["session-1".into(), "session-2".into()]);
 
         assert_eq!(manager.agent_for_session("session-1"), None);
         assert_eq!(manager.agent_for_session("session-2"), None);
+        assert_eq!(
+            manager.public_session_for_upstream("agent-1", "upstream-1"),
+            None
+        );
+        assert_eq!(
+            manager.public_session_for_upstream("agent-1", "upstream-2"),
+            None
+        );
     }
 }

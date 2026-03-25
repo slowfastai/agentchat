@@ -6,3 +6,5 @@ pub mod relay_client;
 pub mod session_event_log;
 pub mod session_store;
 pub mod skills;
+pub mod thread_event_log;
+pub mod thread_store;

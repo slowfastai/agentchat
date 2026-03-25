@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
+use agent_client_protocol::SessionNotification;
 use agentchat_core::agent_manager::AgentManager;
 use agentchat_core::distiller::Distiller;
 use agentchat_core::session_store::SessionStore;
@@ -137,6 +138,13 @@ async fn websocket_round_trip_streams_prompt_events_and_survives_reconnect() {
                 harness.manager.borrow().agent_for_session(&session_id),
                 Some("fake")
             );
+            let upstream_session_id = harness
+                .manager
+                .borrow()
+                .upstream_session_for_session(&session_id)
+                .unwrap()
+                .to_string();
+            assert_ne!(upstream_session_id, session_id);
 
             let mut ws = connect_ws(harness.port).await;
             send_client_message(&mut ws, &ClientMessage::ListSessions).await;
@@ -428,6 +436,328 @@ async fn websocket_allows_concurrent_prompts_for_different_sessions() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn websocket_thread_group_chat_fans_out_to_multiple_agents() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_multi_agent_harness(&[
+                ("alpha", FakeAgentMode::Normal),
+                ("beta", FakeAgentMode::Normal),
+            ])
+            .await;
+            let mut ws = connect_ws(harness.port).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateThread {
+                    title: Some("Review".into()),
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+            let thread_id = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadCreated { thread_id, .. } => thread_id,
+                event => panic!("unexpected event while creating thread: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AddThreadParticipant {
+                    thread_id: thread_id.clone(),
+                    agent_id: "alpha".into(),
+                },
+            )
+            .await;
+            let (alpha_participant_id, alpha_session_id) = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadParticipantAdded { thread_id: tid, participant } => {
+                    assert_eq!(tid, thread_id);
+                    assert_eq!(participant.agent_id.as_deref(), Some("alpha"));
+                    (
+                        participant.participant_id,
+                        participant.session_id.expect("missing participant session id"),
+                    )
+                }
+                event => panic!("unexpected event while adding alpha participant: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AddThreadParticipant {
+                    thread_id: thread_id.clone(),
+                    agent_id: "beta".into(),
+                },
+            )
+            .await;
+            let (beta_participant_id, beta_session_id) = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadParticipantAdded { thread_id: tid, participant } => {
+                    assert_eq!(tid, thread_id);
+                    assert_eq!(participant.agent_id.as_deref(), Some("beta"));
+                    (
+                        participant.participant_id,
+                        participant.session_id.expect("missing participant session id"),
+                    )
+                }
+                event => panic!("unexpected event while adding beta participant: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::SendThreadMessage {
+                    thread_id: thread_id.clone(),
+                    content: "review this".into(),
+                    target_participant_ids: None,
+                },
+            )
+            .await;
+
+            match receive_event(&mut ws).await {
+                ResponseEvent::ThreadMessage {
+                    thread_id: tid,
+                    target_participant_ids,
+                    content,
+                    ..
+                } => {
+                    assert_eq!(tid, thread_id);
+                    assert_eq!(content, "review this");
+                    assert_eq!(target_participant_ids.len(), 2);
+                    assert!(target_participant_ids.contains(&alpha_participant_id));
+                    assert!(target_participant_ids.contains(&beta_participant_id));
+                }
+                event => panic!("unexpected thread message event: {event:?}"),
+            }
+
+            let mut saw_alpha_text = false;
+            let mut saw_beta_text = false;
+            let mut saw_alpha_end = false;
+            let mut saw_beta_end = false;
+            for _ in 0..16 {
+                match receive_event(&mut ws).await {
+                    ResponseEvent::ThreadAgentDelta {
+                        thread_id: tid,
+                        participant_id,
+                        session_id,
+                        content,
+                        delta_type: DeltaType::Text,
+                        ..
+                    } => {
+                        assert_eq!(tid, thread_id);
+                        if participant_id == alpha_participant_id {
+                            assert_eq!(session_id, alpha_session_id);
+                            assert_eq!(content, "echo: review this");
+                            saw_alpha_text = true;
+                        } else if participant_id == beta_participant_id {
+                            assert_eq!(session_id, beta_session_id);
+                            assert_eq!(content, "echo: review this");
+                            saw_beta_text = true;
+                        }
+                    }
+                    ResponseEvent::ThreadAgentTurnEnd {
+                        thread_id: tid,
+                        participant_id,
+                        session_id,
+                        stop_reason,
+                        ..
+                    } => {
+                        assert_eq!(tid, thread_id);
+                        assert_eq!(stop_reason, "EndTurn");
+                        if participant_id == alpha_participant_id {
+                            assert_eq!(session_id, alpha_session_id);
+                            saw_alpha_end = true;
+                        } else if participant_id == beta_participant_id {
+                            assert_eq!(session_id, beta_session_id);
+                            saw_beta_end = true;
+                        }
+                    }
+                    ResponseEvent::ThreadAgentToolUpdate { .. }
+                    | ResponseEvent::ThreadAgentDelta { .. }
+                    | ResponseEvent::Delta { .. }
+                    | ResponseEvent::ToolUpdate { .. }
+                    | ResponseEvent::TurnEnd { .. } => {}
+                    other => panic!("unexpected thread fan-out event: {other:?}"),
+                }
+                if saw_alpha_text && saw_beta_text && saw_alpha_end && saw_beta_end {
+                    break;
+                }
+            }
+
+            assert!(saw_alpha_text && saw_beta_text && saw_alpha_end && saw_beta_end);
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn websocket_thread_targeted_send_and_attach_snapshot() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_multi_agent_harness(&[
+                ("alpha", FakeAgentMode::Normal),
+                ("beta", FakeAgentMode::Normal),
+            ])
+            .await;
+            let mut ws = connect_ws(harness.port).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateThread {
+                    title: Some("Targeted".into()),
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+            let thread_id = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadCreated { thread_id, .. } => thread_id,
+                event => panic!("unexpected event while creating thread: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AddThreadParticipant {
+                    thread_id: thread_id.clone(),
+                    agent_id: "alpha".into(),
+                },
+            )
+            .await;
+            let (alpha_participant_id, alpha_session_id) = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadParticipantAdded { participant, .. } => (
+                    participant.participant_id,
+                    participant.session_id.expect("missing alpha session id"),
+                ),
+                event => panic!("unexpected event while adding alpha participant: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AddThreadParticipant {
+                    thread_id: thread_id.clone(),
+                    agent_id: "beta".into(),
+                },
+            )
+            .await;
+            let (beta_participant_id, beta_session_id) = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadParticipantAdded { participant, .. } => (
+                    participant.participant_id,
+                    participant.session_id.expect("missing beta session id"),
+                ),
+                event => panic!("unexpected event while adding beta participant: {event:?}"),
+            };
+
+            send_client_message(&mut ws, &ClientMessage::ListThreads).await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::ThreadList { threads } => {
+                    let thread = threads
+                        .iter()
+                        .find(|thread| thread.thread_id == thread_id)
+                        .expect("missing created thread");
+                    assert_eq!(thread.participant_count, 3);
+                    assert_eq!(thread.state, agentchat_protocol::ThreadState::Idle);
+                }
+                event => panic!("unexpected event while listing threads: {event:?}"),
+            }
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::SendThreadMessage {
+                    thread_id: thread_id.clone(),
+                    content: "only beta".into(),
+                    target_participant_ids: Some(vec![beta_participant_id.clone()]),
+                },
+            )
+            .await;
+
+            match receive_event(&mut ws).await {
+                ResponseEvent::ThreadMessage {
+                    target_participant_ids,
+                    content,
+                    ..
+                } => {
+                    assert_eq!(content, "only beta");
+                    assert_eq!(target_participant_ids, vec![beta_participant_id.clone()]);
+                }
+                event => panic!("unexpected targeted thread message event: {event:?}"),
+            }
+
+            let mut saw_beta_text = false;
+            let mut saw_beta_end = false;
+            for _ in 0..10 {
+                match receive_event(&mut ws).await {
+                    ResponseEvent::ThreadAgentDelta {
+                        participant_id,
+                        session_id,
+                        content,
+                        delta_type: DeltaType::Text,
+                        ..
+                    } => {
+                        assert_eq!(participant_id, beta_participant_id);
+                        assert_eq!(session_id, beta_session_id);
+                        assert_eq!(content, "echo: only beta");
+                        saw_beta_text = true;
+                    }
+                    ResponseEvent::ThreadAgentTurnEnd {
+                        participant_id,
+                        session_id,
+                        stop_reason,
+                        ..
+                    } => {
+                        assert_eq!(participant_id, beta_participant_id);
+                        assert_eq!(session_id, beta_session_id);
+                        assert_eq!(stop_reason, "EndTurn");
+                        saw_beta_end = true;
+                    }
+                    ResponseEvent::ThreadAgentToolUpdate { participant_id, .. }
+                    | ResponseEvent::ThreadAgentDelta { participant_id, .. } => {
+                        assert_ne!(participant_id, alpha_participant_id);
+                    }
+                    ResponseEvent::Delta { .. }
+                    | ResponseEvent::ToolUpdate { .. }
+                    | ResponseEvent::TurnEnd { .. } => {}
+                    other => panic!("unexpected targeted thread event: {other:?}"),
+                }
+                if saw_beta_text && saw_beta_end {
+                    break;
+                }
+            }
+            assert!(saw_beta_text && saw_beta_end);
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AttachThread {
+                    thread_id: thread_id.clone(),
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::ThreadAttached { thread_id: tid } => assert_eq!(tid, thread_id),
+                event => panic!("unexpected thread attached event: {event:?}"),
+            }
+            match receive_event(&mut ws).await {
+                ResponseEvent::ThreadSnapshot { snapshot } => {
+                    assert_eq!(snapshot.thread_id, thread_id);
+                    assert!(snapshot.last_thread_seq > 0);
+                    assert!(snapshot
+                        .participants
+                        .iter()
+                        .any(|participant| participant.session_id.as_deref() == Some(alpha_session_id.as_str())));
+                    assert!(snapshot
+                        .participants
+                        .iter()
+                        .any(|participant| participant.session_id.as_deref() == Some(beta_session_id.as_str())));
+                }
+                event => panic!("unexpected thread snapshot event: {event:?}"),
+            }
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn websocket_attach_session_replays_events_after_cursor() {
     let local = tokio::task::LocalSet::new();
     local
@@ -611,10 +941,14 @@ async fn websocket_persists_session_transcript_after_turn_end() {
                 transcript.events.first(),
                 Some(SessionEvent::UserPrompt { content, .. }) if content == "capture this"
             ));
-            assert!(transcript
-                .events
-                .iter()
-                .any(|event| matches!(event, SessionEvent::AgentUpdate { .. })));
+            let decoded_notification = transcript.events.iter().find_map(|event| match event {
+                SessionEvent::AgentUpdate {
+                    notification_json, ..
+                } => serde_json::from_value::<SessionNotification>(notification_json.clone()).ok(),
+                _ => None,
+            });
+            let decoded_notification = decoded_notification.expect("missing agent update");
+            assert_eq!(decoded_notification.session_id.to_string(), session_id);
             assert!(matches!(
                 transcript.events.last(),
                 Some(SessionEvent::TurnEnd { stop_reason, .. }) if stop_reason == "EndTurn"
@@ -1047,9 +1381,15 @@ async fn websocket_disconnect_keeps_in_flight_prompt_running_until_explicit_canc
             ws.send(Message::Close(None)).await.unwrap();
             drop(ws);
 
+            let upstream_session_id = harness
+                .manager
+                .borrow()
+                .upstream_session_for_session(&session_id)
+                .unwrap()
+                .to_string();
             tokio::time::sleep(Duration::from_millis(250)).await;
             assert!(
-                !file_contains_line(&harness.events_path, &format!("cancel:{session_id}")),
+                !file_contains_line(&harness.events_path, &format!("cancel:{upstream_session_id}")),
                 "disconnect should not implicitly cancel the prompt"
             );
             assert_eq!(
@@ -1066,7 +1406,7 @@ async fn websocket_disconnect_keeps_in_flight_prompt_running_until_explicit_canc
             )
             .await;
 
-            wait_for_file_line(&harness.events_path, &format!("cancel:{session_id}")).await;
+            wait_for_file_line(&harness.events_path, &format!("cancel:{upstream_session_id}")).await;
             match receive_event(&mut ws).await {
                 ResponseEvent::TurnEnd {
                     session_id: sid,
@@ -1236,6 +1576,13 @@ async fn websocket_shutdown_cancels_in_flight_prompt() {
                 event => panic!("unexpected event before shutdown: {event:?}"),
             }
 
+            let upstream_session_id = harness
+                .manager
+                .borrow()
+                .upstream_session_for_session(&session_id)
+                .unwrap()
+                .to_string();
+
             let _ = harness.shutdown_tx.send(true);
             let server_result = harness.server_task.await.expect("server task panicked");
             assert!(
@@ -1243,7 +1590,7 @@ async fn websocket_shutdown_cancels_in_flight_prompt() {
                 "server returned error: {server_result:?}"
             );
 
-            wait_for_file_line(&harness.events_path, &format!("cancel:{session_id}")).await;
+            wait_for_file_line(&harness.events_path, &format!("cancel:{upstream_session_id}")).await;
             wait_for(|| {
                 harness
                     .manager

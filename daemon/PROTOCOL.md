@@ -208,6 +208,197 @@ Error responses:
 {"type":"error","code":"agent_unavailable","message":"agent is not online"}
 ```
 
+## `create_thread`
+
+Create a new live thread for group chat.
+
+Request:
+
+```json
+{"type":"create_thread","title":"Review","working_dir":"."}
+```
+
+Success response:
+
+```json
+{
+  "type": "thread_created",
+  "thread_id": "thread-1",
+  "created_at_ms": 1774257600000
+}
+```
+
+## `list_threads`
+
+List live daemon threads.
+
+Request:
+
+```json
+{"type":"list_threads"}
+```
+
+Success response:
+
+```json
+{
+  "type": "thread_list",
+  "threads": [
+    {
+      "thread_id": "thread-1",
+      "title": "Review",
+      "working_dir": ".",
+      "created_at_ms": 1774257600000,
+      "state": "idle",
+      "participant_count": 3,
+      "last_thread_seq": 5
+    }
+  ]
+}
+```
+
+## `attach_thread`
+
+Attach the current connection to an existing thread.
+
+Request:
+
+```json
+{"type":"attach_thread","thread_id":"thread-1"}
+```
+
+Success responses:
+
+```json
+{"type":"thread_attached","thread_id":"thread-1"}
+```
+
+```json
+{
+  "type": "thread_snapshot",
+  "snapshot": {
+    "thread_id": "thread-1",
+    "title": "Review",
+    "working_dir": ".",
+    "created_at_ms": 1774257600000,
+    "last_thread_seq": 5,
+    "participants": [
+      {
+        "participant_id": "participant-user",
+        "kind": "human",
+        "display_name": "You",
+        "agent_id": null,
+        "session_id": null,
+        "state": "idle"
+      },
+      {
+        "participant_id": "participant-1",
+        "kind": "agent",
+        "display_name": "Pi",
+        "agent_id": "pi",
+        "session_id": "session-1",
+        "state": "idle"
+      }
+    ]
+  }
+}
+```
+
+## `add_thread_participant`
+
+Add an agent-backed participant to an existing thread. The daemon creates a backing live session automatically.
+
+Request:
+
+```json
+{"type":"add_thread_participant","thread_id":"thread-1","agent_id":"pi"}
+```
+
+Success response:
+
+```json
+{
+  "type": "thread_participant_added",
+  "thread_id": "thread-1",
+  "participant": {
+    "participant_id": "participant-1",
+    "kind": "agent",
+    "display_name": "Pi",
+    "agent_id": "pi",
+    "session_id": "session-1",
+    "state": "idle"
+  }
+}
+```
+
+## `send_thread_message`
+
+Record one user message in the thread and fan it out to one or more agent participants.
+
+Request to broadcast to all agent participants:
+
+```json
+{"type":"send_thread_message","thread_id":"thread-1","content":"review this diff"}
+```
+
+Request targeting a subset of participants:
+
+```json
+{"type":"send_thread_message","thread_id":"thread-1","content":"only beta","target_participant_ids":["participant-2"]}
+```
+
+Success response sequence:
+
+```json
+{
+  "type": "thread_message",
+  "thread_id": "thread-1",
+  "thread_seq": 1,
+  "message_id": "message-1",
+  "sender": {
+    "kind": "human",
+    "participant_id": "participant-user",
+    "display_name": "You"
+  },
+  "content": "review this diff",
+  "target_participant_ids": ["participant-1", "participant-2"]
+}
+```
+
+Then the daemon emits thread-scoped agent events such as:
+
+```json
+{
+  "type": "thread_agent_delta",
+  "thread_id": "thread-1",
+  "thread_seq": 2,
+  "participant_id": "participant-1",
+  "agent_id": "pi",
+  "session_id": "session-1",
+  "session_event_seq": 4,
+  "content": "echo: review this diff",
+  "delta_type": "text"
+}
+```
+
+```json
+{
+  "type": "thread_agent_turn_end",
+  "thread_id": "thread-1",
+  "thread_seq": 5,
+  "participant_id": "participant-1",
+  "agent_id": "pi",
+  "session_id": "session-1",
+  "session_event_seq": 7,
+  "stop_reason": "EndTurn"
+}
+```
+
+Notes:
+- The daemon still emits session-scoped events for the backing sessions.
+- Thread events are the recommended stream for group chat UI.
+- Thread replay is not implemented yet; use `attach_thread` for snapshot-only rebuilds in this phase.
+
 ## `list_sessions`
 
 List live sessions currently owned by the daemon.

@@ -8,15 +8,21 @@ use agent_client_protocol::{
 };
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, warn};
+use uuid::Uuid;
 
 use agentchat_core::agent_manager::AgentManager;
 use agentchat_core::distiller::Distiller;
 use agentchat_core::session_event_log::SessionEventLog;
 use agentchat_core::session_store::SessionStore;
 use agentchat_core::skills::SkillStore;
+use agentchat_core::thread_event_log::ThreadEventLog;
+use agentchat_core::thread_store::{
+    participant_to_protocol, thread_to_snapshot, thread_to_summary, ThreadStore,
+};
 use agentchat_protocol::{
-    AgentSummary, ClientMessage, DeltaType, ResponseEvent, SessionEvent, SessionSnapshot,
-    SessionState, SessionSummary, SessionTranscript, SkillInfo,
+    AgentSummary, ClientMessage, DeltaType, ParticipantKind, ParticipantState, ResponseEvent,
+    SessionEvent, SessionSnapshot, SessionState, SessionSummary, SessionTranscript, SkillInfo,
+    ThreadParticipant, ThreadSender, ThreadSnapshot, ThreadState,
 };
 
 pub struct AppProtocolSession {
@@ -25,6 +31,8 @@ pub struct AppProtocolSession {
     skill_store: Rc<SkillStore>,
     distiller: Rc<Distiller>,
     session_event_log: Rc<RefCell<SessionEventLog>>,
+    thread_store: Rc<RefCell<ThreadStore>>,
+    thread_event_log: Rc<RefCell<ThreadEventLog>>,
     response_tx: broadcast::Sender<ResponseEvent>,
     internal_sessions: Rc<RefCell<HashMap<String, mpsc::UnboundedSender<SessionNotification>>>>,
     created_sessions: Vec<String>,
@@ -88,34 +96,64 @@ impl AppProtocolSession {
         let (response_tx, _) = broadcast::channel::<ResponseEvent>(1024);
         let sessions_dir = session_store.borrow().sessions_dir().to_path_buf();
         let session_event_log = Rc::new(RefCell::new(SessionEventLog::new(sessions_dir)));
+        let thread_store = Rc::new(RefCell::new(ThreadStore::new()));
+        let thread_event_log = Rc::new(RefCell::new(ThreadEventLog::new()));
         let internal_sessions = Rc::new(RefCell::new(HashMap::<
             String,
             mpsc::UnboundedSender<SessionNotification>,
         >::new()));
 
-        for (_agent_id, mut update_rx, mut health_rx) in setups {
+        for (agent_id, mut update_rx, mut health_rx) in setups {
+            let manager_updates = manager.clone();
             let response_tx_updates = response_tx.clone();
             let session_store_updates = session_store.clone();
             let session_event_log_updates = session_event_log.clone();
+            let thread_store_updates = thread_store.clone();
+            let thread_event_log_updates = thread_event_log.clone();
             let internal_sessions_updates = internal_sessions.clone();
             tokio::task::spawn_local(async move {
                 while let Some(notification) = update_rx.recv().await {
-                    let sid = notification.session_id.to_string();
+                    let upstream_session_id = notification.session_id.to_string();
 
-                    if let Some(tx) = internal_sessions_updates.borrow().get(&sid).cloned() {
+                    if let Some(tx) = internal_sessions_updates
+                        .borrow()
+                        .get(&upstream_session_id)
+                        .cloned()
+                    {
                         let _ = tx.send(notification);
                         continue;
                     }
 
+                    let Some(public_session_id) = manager_updates
+                        .borrow()
+                        .public_session_for_upstream(&agent_id, &upstream_session_id)
+                        .map(|session_id| session_id.to_string())
+                    else {
+                        warn!(
+                            "dropping update for unknown upstream session {} from agent {}",
+                            upstream_session_id, agent_id
+                        );
+                        continue;
+                    };
+
+                    let translated = rewrite_notification_session_id(&notification, &public_session_id);
                     session_store_updates
                         .borrow_mut()
-                        .record_notification(&sid, &notification);
-                    let event_seq = session_event_log_updates.borrow_mut().next_seq(&sid);
-                    let event = map_session_update(&notification, event_seq);
+                        .record_notification(&public_session_id, &translated);
+                    let event_seq = session_event_log_updates
+                        .borrow_mut()
+                        .next_seq(&public_session_id);
+                    let event = map_session_update(&translated, event_seq);
                     journal_and_broadcast_event(
                         &session_event_log_updates,
                         &response_tx_updates,
-                        event,
+                        event.clone(),
+                    );
+                    maybe_broadcast_thread_event_for_session_event(
+                        &thread_store_updates,
+                        &thread_event_log_updates,
+                        &response_tx_updates,
+                        &event,
                     );
                 }
             });
@@ -165,6 +203,8 @@ impl AppProtocolSession {
             skill_store,
             distiller,
             session_event_log,
+            thread_store,
+            thread_event_log,
             response_tx,
             internal_sessions,
             created_sessions: Vec::new(),
@@ -190,6 +230,33 @@ impl AppProtocolSession {
             }
             ClientMessage::ListAgents => {
                 self.handle_list_agents().await;
+            }
+            ClientMessage::CreateThread { title, working_dir } => {
+                self.handle_create_thread(title, working_dir).await;
+            }
+            ClientMessage::ListThreads => {
+                self.handle_list_threads().await;
+            }
+            ClientMessage::AttachThread { thread_id } => {
+                self.handle_attach_thread(thread_id).await;
+            }
+            ClientMessage::AddThreadParticipant { thread_id, agent_id } => {
+                self.handle_add_thread_participant(thread_id, agent_id).await;
+            }
+            ClientMessage::RemoveThreadParticipant {
+                thread_id,
+                participant_id,
+            } => {
+                self.handle_remove_thread_participant(thread_id, participant_id)
+                    .await;
+            }
+            ClientMessage::SendThreadMessage {
+                thread_id,
+                content,
+                target_participant_ids,
+            } => {
+                self.handle_send_thread_message(thread_id, content, target_participant_ids)
+                    .await;
             }
             ClientMessage::ListSessions => {
                 self.handle_list_sessions().await;
@@ -240,14 +307,18 @@ impl AppProtocolSession {
             .cloned()
             .collect::<Vec<_>>();
         for session_id in active_session_ids {
-            let agent = {
+            let (agent, upstream_session_id) = {
                 let mgr = self.manager.borrow();
-                let agent_id = mgr.agent_for_session(&session_id).map(|id| id.to_string());
-                agent_id.as_deref().and_then(|id| mgr.get_agent(id))
+                let binding = mgr.session_binding(&session_id).cloned();
+                let agent = binding
+                    .as_ref()
+                    .and_then(|binding| mgr.get_agent(&binding.agent_id));
+                let upstream_session_id = binding.map(|binding| binding.upstream_session_id);
+                (agent, upstream_session_id)
             };
 
-            if let Some(agent) = agent {
-                if let Err(err) = agent.cancel(SessionId::new(session_id.clone())).await {
+            if let (Some(agent), Some(upstream_session_id)) = (agent, upstream_session_id) {
+                if let Err(err) = agent.cancel(SessionId::new(upstream_session_id)).await {
                     warn!("disconnect cleanup cancel failed for session {session_id}: {err}");
                 }
             }
@@ -261,7 +332,11 @@ impl AppProtocolSession {
         self.created_sessions.clear();
     }
 
-    async fn handle_create_session(&mut self, requested_agent_id: Option<String>, working_dir: String) {
+    async fn create_session_for_agent(
+        &mut self,
+        requested_agent_id: Option<String>,
+        working_dir: String,
+    ) -> Result<(String, String), ResponseEvent> {
         let cwd = PathBuf::from(&working_dir);
         let (agent_id, agent, is_alive) = {
             let mgr = self.manager.borrow();
@@ -280,67 +355,309 @@ impl AppProtocolSession {
         };
 
         match (agent_id, agent, is_alive) {
-            (Some(_), None, _) if requested_agent_id.is_some() => {
-                let _ = self.response_tx.send(ResponseEvent::Error {
-                    session_id: None,
-                    event_seq: None,
-                    code: "agent_not_found".into(),
-                    message: "no agent with this id".into(),
-                });
-            }
-            (Some(_), Some(_), false) => {
-                let _ = self.response_tx.send(ResponseEvent::Error {
-                    session_id: None,
-                    event_seq: None,
-                    code: "agent_unavailable".into(),
-                    message: "agent is not online".into(),
-                });
-            }
+            (Some(_), None, _) if requested_agent_id.is_some() => Err(ResponseEvent::Error {
+                session_id: None,
+                event_seq: None,
+                code: "agent_not_found".into(),
+                message: "no agent with this id".into(),
+            }),
+            (Some(_), Some(_), false) => Err(ResponseEvent::Error {
+                session_id: None,
+                event_seq: None,
+                code: "agent_unavailable".into(),
+                message: "agent is not online".into(),
+            }),
             (Some(agent_id), Some(agent), true) => match agent.new_session(cwd).await {
                 Ok(resp) => {
-                    let sid = resp.session_id.to_string();
-                    self.manager
-                        .borrow_mut()
-                        .register_session(sid.clone(), agent_id.clone());
-                    self.created_sessions.push(sid.clone());
-                    self.session_store
-                        .borrow_mut()
-                        .start_session(&sid, &agent_id, &working_dir);
-                    self.session_event_log.borrow_mut().init_session(&sid);
-                    let event_seq = self.session_event_log.borrow_mut().next_seq(&sid);
-                    journal_and_broadcast_event(
-                        &self.session_event_log,
-                        &self.response_tx,
-                        ResponseEvent::SessionCreated {
-                            session_id: sid,
-                            agent_id,
-                            event_seq,
-                        },
+                    let upstream_session_id = resp.session_id.to_string();
+                    let public_session_id = format!("session-{}", Uuid::new_v4().simple());
+                    self.manager.borrow_mut().register_session(
+                        public_session_id.clone(),
+                        agent_id.clone(),
+                        upstream_session_id,
                     );
+                    self.created_sessions.push(public_session_id.clone());
+                    self.session_store.borrow_mut().start_session(
+                        &public_session_id,
+                        &agent_id,
+                        &working_dir,
+                    );
+                    self.session_event_log
+                        .borrow_mut()
+                        .init_session(&public_session_id);
+                    Ok((public_session_id, agent_id))
                 }
-                Err(err) => {
-                    let _ = self.response_tx.send(ResponseEvent::Error {
-                        session_id: None,
-                        event_seq: None,
-                        code: "create_session_failed".into(),
-                        message: err.to_string(),
-                    });
-                }
-            },
-            _ => {
-                let _ = self.response_tx.send(ResponseEvent::Error {
+                Err(err) => Err(ResponseEvent::Error {
                     session_id: None,
                     event_seq: None,
-                    code: "no_agent".into(),
-                    message: "no agent configured".into(),
-                });
+                    code: "create_session_failed".into(),
+                    message: err.to_string(),
+                }),
+            },
+            _ => Err(ResponseEvent::Error {
+                session_id: None,
+                event_seq: None,
+                code: "no_agent".into(),
+                message: "no agent configured".into(),
+            }),
+        }
+    }
+
+    async fn handle_create_session(&mut self, requested_agent_id: Option<String>, working_dir: String) {
+        match self
+            .create_session_for_agent(requested_agent_id, working_dir)
+            .await
+        {
+            Ok((public_session_id, agent_id)) => {
+                let event_seq = self
+                    .session_event_log
+                    .borrow_mut()
+                    .next_seq(&public_session_id);
+                journal_and_broadcast_event(
+                    &self.session_event_log,
+                    &self.response_tx,
+                    ResponseEvent::SessionCreated {
+                        session_id: public_session_id,
+                        agent_id,
+                        event_seq,
+                    },
+                );
+            }
+            Err(error) => {
+                let _ = self.response_tx.send(error);
             }
         }
+    }
+
+    async fn handle_create_thread(&self, title: Option<String>, working_dir: String) {
+        let thread = self
+            .thread_store
+            .borrow_mut()
+            .create_thread(title, working_dir);
+        self.thread_event_log
+            .borrow_mut()
+            .init_thread(&thread.thread_id);
+        let _ = self.response_tx.send(ResponseEvent::ThreadCreated {
+            thread_id: thread.thread_id,
+            created_at_ms: thread.created_at_ms,
+        });
     }
 
     async fn handle_list_agents(&self) {
         let agents: Vec<AgentSummary> = self.manager.borrow().list_agents();
         let _ = self.response_tx.send(ResponseEvent::AgentList { agents });
+    }
+
+    async fn handle_list_threads(&self) {
+        let mut threads = self
+            .thread_store
+            .borrow()
+            .list_threads()
+            .into_iter()
+            .map(|thread| {
+                thread_to_summary(
+                    &thread,
+                    self.thread_state(&thread.thread_id),
+                    self.thread_event_log.borrow().tail_seq(&thread.thread_id),
+                )
+            })
+            .collect::<Vec<_>>();
+        threads.sort_by(|left, right| left.created_at_ms.cmp(&right.created_at_ms));
+        let _ = self.response_tx.send(ResponseEvent::ThreadList { threads });
+    }
+
+    async fn handle_attach_thread(&self, thread_id: String) {
+        let snapshot = match self.thread_store.borrow().get_thread(&thread_id).cloned() {
+            Some(thread) => self.build_thread_snapshot(&thread),
+            None => {
+                let _ = self.response_tx.send(ResponseEvent::Error {
+                    session_id: None,
+                    event_seq: None,
+                    code: "thread_not_found".into(),
+                    message: "no live thread with this id".into(),
+                });
+                return;
+            }
+        };
+
+        let _ = self
+            .response_tx
+            .send(ResponseEvent::ThreadAttached {
+                thread_id: thread_id.clone(),
+            });
+        let _ = self
+            .response_tx
+            .send(ResponseEvent::ThreadSnapshot { snapshot });
+    }
+
+    async fn handle_add_thread_participant(&mut self, thread_id: String, agent_id: String) {
+        let working_dir = match self.thread_store.borrow().get_thread(&thread_id) {
+            Some(thread) => thread.working_dir.clone(),
+            None => {
+                let _ = self.response_tx.send(ResponseEvent::Error {
+                    session_id: None,
+                    event_seq: None,
+                    code: "thread_not_found".into(),
+                    message: "no live thread with this id".into(),
+                });
+                return;
+            }
+        };
+
+        let display_name = self
+            .manager
+            .borrow()
+            .list_agents()
+            .into_iter()
+            .find(|summary| summary.agent_id == agent_id)
+            .map(|summary| summary.name)
+            .unwrap_or_else(|| agent_id.clone());
+
+        let session_id = match self
+            .create_session_for_agent(Some(agent_id.clone()), working_dir)
+            .await
+        {
+            Ok((session_id, _)) => session_id,
+            Err(error) => {
+                let _ = self.response_tx.send(error);
+                return;
+            }
+        };
+
+        let participant = match self.thread_store.borrow_mut().add_agent_participant(
+            &thread_id,
+            agent_id,
+            display_name,
+            session_id,
+        ) {
+            Ok(participant) => participant,
+            Err(_) => {
+                let _ = self.response_tx.send(ResponseEvent::Error {
+                    session_id: None,
+                    event_seq: None,
+                    code: "thread_not_found".into(),
+                    message: "no live thread with this id".into(),
+                });
+                return;
+            }
+        };
+
+        let participant = self.build_thread_participant(&participant);
+        let _ = self.response_tx.send(ResponseEvent::ThreadParticipantAdded {
+            thread_id,
+            participant,
+        });
+    }
+
+    async fn handle_remove_thread_participant(&mut self, thread_id: String, participant_id: String) {
+        let participant = match self.thread_store.borrow().get_thread(&thread_id) {
+            Some(thread) => thread
+                .participants
+                .iter()
+                .find(|participant| participant.participant_id == participant_id)
+                .cloned(),
+            None => None,
+        };
+        let Some(participant) = participant else {
+            let _ = self.response_tx.send(ResponseEvent::Error {
+                session_id: None,
+                event_seq: None,
+                code: "thread_participant_not_found".into(),
+                message: "no participant with this id in the thread".into(),
+            });
+            return;
+        };
+
+        if let Some(session_id) = participant.session_id.clone() {
+            if self.active_prompt_sessions.borrow().contains(&session_id) {
+                let event_seq = Some(self.session_event_log.borrow_mut().next_seq(&session_id));
+                let error = ResponseEvent::Error {
+                    session_id: Some(session_id),
+                    event_seq,
+                    code: "session_busy".into(),
+                    message: "cannot close a session while a prompt is in progress".into(),
+                };
+                journal_and_broadcast_event(&self.session_event_log, &self.response_tx, error);
+                return;
+            }
+        }
+
+        let participant = self
+            .thread_store
+            .borrow_mut()
+            .remove_participant(&thread_id, &participant_id)
+            .expect("participant must still exist after preflight");
+
+        if let Some(session_id) = participant.session_id {
+            if let Err(err) = flush_session_snapshot(self.session_store.clone(), session_id.clone()).await {
+                warn!("failed to flush session {session_id} before thread participant removal: {err}");
+            }
+            self.session_store.borrow_mut().remove_session(&session_id);
+            self.session_event_log.borrow_mut().remove_session(&session_id);
+            self.manager.borrow_mut().remove_session(&session_id);
+            self.created_sessions.retain(|created| created != &session_id);
+        }
+
+        let _ = self.response_tx.send(ResponseEvent::ThreadParticipantRemoved {
+            thread_id,
+            participant_id,
+        });
+    }
+
+    async fn handle_send_thread_message(
+        &mut self,
+        thread_id: String,
+        content: String,
+        target_participant_ids: Option<Vec<String>>,
+    ) {
+        let participants = match self.thread_store.borrow().target_agent_participants(
+            &thread_id,
+            target_participant_ids.as_deref(),
+        ) {
+            Ok(participants) => participants,
+            Err(err) if err == "thread not found" => {
+                let _ = self.response_tx.send(ResponseEvent::Error {
+                    session_id: None,
+                    event_seq: None,
+                    code: "thread_not_found".into(),
+                    message: "no live thread with this id".into(),
+                });
+                return;
+            }
+            Err(_) => {
+                let _ = self.response_tx.send(ResponseEvent::Error {
+                    session_id: None,
+                    event_seq: None,
+                    code: "thread_participant_not_found".into(),
+                    message: "no participant with this id in the thread".into(),
+                });
+                return;
+            }
+        };
+
+        let targets = participants
+            .iter()
+            .map(|participant| participant.participant_id.clone())
+            .collect::<Vec<_>>();
+        let thread_seq = self.thread_event_log.borrow_mut().next_seq(&thread_id);
+        let _ = self.response_tx.send(ResponseEvent::ThreadMessage {
+            thread_id: thread_id.clone(),
+            thread_seq,
+            message_id: format!("message-{}", Uuid::new_v4().simple()),
+            sender: ThreadSender {
+                kind: ParticipantKind::Human,
+                participant_id: "participant-user".into(),
+                display_name: "You".into(),
+            },
+            content: content.clone(),
+            target_participant_ids: targets,
+        });
+
+        for participant in participants {
+            if let Some(session_id) = participant.session_id {
+                self.handle_prompt(session_id, content.clone()).await;
+            }
+        }
     }
 
     async fn handle_list_sessions(&self) {
@@ -488,19 +805,23 @@ impl AppProtocolSession {
             return;
         }
 
-        let (agent_id, agent, is_alive) = {
+        let (agent_id, upstream_session_id, agent, is_alive) = {
             let mgr = self.manager.borrow();
-            let agent_id = mgr.agent_for_session(&session_id).map(|id| id.to_string());
+            let binding = mgr.session_binding(&session_id).cloned();
+            let agent_id = binding.as_ref().map(|binding| binding.agent_id.clone());
+            let upstream_session_id = binding
+                .as_ref()
+                .map(|binding| binding.upstream_session_id.clone());
             let agent = agent_id.as_deref().and_then(|id| mgr.get_agent(id));
             let is_alive = agent_id
                 .as_deref()
                 .map(|id| mgr.is_agent_alive(id))
                 .unwrap_or(false);
-            (agent_id, agent, is_alive)
+            (agent_id, upstream_session_id, agent, is_alive)
         };
 
-        match (agent_id, agent, is_alive) {
-            (Some(_), Some(_), false) => {
+        match (agent_id, upstream_session_id, agent, is_alive) {
+            (Some(_), Some(_), Some(_), false) => {
                 let event_seq = Some(self.session_event_log.borrow_mut().next_seq(&session_id));
                 let error = ResponseEvent::Error {
                     session_id: Some(session_id),
@@ -510,7 +831,7 @@ impl AppProtocolSession {
                 };
                 journal_and_broadcast_event(&self.session_event_log, &self.response_tx, error);
             }
-            (Some(agent_id), Some(agent), true) => {
+            (Some(agent_id), Some(upstream_session_id), Some(agent), true) => {
                 self.session_store
                     .borrow_mut()
                     .record_prompt(&session_id, &content);
@@ -524,10 +845,12 @@ impl AppProtocolSession {
                 let response_tx = self.response_tx.clone();
                 let session_store = self.session_store.clone();
                 let session_event_log = self.session_event_log.clone();
+                let thread_store = self.thread_store.clone();
+                let thread_event_log = self.thread_event_log.clone();
                 let active_prompt_sessions = self.active_prompt_sessions.clone();
                 tokio::task::spawn_local(async move {
                     let result = agent
-                        .prompt(SessionId::new(session_id.clone()), prompt_content)
+                        .prompt(SessionId::new(upstream_session_id), prompt_content)
                         .await;
                     active_prompt_sessions.borrow_mut().remove(&session_id);
 
@@ -535,6 +858,8 @@ impl AppProtocolSession {
                         response_tx,
                         session_store,
                         session_event_log,
+                        thread_store,
+                        thread_event_log,
                         session_id,
                         result,
                     )
@@ -555,19 +880,23 @@ impl AppProtocolSession {
     }
 
     async fn handle_cancel(&self, session_id: String) {
-        let agent = {
+        let (agent, upstream_session_id) = {
             let mgr = self.manager.borrow();
-            let agent_id = mgr.agent_for_session(&session_id).map(|id| id.to_string());
-            agent_id.as_deref().and_then(|id| mgr.get_agent(id))
+            let binding = mgr.session_binding(&session_id).cloned();
+            let agent = binding
+                .as_ref()
+                .and_then(|binding| mgr.get_agent(&binding.agent_id));
+            let upstream_session_id = binding.map(|binding| binding.upstream_session_id);
+            (agent, upstream_session_id)
         };
 
-        match agent {
-            Some(agent) => {
-                if let Err(err) = agent.cancel(SessionId::new(session_id.clone())).await {
+        match (agent, upstream_session_id) {
+            (Some(agent), Some(upstream_session_id)) => {
+                if let Err(err) = agent.cancel(SessionId::new(upstream_session_id)).await {
                     warn!("cancel failed for session {session_id}: {err}");
                 }
             }
-            None => {
+            _ => {
                 warn!("cancel failed: no agent for session {session_id}");
             }
         }
@@ -636,6 +965,66 @@ impl AppProtocolSession {
         }
     }
 
+    fn build_thread_participant(
+        &self,
+        participant: &agentchat_core::thread_store::ThreadParticipantRecord,
+    ) -> ThreadParticipant {
+        let state = match participant.session_id.as_deref() {
+            Some(session_id) if self.active_prompt_sessions.borrow().contains(session_id) => {
+                ParticipantState::Prompting
+            }
+            Some(session_id) => match participant.agent_id.as_deref() {
+                Some(agent_id) if !self.manager.borrow().is_agent_alive(agent_id) => {
+                    ParticipantState::Offline
+                }
+                Some(_) if self.manager.borrow().session_binding(session_id).is_none() => {
+                    ParticipantState::Error
+                }
+                _ => ParticipantState::Idle,
+            },
+            None => ParticipantState::Idle,
+        };
+        participant_to_protocol(participant, state)
+    }
+
+    fn build_thread_snapshot(
+        &self,
+        thread: &agentchat_core::thread_store::ThreadRecord,
+    ) -> ThreadSnapshot {
+        let participants = thread
+            .participants
+            .iter()
+            .map(|participant| self.build_thread_participant(participant))
+            .collect::<Vec<_>>();
+        thread_to_snapshot(
+            thread,
+            participants,
+            self.thread_event_log.borrow().tail_seq(&thread.thread_id),
+        )
+    }
+
+    fn thread_state(&self, thread_id: &str) -> ThreadState {
+        let has_active = self
+            .thread_store
+            .borrow()
+            .get_thread(thread_id)
+            .map(|thread| {
+                thread.participants.iter().any(|participant| {
+                    participant
+                        .session_id
+                        .as_deref()
+                        .map(|session_id| self.active_prompt_sessions.borrow().contains(session_id))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        if has_active {
+            ThreadState::Prompting
+        } else {
+            ThreadState::Idle
+        }
+    }
+
     fn session_state(&self, session_id: &str) -> SessionState {
         if self.active_prompt_sessions.borrow().contains(session_id) {
             SessionState::Prompting
@@ -654,6 +1043,98 @@ fn last_stop_reason(transcript: &SessionTranscript) -> Option<String> {
             SessionEvent::TurnEnd { stop_reason, .. } => Some(stop_reason.clone()),
             _ => None,
         })
+}
+
+fn rewrite_notification_session_id(
+    notification: &SessionNotification,
+    public_session_id: &str,
+) -> SessionNotification {
+    SessionNotification::new(
+        SessionId::new(public_session_id.to_string()),
+        notification.update.clone(),
+    )
+}
+
+fn maybe_broadcast_thread_event_for_session_event(
+    thread_store: &Rc<RefCell<ThreadStore>>,
+    thread_event_log: &Rc<RefCell<ThreadEventLog>>,
+    response_tx: &broadcast::Sender<ResponseEvent>,
+    event: &ResponseEvent,
+) {
+    let Some(session_id) = event.session_id() else {
+        return;
+    };
+    let Some(binding) = thread_store.borrow().binding_for_session(session_id).cloned() else {
+        return;
+    };
+    let Some(session_event_seq) = event.event_seq() else {
+        return;
+    };
+    let thread_seq = thread_event_log.borrow_mut().next_seq(&binding.thread_id);
+    let thread_event = match event {
+        ResponseEvent::Delta {
+            session_id,
+            content,
+            delta_type,
+            ..
+        } => ResponseEvent::ThreadAgentDelta {
+            thread_id: binding.thread_id,
+            thread_seq,
+            participant_id: binding.participant_id,
+            agent_id: binding.agent_id,
+            session_id: session_id.clone(),
+            session_event_seq,
+            content: content.clone(),
+            delta_type: delta_type.clone(),
+        },
+        ResponseEvent::PlanUpdate {
+            session_id,
+            plan_json,
+            ..
+        } => ResponseEvent::ThreadAgentPlanUpdate {
+            thread_id: binding.thread_id,
+            thread_seq,
+            participant_id: binding.participant_id,
+            agent_id: binding.agent_id,
+            session_id: session_id.clone(),
+            session_event_seq,
+            plan_json: plan_json.clone(),
+        },
+        ResponseEvent::ToolUpdate {
+            session_id,
+            tool_call_id,
+            title,
+            status,
+            content,
+            ..
+        } => ResponseEvent::ThreadAgentToolUpdate {
+            thread_id: binding.thread_id,
+            thread_seq,
+            participant_id: binding.participant_id,
+            agent_id: binding.agent_id,
+            session_id: session_id.clone(),
+            session_event_seq,
+            tool_call_id: tool_call_id.clone(),
+            title: title.clone(),
+            status: status.clone(),
+            content: content.clone(),
+        },
+        ResponseEvent::TurnEnd {
+            session_id,
+            stop_reason,
+            ..
+        } => ResponseEvent::ThreadAgentTurnEnd {
+            thread_id: binding.thread_id,
+            thread_seq,
+            participant_id: binding.participant_id,
+            agent_id: binding.agent_id,
+            session_id: session_id.clone(),
+            session_event_seq,
+            stop_reason: stop_reason.clone(),
+        },
+        _ => return,
+    };
+    let _ = response_tx.send(thread_event);
 }
 
 fn journal_and_broadcast_event(
@@ -728,6 +1209,8 @@ async fn handle_prompt_completion(
     response_tx: broadcast::Sender<ResponseEvent>,
     session_store: Rc<RefCell<SessionStore>>,
     session_event_log: Rc<RefCell<SessionEventLog>>,
+    thread_store: Rc<RefCell<ThreadStore>>,
+    thread_event_log: Rc<RefCell<ThreadEventLog>>,
     session_id: String,
     result: agent_client_protocol::Result<PromptResponse>,
 ) {
@@ -737,14 +1220,17 @@ async fn handle_prompt_completion(
 
             let stop_reason = format!("{:?}", resp.stop_reason);
             let event_seq = session_event_log.borrow_mut().next_seq(&session_id);
-            journal_and_broadcast_event(
-                &session_event_log,
+            let event = ResponseEvent::TurnEnd {
+                session_id: session_id.clone(),
+                event_seq,
+                stop_reason: stop_reason.clone(),
+            };
+            journal_and_broadcast_event(&session_event_log, &response_tx, event.clone());
+            maybe_broadcast_thread_event_for_session_event(
+                &thread_store,
+                &thread_event_log,
                 &response_tx,
-                ResponseEvent::TurnEnd {
-                    session_id: session_id.clone(),
-                    event_seq,
-                    stop_reason: stop_reason.clone(),
-                },
+                &event,
             );
             session_store
                 .borrow_mut()

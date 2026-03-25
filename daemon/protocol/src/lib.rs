@@ -105,6 +105,32 @@ pub enum SessionState {
     Prompting,
 }
 
+/// Coarse thread execution state exposed to reconnecting clients.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadState {
+    Idle,
+    Prompting,
+}
+
+/// Participant kind for thread snapshots and events.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ParticipantKind {
+    Human,
+    Agent,
+}
+
+/// Coarse participant execution state inside a thread.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ParticipantState {
+    Idle,
+    Prompting,
+    Offline,
+    Error,
+}
+
 /// Compact summary of an attachable daemon session.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionSummary {
@@ -130,6 +156,48 @@ pub struct SessionSnapshot {
     pub last_error: Option<String>,
 }
 
+/// Compact summary of an attachable daemon thread.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThreadSummary {
+    pub thread_id: String,
+    pub title: Option<String>,
+    pub working_dir: String,
+    pub created_at_ms: u64,
+    pub state: ThreadState,
+    pub participant_count: u32,
+    pub last_thread_seq: u64,
+}
+
+/// Participant visible in a thread snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThreadParticipant {
+    pub participant_id: String,
+    pub kind: ParticipantKind,
+    pub display_name: String,
+    pub agent_id: Option<String>,
+    pub session_id: Option<String>,
+    pub state: ParticipantState,
+}
+
+/// Snapshot used by clients to rebuild thread UI after attach.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThreadSnapshot {
+    pub thread_id: String,
+    pub title: Option<String>,
+    pub working_dir: String,
+    pub created_at_ms: u64,
+    pub last_thread_seq: u64,
+    pub participants: Vec<ThreadParticipant>,
+}
+
+/// Sender metadata for a thread-scoped user message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThreadSender {
+    pub kind: ParticipantKind,
+    pub participant_id: String,
+    pub display_name: String,
+}
+
 // ============================================================
 // Response events (daemon -> iOS app via WebSocket)
 // ============================================================
@@ -148,6 +216,33 @@ pub enum ResponseEvent {
     /// List of configured agents known to the daemon.
     AgentList { agents: Vec<AgentSummary> },
 
+    /// Thread created successfully.
+    ThreadCreated {
+        thread_id: String,
+        created_at_ms: u64,
+    },
+
+    /// List of live daemon threads.
+    ThreadList { threads: Vec<ThreadSummary> },
+
+    /// Thread attachment acknowledged.
+    ThreadAttached { thread_id: String },
+
+    /// Compact snapshot of a live thread.
+    ThreadSnapshot { snapshot: ThreadSnapshot },
+
+    /// Agent participant added to a thread.
+    ThreadParticipantAdded {
+        thread_id: String,
+        participant: ThreadParticipant,
+    },
+
+    /// Participant removed from a thread.
+    ThreadParticipantRemoved {
+        thread_id: String,
+        participant_id: String,
+    },
+
     /// List of live sessions known to the daemon.
     SessionList { sessions: Vec<SessionSummary> },
 
@@ -164,6 +259,64 @@ pub enum ResponseEvent {
     SessionReplayComplete {
         session_id: String,
         last_event_seq: u64,
+    },
+
+    /// User message recorded in a thread timeline.
+    ThreadMessage {
+        thread_id: String,
+        thread_seq: u64,
+        message_id: String,
+        sender: ThreadSender,
+        content: String,
+        target_participant_ids: Vec<String>,
+    },
+
+    /// Incremental text from an agent participant inside a thread.
+    ThreadAgentDelta {
+        thread_id: String,
+        thread_seq: u64,
+        participant_id: String,
+        agent_id: String,
+        session_id: String,
+        session_event_seq: u64,
+        content: String,
+        delta_type: DeltaType,
+    },
+
+    /// Agent plan update inside a thread.
+    ThreadAgentPlanUpdate {
+        thread_id: String,
+        thread_seq: u64,
+        participant_id: String,
+        agent_id: String,
+        session_id: String,
+        session_event_seq: u64,
+        plan_json: Value,
+    },
+
+    /// Tool call status update inside a thread.
+    ThreadAgentToolUpdate {
+        thread_id: String,
+        thread_seq: u64,
+        participant_id: String,
+        agent_id: String,
+        session_id: String,
+        session_event_seq: u64,
+        tool_call_id: String,
+        title: String,
+        status: String,
+        content: Option<String>,
+    },
+
+    /// Agent turn completed inside a thread.
+    ThreadAgentTurnEnd {
+        thread_id: String,
+        thread_seq: u64,
+        participant_id: String,
+        agent_id: String,
+        session_id: String,
+        session_event_seq: u64,
+        stop_reason: String,
     },
 
     /// Incremental text from the agent.
@@ -244,6 +397,17 @@ impl ResponseEvent {
             ResponseEvent::SessionSnapshot { snapshot, .. } => Some(&snapshot.session_id),
             ResponseEvent::Error { session_id, .. } => session_id.as_deref(),
             ResponseEvent::AgentList { .. }
+            | ResponseEvent::ThreadCreated { .. }
+            | ResponseEvent::ThreadList { .. }
+            | ResponseEvent::ThreadAttached { .. }
+            | ResponseEvent::ThreadSnapshot { .. }
+            | ResponseEvent::ThreadParticipantAdded { .. }
+            | ResponseEvent::ThreadParticipantRemoved { .. }
+            | ResponseEvent::ThreadMessage { .. }
+            | ResponseEvent::ThreadAgentDelta { .. }
+            | ResponseEvent::ThreadAgentPlanUpdate { .. }
+            | ResponseEvent::ThreadAgentToolUpdate { .. }
+            | ResponseEvent::ThreadAgentTurnEnd { .. }
             | ResponseEvent::SessionList { .. }
             | ResponseEvent::SkillList { .. }
             | ResponseEvent::SkillContent { .. } => None,
@@ -264,6 +428,17 @@ impl ResponseEvent {
             | ResponseEvent::SessionClosed { .. }
             | ResponseEvent::SessionReplayComplete { .. }
             | ResponseEvent::AgentList { .. }
+            | ResponseEvent::ThreadCreated { .. }
+            | ResponseEvent::ThreadList { .. }
+            | ResponseEvent::ThreadAttached { .. }
+            | ResponseEvent::ThreadSnapshot { .. }
+            | ResponseEvent::ThreadParticipantAdded { .. }
+            | ResponseEvent::ThreadParticipantRemoved { .. }
+            | ResponseEvent::ThreadMessage { .. }
+            | ResponseEvent::ThreadAgentDelta { .. }
+            | ResponseEvent::ThreadAgentPlanUpdate { .. }
+            | ResponseEvent::ThreadAgentToolUpdate { .. }
+            | ResponseEvent::ThreadAgentTurnEnd { .. }
             | ResponseEvent::SessionList { .. }
             | ResponseEvent::SkillList { .. }
             | ResponseEvent::SkillContent { .. } => None,
@@ -287,6 +462,30 @@ pub enum ClientMessage {
     },
     /// List configured agents known to the daemon.
     ListAgents,
+    /// Create a new thread.
+    CreateThread {
+        #[serde(default)]
+        title: Option<String>,
+        working_dir: String,
+    },
+    /// List live threads known to the daemon.
+    ListThreads,
+    /// Attach the current client connection to an existing thread.
+    AttachThread { thread_id: String },
+    /// Add a new agent-backed participant to an existing thread.
+    AddThreadParticipant { thread_id: String, agent_id: String },
+    /// Remove a participant from an existing thread.
+    RemoveThreadParticipant {
+        thread_id: String,
+        participant_id: String,
+    },
+    /// Send a user message into a thread and fan it out to selected participants.
+    SendThreadMessage {
+        thread_id: String,
+        content: String,
+        #[serde(default)]
+        target_participant_ids: Option<Vec<String>>,
+    },
     /// List live sessions known to the daemon.
     ListSessions,
     /// Attach the current client connection to an existing session.
@@ -335,6 +534,27 @@ mod tests {
                 working_dir: "/tmp/project".into(),
             },
             ClientMessage::ListAgents,
+            ClientMessage::CreateThread {
+                title: Some("Review".into()),
+                working_dir: "/tmp/project".into(),
+            },
+            ClientMessage::ListThreads,
+            ClientMessage::AttachThread {
+                thread_id: "thread-1".into(),
+            },
+            ClientMessage::AddThreadParticipant {
+                thread_id: "thread-1".into(),
+                agent_id: "agent-1".into(),
+            },
+            ClientMessage::RemoveThreadParticipant {
+                thread_id: "thread-1".into(),
+                participant_id: "participant-1".into(),
+            },
+            ClientMessage::SendThreadMessage {
+                thread_id: "thread-1".into(),
+                content: "hello group".into(),
+                target_participant_ids: Some(vec!["participant-1".into()]),
+            },
             ClientMessage::ListSessions,
             ClientMessage::AttachSession {
                 session_id: "session-1".into(),
@@ -381,6 +601,108 @@ mod tests {
                     default_working_dir: Some("/tmp/project".into()),
                     capabilities: vec!["session".into(), "prompt".into()],
                 }],
+            },
+            ResponseEvent::ThreadCreated {
+                thread_id: "thread-1".into(),
+                created_at_ms: 123,
+            },
+            ResponseEvent::ThreadList {
+                threads: vec![ThreadSummary {
+                    thread_id: "thread-1".into(),
+                    title: Some("Review".into()),
+                    working_dir: "/tmp/project".into(),
+                    created_at_ms: 123,
+                    state: ThreadState::Idle,
+                    participant_count: 2,
+                    last_thread_seq: 4,
+                }],
+            },
+            ResponseEvent::ThreadAttached {
+                thread_id: "thread-1".into(),
+            },
+            ResponseEvent::ThreadSnapshot {
+                snapshot: ThreadSnapshot {
+                    thread_id: "thread-1".into(),
+                    title: Some("Review".into()),
+                    working_dir: "/tmp/project".into(),
+                    created_at_ms: 123,
+                    last_thread_seq: 4,
+                    participants: vec![ThreadParticipant {
+                        participant_id: "participant-1".into(),
+                        kind: ParticipantKind::Agent,
+                        display_name: "Agent 1".into(),
+                        agent_id: Some("agent-1".into()),
+                        session_id: Some("session-1".into()),
+                        state: ParticipantState::Idle,
+                    }],
+                },
+            },
+            ResponseEvent::ThreadParticipantAdded {
+                thread_id: "thread-1".into(),
+                participant: ThreadParticipant {
+                    participant_id: "participant-1".into(),
+                    kind: ParticipantKind::Agent,
+                    display_name: "Agent 1".into(),
+                    agent_id: Some("agent-1".into()),
+                    session_id: Some("session-1".into()),
+                    state: ParticipantState::Idle,
+                },
+            },
+            ResponseEvent::ThreadParticipantRemoved {
+                thread_id: "thread-1".into(),
+                participant_id: "participant-1".into(),
+            },
+            ResponseEvent::ThreadMessage {
+                thread_id: "thread-1".into(),
+                thread_seq: 1,
+                message_id: "message-1".into(),
+                sender: ThreadSender {
+                    kind: ParticipantKind::Human,
+                    participant_id: "participant-user".into(),
+                    display_name: "You".into(),
+                },
+                content: "hello group".into(),
+                target_participant_ids: vec!["participant-1".into()],
+            },
+            ResponseEvent::ThreadAgentDelta {
+                thread_id: "thread-1".into(),
+                thread_seq: 2,
+                participant_id: "participant-1".into(),
+                agent_id: "agent-1".into(),
+                session_id: "session-1".into(),
+                session_event_seq: 5,
+                content: "chunk".into(),
+                delta_type: DeltaType::Text,
+            },
+            ResponseEvent::ThreadAgentPlanUpdate {
+                thread_id: "thread-1".into(),
+                thread_seq: 3,
+                participant_id: "participant-1".into(),
+                agent_id: "agent-1".into(),
+                session_id: "session-1".into(),
+                session_event_seq: 6,
+                plan_json: json!({"steps": [{"title": "Inspect"}], "done": false}),
+            },
+            ResponseEvent::ThreadAgentToolUpdate {
+                thread_id: "thread-1".into(),
+                thread_seq: 4,
+                participant_id: "participant-1".into(),
+                agent_id: "agent-1".into(),
+                session_id: "session-1".into(),
+                session_event_seq: 7,
+                tool_call_id: "tool-1".into(),
+                title: "Read file".into(),
+                status: "Completed".into(),
+                content: Some("ok".into()),
+            },
+            ResponseEvent::ThreadAgentTurnEnd {
+                thread_id: "thread-1".into(),
+                thread_seq: 5,
+                participant_id: "participant-1".into(),
+                agent_id: "agent-1".into(),
+                session_id: "session-1".into(),
+                session_event_seq: 8,
+                stop_reason: "end_turn".into(),
             },
             ResponseEvent::SessionList {
                 sessions: vec![SessionSummary {
