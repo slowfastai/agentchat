@@ -5,10 +5,36 @@
 //  Created by Jia Li on 2026/3/24.
 //
 
+import Foundation
 import Testing
 @testable import AgentChat
 
 struct AgentChatTests {
+    @Test @MainActor func daemonChatStoreRestoresPersistedAgentsAsOfflineOnColdStart() async throws {
+        let suiteName = "AgentChatTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            Issue.record("Failed to create isolated UserDefaults suite")
+            return
+        }
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let persistedAgent = makeAgent(
+            agentID: "opencode",
+            name: "OpenCode",
+            status: "online",
+            capabilities: ["session", "prompt"]
+        )
+
+        defaults.set(try JSONEncoder().encode([persistedAgent]), forKey: "agentchat_known_agents")
+
+        let store = DaemonChatStore(defaults: defaults)
+
+        #expect(store.agents.count == 1)
+        #expect(store.agents[0].agentID == "opencode")
+        #expect(store.agents[0].status == "offline")
+    }
 
     @Test func agentRosterKeepsKnownAgentsVisibleWhenLiveListShrinks() async throws {
         let claude = makeAgent(

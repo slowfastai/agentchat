@@ -715,7 +715,8 @@ final class DaemonChatStore: ObservableObject {
             return []
         }
 
-        return AgentRoster.sorted(agents)
+        // Persist the roster across launches, but never trust the last saved liveness.
+        return AgentRoster.markOffline(agents)
     }
 
     private func normalizedDaemonURL(from payload: String) -> String? {
