@@ -213,9 +213,11 @@ final class DaemonChatStore: ObservableObject {
                 }
             case "thread_created":
                 let event = try decoder.decode(ThreadCreatedEvent.self, from: data)
+                let agentIDsToAdd = pendingThreadAgentIDs
+                pendingThreadAgentIDs = []
                 let summary = DaemonThreadSummary(
                     threadID: event.threadID,
-                    title: pendingThreadAgentIDs.isEmpty ? "New Chat" : pendingThreadAgentIDs.joined(separator: " + "),
+                    title: agentIDsToAdd.isEmpty ? "New Chat" : agentIDsToAdd.joined(separator: " + "),
                     workingDir: ".",
                     createdAtMS: event.createdAtMS,
                     state: "idle",
@@ -231,12 +233,12 @@ final class DaemonChatStore: ObservableObject {
                 cursorByThread[event.threadID] = 0
                 Task {
                     await send(AttachThreadRequest(threadID: event.threadID, afterSeq: nil))
-                    for agentID in pendingThreadAgentIDs {
+                    for agentID in agentIDsToAdd {
                         await send(AddThreadParticipantRequest(threadID: event.threadID, agentID: agentID))
                     }
                     await send(ListThreadsRequest())
+                    await send(AttachThreadRequest(threadID: event.threadID, afterSeq: nil))
                 }
-                pendingThreadAgentIDs = []
             case "thread_list":
                 threads = try decoder.decode(ThreadListEvent.self, from: data).threads
                     .sorted { $0.createdAtMS > $1.createdAtMS }

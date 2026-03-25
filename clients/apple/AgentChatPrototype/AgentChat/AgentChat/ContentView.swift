@@ -1,9 +1,12 @@
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
     @StateObject private var store = DaemonChatStore()
     @State private var draft = ""
     @State private var isScannerPresented = false
+    @State private var compactPresentedThreadID: String?
 
     var body: some View {
         NavigationSplitView {
@@ -31,6 +34,18 @@ struct ContentView: View {
         .sheet(isPresented: $isScannerPresented) {
             DaemonQRCodeScannerSheet { payload in
                 store.applyScannedConnectionPayload(payload)
+            }
+        }
+        .sheet(item: compactPresentedThreadSheetBinding) { _ in
+            NavigationStack {
+                detail
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Done") {
+                                compactPresentedThreadID = nil
+                            }
+                        }
+                    }
             }
         }
     }
@@ -139,7 +154,7 @@ struct ContentView: View {
             } else {
                 ForEach(Array(store.threads.enumerated()), id: \.element.threadID) { _, thread in
                     Button {
-                        store.attachThread(thread.threadID)
+                        openThread(thread.threadID)
                     } label: {
                         HStack(alignment: .top) {
                             VStack(alignment: .leading, spacing: 4) {
@@ -175,6 +190,12 @@ struct ContentView: View {
                     composer(snapshot: snapshot)
                 }
                 .navigationTitle(snapshot.title ?? snapshot.threadID)
+            } else if store.activeThreadID != nil {
+                ContentUnavailableView(
+                    "Loading Thread",
+                    systemImage: "clock.arrow.trianglehead.2.counterclockwise.rotate.90",
+                    description: Text("Waiting for the daemon to attach and replay the thread timeline.")
+                )
             } else {
                 ContentUnavailableView(
                     "No Active Thread",
@@ -278,6 +299,24 @@ struct ContentView: View {
         .background(Color(uiColor: .secondarySystemGroupedBackground))
     }
 
+    private var compactPresentedThreadSheetBinding: Binding<CompactPresentedThread?> {
+        Binding<CompactPresentedThread?>(
+            get: {
+                compactPresentedThreadID.map { CompactPresentedThread(id: $0) }
+            },
+            set: { newValue in
+                compactPresentedThreadID = newValue?.id
+            }
+        )
+    }
+
+    private func openThread(_ threadID: String) {
+        store.attachThread(threadID)
+        if horizontalSizeClass == .compact {
+            compactPresentedThreadID = threadID
+        }
+    }
+
     private func chipColor(for participant: DaemonThreadParticipant) -> Color {
         switch participant.agentID?.lowercased() {
         case "pi": return .purple
@@ -288,6 +327,10 @@ struct ContentView: View {
         default: return participant.isAgent ? .indigo : .gray
         }
     }
+}
+
+private struct CompactPresentedThread: Identifiable {
+    let id: String
 }
 
 private struct TimelineBubble: View {
