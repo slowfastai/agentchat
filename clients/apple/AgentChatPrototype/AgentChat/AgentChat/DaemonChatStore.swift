@@ -4,6 +4,10 @@ import SwiftUI
 
 @MainActor
 final class DaemonChatStore: ObservableObject {
+    private static let pinnedThreadsKey = "agentchat_pinned_thread_ids"
+    private static let hiddenThreadsKey = "agentchat_hidden_thread_ids"
+    private static let knownAgentsKey = "agentchat_known_agents"
+
     @Published var connectionStatus = "Not configured"
     @Published var agents: [DaemonAgentSummary] = []
     @Published var threads: [DaemonThreadSummary] = []
@@ -24,9 +28,7 @@ final class DaemonChatStore: ObservableObject {
         !daemonURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private let pinnedThreadsKey = "agentchat_pinned_thread_ids"
-    private let hiddenThreadsKey = "agentchat_hidden_thread_ids"
-
+    private let defaults: UserDefaults
     private var socketTask: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var pendingThreadAgentIDs: [String] = []
@@ -39,10 +41,11 @@ final class DaemonChatStore: ObservableObject {
     private var cursorByThread: [String: UInt64] = [:]
     private var assistantTurns = AssistantTurnReducer()
 
-    init() {
-        let defaults = UserDefaults.standard
-        self.pinnedThreadIDs = Set(defaults.stringArray(forKey: pinnedThreadsKey) ?? [])
-        self.hiddenThreadIDs = Set(defaults.stringArray(forKey: hiddenThreadsKey) ?? [])
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        self.pinnedThreadIDs = Set(defaults.stringArray(forKey: Self.pinnedThreadsKey) ?? [])
+        self.hiddenThreadIDs = Set(defaults.stringArray(forKey: Self.hiddenThreadsKey) ?? [])
+        self.agents = Self.loadKnownAgents(from: defaults)
         refreshIdleConnectionStatus()
     }
 
@@ -296,10 +299,7 @@ final class DaemonChatStore: ObservableObject {
             let envelope = try decoder.decode(DaemonEnvelope.self, from: data)
             switch envelope.type {
             case "agent_list":
-                agents = try decoder.decode(AgentListEvent.self, from: data).agents
-                if selectedAgentIDs.isEmpty {
-                    selectedAgentIDs = Set(agents.filter(\.isOnline).map(\.agentID))
-                }
+                upsertAgents(try decoder.decode(AgentListEvent.self, from: data).agents)
             case "thread_created":
                 let event = try decoder.decode(ThreadCreatedEvent.self, from: data)
                 let agentIDsToAdd = pendingThreadAgentIDs
@@ -617,9 +617,8 @@ final class DaemonChatStore: ObservableObject {
     }
 
     private func persistThreadPreferences() {
-        let defaults = UserDefaults.standard
-        defaults.set(Array(pinnedThreadIDs).sorted(), forKey: pinnedThreadsKey)
-        defaults.set(Array(hiddenThreadIDs).sorted(), forKey: hiddenThreadsKey)
+        defaults.set(Array(pinnedThreadIDs).sorted(), forKey: Self.pinnedThreadsKey)
+        defaults.set(Array(hiddenThreadIDs).sorted(), forKey: Self.hiddenThreadsKey)
     }
 
     private func colorName(for agentID: String) -> String {
@@ -667,7 +666,8 @@ final class DaemonChatStore: ObservableObject {
 
     private func markAgentsOffline() {
         guard !agents.isEmpty else { return }
-        agents = agents.map { $0.withStatus("offline") }
+        agents = AgentRoster.markOffline(agents)
+        persistKnownAgents()
     }
 
     private func handleConnectionFailure(message: String) {
@@ -692,6 +692,31 @@ final class DaemonChatStore: ObservableObject {
 
     private func refreshIdleConnectionStatus() {
         connectionStatus = hasConfiguredDaemonURL ? "Not connected" : "Not configured"
+    }
+
+    private func upsertAgents(_ incomingAgents: [DaemonAgentSummary]) {
+        agents = AgentRoster.merge(knownAgents: agents, incomingAgents: incomingAgents)
+        persistKnownAgents()
+
+        if selectedAgentIDs.isEmpty {
+            selectedAgentIDs = Set(agents.filter(\.isOnline).map(\.agentID))
+        }
+    }
+
+    private func persistKnownAgents() {
+        guard let data = try? JSONEncoder().encode(agents) else { return }
+        defaults.set(data, forKey: Self.knownAgentsKey)
+    }
+
+    private static func loadKnownAgents(from defaults: UserDefaults) -> [DaemonAgentSummary] {
+        guard let data = defaults.data(forKey: Self.knownAgentsKey),
+              let agents = try? JSONDecoder().decode([DaemonAgentSummary].self, from: data)
+        else {
+            return []
+        }
+
+        // Persist the roster across launches, but never trust the last saved liveness.
+        return AgentRoster.markOffline(agents)
     }
 
     private func normalizedDaemonURL(from payload: String) -> String? {
@@ -729,6 +754,55 @@ final class DaemonChatStore: ObservableObject {
             try await socketTask.send(.string(text))
         } catch {
             handleConnectionFailure(message: "Send failed: \(error.localizedDescription)")
+        }
+    }
+}
+
+enum AgentRoster {
+    nonisolated static func merge(
+        knownAgents: [DaemonAgentSummary],
+        incomingAgents: [DaemonAgentSummary]
+    ) -> [DaemonAgentSummary] {
+        var mergedByID = Dictionary(uniqueKeysWithValues: knownAgents.map { ($0.agentID, $0.withStatus("offline")) })
+
+        for agent in incomingAgents {
+            mergedByID[agent.agentID] = agent
+        }
+
+        return sorted(Array(mergedByID.values))
+    }
+
+    nonisolated static func markOffline(_ agents: [DaemonAgentSummary]) -> [DaemonAgentSummary] {
+        sorted(agents.map { $0.withStatus("offline") })
+    }
+
+    nonisolated static func sorted(_ agents: [DaemonAgentSummary]) -> [DaemonAgentSummary] {
+        agents.sorted(by: areInIncreasingOrder)
+    }
+
+    nonisolated private static func areInIncreasingOrder(_ lhs: DaemonAgentSummary, _ rhs: DaemonAgentSummary) -> Bool {
+        let lhsRank = statusRank(for: lhs.status)
+        let rhsRank = statusRank(for: rhs.status)
+        if lhsRank != rhsRank {
+            return lhsRank < rhsRank
+        }
+
+        let nameOrder = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+        if nameOrder != .orderedSame {
+            return nameOrder == .orderedAscending
+        }
+
+        return lhs.agentID.localizedCaseInsensitiveCompare(rhs.agentID) == .orderedAscending
+    }
+
+    nonisolated private static func statusRank(for status: String) -> Int {
+        switch status {
+        case "online":
+            return 0
+        case "offline":
+            return 2
+        default:
+            return 1
         }
     }
 }
