@@ -40,6 +40,111 @@ enum JSONValue: Codable, Hashable {
     }
 }
 
+enum DaemonAgentFamily: String, Hashable {
+    case claude
+    case codex
+    case opencode
+    case pi
+    case human
+    case generic
+
+    init(agentID: String?, kind: String?, name: String?) {
+        let tokens = Self.tokens(from: [agentID, kind, name])
+
+        if tokens.contains("claude") {
+            self = .claude
+        } else if tokens.contains("codex") {
+            self = .codex
+        } else if tokens.contains("opencode") || (tokens.contains("open") && tokens.contains("code")) {
+            self = .opencode
+        } else if tokens.contains("pi") {
+            self = .pi
+        } else if tokens.contains("human") || tokens.contains("user") {
+            self = .human
+        } else {
+            self = .generic
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .claude: return "Claude Code"
+        case .codex: return "Codex"
+        case .opencode: return "OpenCode"
+        case .pi: return "Pi"
+        case .human: return "Human"
+        case .generic: return "Agent"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .claude:
+            return "brain.head.profile"
+        case .codex:
+            return "curlybraces.square.fill"
+        case .opencode:
+            return "terminal.fill"
+        case .pi:
+            return "sparkles"
+        case .human:
+            return "person.fill"
+        case .generic:
+            return "person.crop.square"
+        }
+    }
+
+    var tintName: String {
+        switch self {
+        case .claude:
+            return "blue"
+        case .codex:
+            return "green"
+        case .opencode:
+            return "orange"
+        case .pi:
+            return "purple"
+        case .human:
+            return "gray"
+        case .generic:
+            return "indigo"
+        }
+    }
+
+    private static func tokens(from values: [String?]) -> Set<String> {
+        Set(
+            values
+                .compactMap { $0?.lowercased() }
+                .flatMap { value in
+                    value.split { character in
+                        !(character.isLetter || character.isNumber)
+                    }
+                }
+                .map(String.init)
+        )
+    }
+}
+
+func humanizeAgentIdentifier(_ value: String) -> String {
+    let replaced = value
+        .replacingOccurrences(of: "_", with: " ")
+        .replacingOccurrences(of: "-", with: " ")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+
+    guard !replaced.isEmpty else { return value }
+
+    return replaced
+        .split(separator: " ")
+        .map { token in
+            let lowercased = token.lowercased()
+            if lowercased == "ai" || lowercased == "pi" {
+                return lowercased.uppercased()
+            }
+            return lowercased.prefix(1).uppercased() + lowercased.dropFirst()
+        }
+        .joined(separator: " ")
+}
+
 struct DaemonAgentSummary: Codable, Identifiable, Hashable {
     let agentID: String
     let name: String
@@ -60,6 +165,26 @@ struct DaemonAgentSummary: Codable, Identifiable, Hashable {
     var id: String { agentID }
     var isOnline: Bool { status == "online" }
     var isOffline: Bool { status == "offline" }
+    var family: DaemonAgentFamily { DaemonAgentFamily(agentID: agentID, kind: kind, name: name) }
+    var symbolName: String { family.symbolName }
+    var tintName: String { family.tintName }
+    var kindTitle: String { family.title }
+    var displayName: String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            return trimmed
+        }
+        if family != .generic {
+            return family.title
+        }
+        return humanizeAgentIdentifier(agentID)
+    }
+    var capabilitySummary: String {
+        if !capabilities.isEmpty {
+            return capabilities.joined(separator: " · ")
+        }
+        return kindTitle
+    }
 
     func withStatus(_ status: String) -> Self {
         Self(
@@ -114,6 +239,9 @@ struct DaemonThreadParticipant: Codable, Identifiable, Hashable {
 
     var id: String { participantID }
     var isAgent: Bool { kind == "agent" }
+    var family: DaemonAgentFamily { DaemonAgentFamily(agentID: agentID, kind: kind, name: displayName) }
+    var tintName: String { family.tintName }
+    var kindTitle: String { isAgent ? family.title : humanizeAgentIdentifier(kind) }
 }
 
 struct DaemonThreadSnapshot: Codable, Hashable {

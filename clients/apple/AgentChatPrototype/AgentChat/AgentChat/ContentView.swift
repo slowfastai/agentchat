@@ -166,6 +166,16 @@ struct ContentView: View {
             } else {
                 ForEach(store.agents, id: \.agentID) { agent in
                     HStack(alignment: .top, spacing: 12) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(color(named: agent.tintName).opacity(0.14))
+
+                            Image(systemName: agent.symbolName)
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(color(named: agent.tintName))
+                        }
+                        .frame(width: 40, height: 40)
+
                         Button {
                             store.toggleAgentSelection(agent.agentID)
                         } label: {
@@ -174,10 +184,10 @@ struct ContentView: View {
                                     .foregroundStyle(store.isSelectedAgent(agent.agentID) ? Color.accentColor : Color.secondary)
 
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(agent.name)
+                                    Text(agent.displayName)
                                         .font(.body.weight(.medium))
 
-                                    Text(agent.capabilities.joined(separator: " · "))
+                                    Text(agentSubtitle(for: agent))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                         .lineLimit(1)
@@ -432,12 +442,19 @@ struct ContentView: View {
 
     private func agentStatusColor(for agent: DaemonAgentSummary) -> Color {
         if agent.isOnline {
-            return .green
+            return color(named: agent.tintName)
         }
         if agent.isOffline {
             return .secondary
         }
         return .orange
+    }
+
+    private func agentSubtitle(for agent: DaemonAgentSummary) -> String {
+        if agent.capabilities.isEmpty {
+            return agent.kindTitle
+        }
+        return "\(agent.kindTitle) · \(agent.capabilitySummary)"
     }
 
     private var canSend: Bool {
@@ -614,13 +631,18 @@ struct ContentView: View {
     }
 
     private func chipColor(for participant: DaemonThreadParticipant) -> Color {
-        switch participant.agentID?.lowercased() {
-        case "pi": return .purple
-        case "beta": return .green
-        case "alpha", "claude": return .blue
-        case "codex": return .green
-        case "opencode": return .orange
-        default: return participant.isAgent ? .indigo : .gray
+        color(named: participant.isAgent ? store.tintName(for: participant.agentID) : participant.tintName)
+    }
+
+    private func color(named tintName: String) -> Color {
+        switch tintName {
+        case "purple": return .purple
+        case "green": return .green
+        case "orange": return .orange
+        case "blue": return .blue
+        case "gray": return .gray
+        case "red": return .red
+        default: return .indigo
         }
     }
 }
@@ -703,7 +725,7 @@ private struct ThreadParticipantChip: View {
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(ClaudePalette.ink)
                     .lineLimit(1)
-                Text(participant.kind.capitalized)
+                Text(participant.kindTitle)
                     .font(.caption)
                     .foregroundStyle(ClaudePalette.mutedInk)
             }

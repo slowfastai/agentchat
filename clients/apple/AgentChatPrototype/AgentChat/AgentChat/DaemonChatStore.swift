@@ -297,6 +297,9 @@ final class DaemonChatStore: ObservableObject {
             switch envelope.type {
             case "agent_list":
                 agents = try decoder.decode(AgentListEvent.self, from: data).agents
+                    .sorted {
+                        $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+                    }
                 if selectedAgentIDs.isEmpty {
                     selectedAgentIDs = Set(agents.filter(\.isOnline).map(\.agentID))
                 }
@@ -441,9 +444,9 @@ final class DaemonChatStore: ObservableObject {
                         threadID: event.threadID,
                         threadSeq: event.threadSeq,
                         kind: .tool,
-                        title: event.agentID.capitalized,
+                        title: agentDisplayName(for: event.agentID),
                         body: body,
-                        tintName: colorName(for: event.agentID)
+                        tintName: tintName(for: event.agentID)
                     ),
                     to: event.threadID
                 )
@@ -455,9 +458,9 @@ final class DaemonChatStore: ObservableObject {
                         threadID: event.threadID,
                         threadSeq: event.threadSeq,
                         kind: .plan,
-                        title: event.agentID.capitalized,
+                        title: agentDisplayName(for: event.agentID),
                         body: String(describing: event.planJSON),
-                        tintName: colorName(for: event.agentID)
+                        tintName: tintName(for: event.agentID)
                     ),
                     to: event.threadID
                 )
@@ -510,11 +513,11 @@ final class DaemonChatStore: ObservableObject {
             sortThreadSeq: existing?.sortThreadSeq ?? event.threadSeq,
             lastThreadSeq: event.threadSeq,
             kind: .assistantTurn,
-            title: event.agentID.capitalized,
+            title: agentDisplayName(for: event.agentID),
             body: event.response,
             thinkingBody: event.thinking.isEmpty ? nil : event.thinking,
             status: event.state,
-            tintName: colorName(for: event.agentID)
+            tintName: tintName(for: event.agentID)
         )
         appendTimeline(entry, to: event.threadID)
     }
@@ -524,7 +527,7 @@ final class DaemonChatStore: ObservableObject {
             return
         }
         appendTimeline(
-            state.timelineEntry(status: "streaming", tintName: colorName(for: state.agentID)),
+            state.timelineEntry(status: "streaming", tintName: tintName(for: state.agentID)),
             to: event.threadID
         )
     }
@@ -534,7 +537,7 @@ final class DaemonChatStore: ObservableObject {
             return
         }
         appendTimeline(
-            state.timelineEntry(status: "completed", tintName: colorName(for: state.agentID)),
+            state.timelineEntry(status: "completed", tintName: tintName(for: state.agentID)),
             to: event.threadID
         )
     }
@@ -655,15 +658,19 @@ final class DaemonChatStore: ObservableObject {
         defaults.set(Array(hiddenThreadIDs).sorted(), forKey: hiddenThreadsKey)
     }
 
-    private func colorName(for agentID: String) -> String {
-        switch agentID.lowercased() {
-        case "pi": return "purple"
-        case "beta": return "green"
-        case "alpha", "claude": return "blue"
-        case "codex": return "green"
-        case "opencode": return "orange"
-        default: return "indigo"
+    func tintName(for agentID: String?) -> String {
+        guard let agentID else { return "indigo" }
+        if let summary = agents.first(where: { $0.agentID == agentID }) {
+            return summary.tintName
         }
+        return DaemonAgentFamily(agentID: agentID, kind: nil, name: nil).tintName
+    }
+
+    func agentDisplayName(for agentID: String) -> String {
+        if let summary = agents.first(where: { $0.agentID == agentID }) {
+            return summary.displayName
+        }
+        return humanizeAgentIdentifier(agentID)
     }
 
     private func bootstrapConnection(using task: URLSessionWebSocketTask) async {

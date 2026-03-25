@@ -9,6 +9,46 @@ import Testing
 @testable import AgentChat
 
 struct AgentChatTests {
+    @Test func daemonAgentSummaryRecognizesCodexFromBackendKind() async throws {
+        let summary = DaemonAgentSummary(
+            agentID: "workspace-codex",
+            name: "Codex Main",
+            kind: "codex_app_server",
+            status: "online",
+            defaultWorkingDir: nil,
+            capabilities: ["session", "prompt"]
+        )
+
+        #expect(summary.family == .codex)
+        #expect(summary.kindTitle == "Codex")
+        #expect(summary.symbolName == "curlybraces.square.fill")
+        #expect(summary.tintName == "green")
+        #expect(summary.displayName == "Codex Main")
+    }
+
+    @Test func daemonAgentSummaryRecognizesClaudeAndOpenCode() async throws {
+        let claude = DaemonAgentSummary(
+            agentID: "claude-review",
+            name: "Claude Code",
+            kind: "claude_code",
+            status: "online",
+            defaultWorkingDir: nil,
+            capabilities: []
+        )
+        let openCode = DaemonAgentSummary(
+            agentID: "open-code",
+            name: "",
+            kind: "opencode",
+            status: "online",
+            defaultWorkingDir: nil,
+            capabilities: []
+        )
+
+        #expect(claude.family == .claude)
+        #expect(claude.tintName == "blue")
+        #expect(openCode.family == .opencode)
+        #expect(openCode.displayName == "OpenCode")
+    }
 
     @Test func legacyReducerIgnoresEmptyInitialDelta() async throws {
         var reducer = LegacyAssistantMessageReducer()
