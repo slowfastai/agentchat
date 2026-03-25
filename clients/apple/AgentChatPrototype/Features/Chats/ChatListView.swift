@@ -1,5 +1,15 @@
 import SwiftUI
 
+extension Color {
+    static var appCanvasBackground: Color {
+        #if canImport(UIKit)
+        Color(uiColor: .systemGroupedBackground)
+        #else
+        Color(nsColor: .windowBackgroundColor)
+        #endif
+    }
+}
+
 struct ChatListView: View {
     @EnvironmentObject private var store: DemoStore
     @Binding var selectedIssueID: UUID?
@@ -111,7 +121,7 @@ private struct ChatThreadRow: View {
                         UnreadBadge(count: thread.unreadCount)
                     } else if thread.state == .running {
                         Circle()
-                            .fill(Color.green)
+                            .fill(AppColors.onlineStatus)
                             .frame(width: 9, height: 9)
                     }
                 }
@@ -161,7 +171,7 @@ private struct ThreadAvatarView: View {
                         .offset(x: -8, y: -6)
 
                     Circle()
-                        .fill(Color.green.opacity(0.95))
+                        .fill(AppColors.onlineStatus.opacity(0.95))
                         .frame(width: 24, height: 24)
                         .offset(x: 10, y: 8)
 
@@ -193,6 +203,16 @@ private struct UnreadBadge: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 7)
             .padding(.vertical, 4)
-            .background(Color.red, in: Capsule())
+            .background(AppColors.unreadBadge, in: Capsule())
+    }
+}
+
+enum AppColors {
+    static var onlineStatus: Color {
+        Color(red: 0.3, green: 0.85, blue: 0.5)
+    }
+
+    static var unreadBadge: Color {
+        Color(red: 1.0, green: 0.35, blue: 0.35)
     }
 }

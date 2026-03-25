@@ -9,8 +9,137 @@ private enum AppTab: Hashable {
     case settings
 }
 
+struct Theme {
+    let colorScheme: ColorScheme
+
+    var primaryText: Color {
+        Color(uiColor: .label)
+    }
+
+    var secondaryText: Color {
+        Color(uiColor: .secondaryLabel)
+    }
+
+    var tertiaryText: Color {
+        Color(uiColor: .tertiaryLabel)
+    }
+
+    var background: Color {
+        Color(uiColor: .systemBackground)
+    }
+
+    var cardBackground: Color {
+        Color(uiColor: .secondarySystemBackground)
+    }
+
+    var canvasBackground: Color {
+        Color(uiColor: .systemGroupedBackground)
+    }
+
+    var inputBackground: Color {
+        Color(uiColor: .tertiarySystemBackground)
+    }
+
+    var separator: Color {
+        Color(uiColor: .separator)
+    }
+
+    var onlineStatus: Color {
+        Color(red: 0.3, green: 0.85, blue: 0.5)
+    }
+
+    var accent: Color {
+        Color.accentColor
+    }
+
+    var canvasTop: Color {
+        colorScheme == .dark
+            ? Color(red: 0.11, green: 0.11, blue: 0.13)
+            : Color(red: 0.973, green: 0.957, blue: 0.929)
+    }
+
+    var canvasBottom: Color {
+        colorScheme == .dark
+            ? Color(red: 0.10, green: 0.10, blue: 0.12)
+            : Color(red: 0.948, green: 0.928, blue: 0.895)
+    }
+
+    var panel: Color {
+        colorScheme == .dark
+            ? Color(red: 0.16, green: 0.16, blue: 0.18)
+            : Color(red: 0.981, green: 0.971, blue: 0.949)
+    }
+
+    var paper: Color {
+        colorScheme == .dark
+            ? Color(red: 0.20, green: 0.20, blue: 0.22)
+            : Color(red: 0.993, green: 0.988, blue: 0.976)
+    }
+
+    var chip: Color {
+        colorScheme == .dark
+            ? Color(red: 0.26, green: 0.26, blue: 0.28)
+            : Color(red: 0.936, green: 0.918, blue: 0.885)
+    }
+
+    var toolPanel: Color {
+        colorScheme == .dark
+            ? Color(red: 0.18, green: 0.17, blue: 0.19)
+            : Color(red: 0.957, green: 0.936, blue: 0.892)
+    }
+
+    var planPanel: Color {
+        colorScheme == .dark
+            ? Color(red: 0.15, green: 0.15, blue: 0.17)
+            : Color(red: 0.933, green: 0.918, blue: 0.900)
+    }
+
+    var stroke: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.08)
+            : Color.black.opacity(0.075)
+    }
+
+    var ink: Color {
+        colorScheme == .dark
+            ? Color(red: 0.90, green: 0.90, blue: 0.92)
+            : Color(red: 0.200, green: 0.188, blue: 0.173)
+    }
+
+    var mutedInk: Color {
+        colorScheme == .dark
+            ? Color(red: 0.60, green: 0.60, blue: 0.62)
+            : Color(red: 0.420, green: 0.392, blue: 0.357)
+    }
+
+    var subtleInk: Color {
+        colorScheme == .dark
+            ? Color(red: 0.50, green: 0.50, blue: 0.52)
+            : Color(red: 0.550, green: 0.514, blue: 0.470)
+    }
+
+    var accentWarm: Color {
+        colorScheme == .dark
+            ? Color(red: 0.80, green: 0.60, blue: 0.35)
+            : Color(red: 0.694, green: 0.533, blue: 0.333)
+    }
+
+    var planColor: Color {
+        colorScheme == .dark
+            ? Color(red: 0.60, green: 0.52, blue: 0.48)
+            : Color(red: 0.463, green: 0.392, blue: 0.361)
+    }
+
+    var userBubble: Color {
+        colorScheme == .dark
+            ? Color(red: 0.35, green: 0.32, blue: 0.30)
+            : Color(red: 0.274, green: 0.251, blue: 0.228)
+    }
+}
+
 struct ContentView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.colorScheme) private var colorScheme
 
     @StateObject private var store = DaemonChatStore()
     @State private var draft = ""
@@ -19,6 +148,10 @@ struct ContentView: View {
     @State private var compactPresentedThreadID: String?
     @State private var pendingCloseThread: DaemonThreadSummary?
     @State private var selectedTab: AppTab = .feed
+
+    private var theme: Theme {
+        Theme(colorScheme: colorScheme)
+    }
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -475,12 +608,12 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(snapshot.title ?? snapshot.threadID)
                         .font(.system(.title3, design: .rounded).weight(.medium))
-                        .foregroundStyle(ClaudePalette.ink)
+                        .foregroundStyle(theme.ink)
                         .lineLimit(2)
 
                     Label(snapshot.workingDir, systemImage: "folder")
                         .font(.caption)
-                        .foregroundStyle(ClaudePalette.mutedInk)
+                        .foregroundStyle(theme.mutedInk)
                         .lineLimit(1)
                 }
 
@@ -512,11 +645,11 @@ struct ContentView: View {
         .padding(.vertical, 20)
         .background(
             RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .fill(ClaudePalette.panel)
+                .fill(theme.panel)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .stroke(ClaudePalette.stroke, lineWidth: 1)
+                .stroke(theme.stroke, lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(0.025), radius: 12, y: 4)
     }
@@ -558,7 +691,7 @@ struct ContentView: View {
                     TextField("", text: $draft, axis: .vertical)
                         .textFieldStyle(.plain)
                         .lineLimit(1...6)
-                        .foregroundStyle(ClaudePalette.ink)
+                        .foregroundStyle(theme.ink)
                         .submitLabel(.send)
                         .onSubmit {
                             sendDraft()
@@ -569,21 +702,21 @@ struct ContentView: View {
                 .padding(.vertical, 16)
                 .background(
                     RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .fill(ClaudePalette.paper)
+                        .fill(theme.paper)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(ClaudePalette.stroke, lineWidth: 1)
+                        .stroke(theme.stroke, lineWidth: 1)
                 )
 
                 Button(action: sendDraft) {
                     Image(systemName: "arrow.up")
                         .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(canSend ? ClaudePalette.paper : ClaudePalette.subtleInk)
+                        .foregroundStyle(canSend ? theme.paper : theme.subtleInk)
                         .frame(width: 46, height: 46)
                         .background(
                             Circle()
-                                .fill(canSend ? ClaudePalette.ink : ClaudePalette.chip)
+                                .fill(canSend ? theme.ink : theme.chip)
                         )
                 }
                 .disabled(!canSend)
@@ -594,11 +727,11 @@ struct ContentView: View {
         .padding(.vertical, 14)
         .background(
             RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .fill(ClaudePalette.panel)
+                .fill(theme.panel)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .stroke(ClaudePalette.stroke, lineWidth: 1)
+                .stroke(theme.stroke, lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(0.028), radius: 12, y: 4)
     }
@@ -637,38 +770,29 @@ private struct CompactPresentedThread: Identifiable {
     let id: String
 }
 
-private enum ClaudePalette {
-    static let canvasTop = Color(red: 0.973, green: 0.957, blue: 0.929)
-    static let canvasBottom = Color(red: 0.948, green: 0.928, blue: 0.895)
-    static let panel = Color(red: 0.981, green: 0.971, blue: 0.949)
-    static let paper = Color(red: 0.993, green: 0.988, blue: 0.976)
-    static let chip = Color(red: 0.936, green: 0.918, blue: 0.885)
-    static let toolPanel = Color(red: 0.957, green: 0.936, blue: 0.892)
-    static let planPanel = Color(red: 0.933, green: 0.918, blue: 0.900)
-    static let stroke = Color.black.opacity(0.075)
-    static let ink = Color(red: 0.200, green: 0.188, blue: 0.173)
-    static let mutedInk = Color(red: 0.420, green: 0.392, blue: 0.357)
-    static let subtleInk = Color(red: 0.550, green: 0.514, blue: 0.470)
-    static let accent = Color(red: 0.694, green: 0.533, blue: 0.333)
-}
-
 private struct ChatScreenBackground: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: Theme {
+        Theme(colorScheme: colorScheme)
+    }
+
     var body: some View {
         ZStack {
             LinearGradient(
-                colors: [ClaudePalette.canvasTop, ClaudePalette.canvasBottom],
+                colors: [theme.canvasTop, theme.canvasBottom],
                 startPoint: .top,
                 endPoint: .bottom
             )
 
             Circle()
-                .fill(ClaudePalette.accent.opacity(0.10))
+                .fill(theme.accentWarm.opacity(0.10))
                 .frame(width: 300, height: 300)
                 .blur(radius: 90)
                 .offset(x: -160, y: -280)
 
             Circle()
-                .fill(Color.white.opacity(0.38))
+                .fill(Color.white.opacity(colorScheme == .dark ? 0.05 : 0.38))
                 .frame(width: 220, height: 220)
                 .blur(radius: 40)
                 .offset(x: 170, y: -180)
@@ -680,20 +804,30 @@ private struct ChatScreenBackground: View {
 private struct HeaderInfoPill: View {
     let icon: String
     let text: String
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: Theme {
+        Theme(colorScheme: colorScheme)
+    }
 
     var body: some View {
         Label(text, systemImage: icon)
             .font(.caption.weight(.medium))
-            .foregroundStyle(ClaudePalette.mutedInk)
+            .foregroundStyle(theme.mutedInk)
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(ClaudePalette.chip, in: Capsule())
+            .background(theme.chip, in: Capsule())
     }
 }
 
 private struct ThreadParticipantChip: View {
     let participant: DaemonThreadParticipant
     let color: Color
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: Theme {
+        Theme(colorScheme: colorScheme)
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -709,19 +843,19 @@ private struct ThreadParticipantChip: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(participant.displayName)
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(ClaudePalette.ink)
+                    .foregroundStyle(theme.ink)
                     .lineLimit(1)
                 Text(participant.kind.capitalized)
                     .font(.caption)
-                    .foregroundStyle(ClaudePalette.mutedInk)
+                    .foregroundStyle(theme.mutedInk)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(ClaudePalette.paper, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(theme.paper, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(ClaudePalette.stroke, lineWidth: 1)
+                .stroke(theme.stroke, lineWidth: 1)
         )
     }
 
@@ -750,47 +884,57 @@ private struct TimelineHeroStrip: View {
 private struct SmallInfoPill: View {
     let icon: String
     let text: String
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: Theme {
+        Theme(colorScheme: colorScheme)
+    }
 
     var body: some View {
         Label(text, systemImage: icon)
             .font(.caption.weight(.medium))
-            .foregroundStyle(ClaudePalette.mutedInk)
+            .foregroundStyle(theme.mutedInk)
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(ClaudePalette.paper.opacity(0.95), in: Capsule())
+            .background(theme.paper.opacity(0.95), in: Capsule())
             .overlay(
                 Capsule()
-                    .stroke(ClaudePalette.stroke, lineWidth: 1)
+                    .stroke(theme.stroke, lineWidth: 1)
             )
     }
 }
 
 private struct EmptyThreadState: View {
     let snapshot: DaemonThreadSnapshot
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: Theme {
+        Theme(colorScheme: colorScheme)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Begin a calm, focused thread")
                 .font(.headline)
-                .foregroundStyle(ClaudePalette.ink)
+                .foregroundStyle(theme.ink)
 
             Text("Ask for a summary, a code change, or route work to one or more agents. Responses will unfold here with more room to read.")
                 .font(.subheadline)
-                .foregroundStyle(ClaudePalette.mutedInk)
+                .foregroundStyle(theme.mutedInk)
 
             Text(snapshot.participants.map(\.displayName).joined(separator: " · "))
                 .font(.caption)
-                .foregroundStyle(ClaudePalette.subtleInk)
+                .foregroundStyle(theme.subtleInk)
         }
         .padding(22)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(ClaudePalette.panel)
+                .fill(theme.panel)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(ClaudePalette.stroke, lineWidth: 1)
+                .stroke(theme.stroke, lineWidth: 1)
         )
     }
 }
@@ -799,27 +943,32 @@ private struct TargetSelectionChip: View {
     let participant: DaemonThreadParticipant
     let color: Color
     let isSelected: Bool
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: Theme {
+        Theme(colorScheme: colorScheme)
+    }
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(isSelected ? ClaudePalette.accent : ClaudePalette.subtleInk)
+                .foregroundStyle(isSelected ? theme.accentWarm : theme.subtleInk)
 
             Text(participant.displayName)
                 .font(.subheadline.weight(.medium))
-                .foregroundStyle(ClaudePalette.ink)
+                .foregroundStyle(theme.ink)
                 .lineLimit(1)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
         .background(
             RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .fill(isSelected ? ClaudePalette.toolPanel : ClaudePalette.paper)
+                .fill(isSelected ? theme.toolPanel : theme.paper)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .stroke(isSelected ? ClaudePalette.accent.opacity(0.25) : ClaudePalette.stroke, lineWidth: 1)
+                .stroke(isSelected ? theme.accentWarm.opacity(0.25) : theme.stroke, lineWidth: 1)
         )
     }
 }
@@ -924,6 +1073,11 @@ private struct UnavailableStateView: View {
 
 private struct TimelineBubble: View {
     let entry: DaemonTimelineEntry
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: Theme {
+        Theme(colorScheme: colorScheme)
+    }
 
     var body: some View {
         Group {
@@ -964,7 +1118,7 @@ private struct TimelineBubble: View {
             .frame(maxWidth: 420, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(Color(red: 0.274, green: 0.251, blue: 0.228))
+                    .fill(theme.userBubble)
             )
             .shadow(color: Color.black.opacity(0.08), radius: 12, y: 4)
         }
@@ -979,7 +1133,7 @@ private struct TimelineBubble: View {
                 HStack(alignment: .firstTextBaseline) {
                     Text(entry.title)
                         .font(.subheadline.weight(.medium))
-                        .foregroundStyle(ClaudePalette.ink)
+                        .foregroundStyle(theme.ink)
 
                     typeTag
 
@@ -987,7 +1141,7 @@ private struct TimelineBubble: View {
 
                     Text("seq \(entry.lastThreadSeq)")
                         .font(.caption2.monospacedDigit())
-                        .foregroundStyle(ClaudePalette.subtleInk)
+                        .foregroundStyle(theme.subtleInk)
                 }
 
                 messageBody
@@ -1022,7 +1176,7 @@ private struct TimelineBubble: View {
 
                     Text(entry.body.isEmpty ? "…" : entry.body)
                         .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(ClaudePalette.ink)
+                        .foregroundStyle(theme.ink)
                         .lineSpacing(4)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1042,12 +1196,12 @@ private struct TimelineBubble: View {
                         assistantActivityPanel(
                             title: "Thinking",
                             systemImage: "brain.head.profile",
-                            titleColor: ClaudePalette.subtleInk,
+                            titleColor: theme.subtleInk,
                             body: thinkingBody,
                             bodyFont: .callout,
-                            bodyColor: ClaudePalette.subtleInk,
-                            fill: ClaudePalette.panel.opacity(0.96),
-                            stroke: ClaudePalette.stroke
+                            bodyColor: theme.subtleInk,
+                            fill: theme.panel.opacity(0.96),
+                            stroke: theme.stroke
                         )
                     }
 
@@ -1055,12 +1209,12 @@ private struct TimelineBubble: View {
                         assistantActivityPanel(
                             title: "Plan draft",
                             systemImage: "list.bullet.clipboard",
-                            titleColor: Color(red: 0.463, green: 0.392, blue: 0.361),
+                            titleColor: theme.planColor,
                             body: planBody,
                             bodyFont: .system(.body, design: .monospaced),
-                            bodyColor: ClaudePalette.ink,
-                            fill: ClaudePalette.planPanel.opacity(0.72),
-                            stroke: Color(red: 0.463, green: 0.392, blue: 0.361).opacity(0.14)
+                            bodyColor: theme.ink,
+                            fill: theme.planPanel.opacity(0.72),
+                            stroke: theme.planColor.opacity(0.14)
                         )
                     }
 
@@ -1068,12 +1222,12 @@ private struct TimelineBubble: View {
                         assistantActivityPanel(
                             title: "Tool activity",
                             systemImage: "hammer",
-                            titleColor: ClaudePalette.accent,
+                            titleColor: theme.accentWarm,
                             body: toolBody(for: activity),
                             bodyFont: .system(.body, design: .monospaced),
-                            bodyColor: ClaudePalette.ink,
-                            fill: ClaudePalette.toolPanel.opacity(0.72),
-                            stroke: ClaudePalette.accent.opacity(0.18)
+                            bodyColor: theme.ink,
+                            fill: theme.toolPanel.opacity(0.72),
+                            stroke: theme.accentWarm.opacity(0.18)
                         )
                     }
 
@@ -1081,11 +1235,11 @@ private struct TimelineBubble: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Label("Response", systemImage: "text.bubble")
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(ClaudePalette.mutedInk)
+                                .foregroundStyle(theme.mutedInk)
 
                             Text(entry.body.isEmpty ? "…" : entry.body)
                                 .font(.body)
-                                .foregroundStyle(ClaudePalette.ink)
+                                .foregroundStyle(theme.ink)
                                 .lineSpacing(5)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -1094,13 +1248,13 @@ private struct TimelineBubble: View {
                     if let status = entry.status, status != "completed" {
                         Text(status.replacingOccurrences(of: "_", with: " ").capitalized)
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(ClaudePalette.subtleInk)
+                            .foregroundStyle(theme.subtleInk)
                     }
                 }
             } else {
                 Text(entry.body.isEmpty ? "…" : entry.body)
                     .font(.body)
-                    .foregroundStyle(ClaudePalette.ink)
+                    .foregroundStyle(theme.ink)
                     .lineSpacing(5)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -1156,13 +1310,13 @@ private struct TimelineBubble: View {
 
             Label(centeredText, systemImage: iconName)
                 .font(.caption.weight(.medium))
-                .foregroundStyle(ClaudePalette.mutedInk)
+                .foregroundStyle(theme.mutedInk)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .background(ClaudePalette.paper, in: Capsule())
+                .background(theme.paper, in: Capsule())
                 .overlay(
                     Capsule()
-                        .stroke(ClaudePalette.stroke, lineWidth: 1)
+                        .stroke(theme.stroke, lineWidth: 1)
                 )
 
             Spacer(minLength: 0)
@@ -1208,7 +1362,7 @@ private struct TimelineBubble: View {
         .frame(width: 38, height: 38)
         .overlay(
             RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .stroke(ClaudePalette.stroke, lineWidth: 1)
+                .stroke(theme.stroke, lineWidth: 1)
         )
     }
 
@@ -1225,80 +1379,80 @@ private struct TimelineBubble: View {
 
     private var typeColor: Color {
         switch entry.kind {
-        case .assistantTurn: return ClaudePalette.mutedInk
-        case .tool: return ClaudePalette.accent
-        case .plan: return Color(red: 0.463, green: 0.392, blue: 0.361)
+        case .assistantTurn: return theme.mutedInk
+        case .tool: return theme.accentWarm
+        case .plan: return theme.planColor
         case .user: return .white
-        case .turnEnd: return ClaudePalette.mutedInk
-        case .system: return ClaudePalette.mutedInk
+        case .turnEnd: return theme.mutedInk
+        case .system: return theme.mutedInk
         }
     }
 
     private var cardFill: Color {
         switch entry.kind {
         case .tool:
-            return ClaudePalette.toolPanel
+            return theme.toolPanel
         case .plan:
-            return ClaudePalette.planPanel
+            return theme.planPanel
         case .assistantTurn:
-            return ClaudePalette.paper
+            return theme.paper
         case .user, .turnEnd, .system:
-            return ClaudePalette.paper
+            return theme.paper
         }
     }
 
     private var borderColor: Color {
         switch entry.kind {
         case .tool:
-            return ClaudePalette.accent.opacity(0.22)
+            return theme.accentWarm.opacity(0.22)
         case .plan:
-            return Color(red: 0.463, green: 0.392, blue: 0.361).opacity(0.16)
+            return theme.planColor.opacity(0.16)
         case .assistantTurn, .user, .turnEnd, .system:
-            return ClaudePalette.stroke
+            return theme.stroke
         }
     }
 
     private var typeTagFill: Color {
         switch entry.kind {
         case .tool:
-            return ClaudePalette.paper.opacity(0.65)
+            return theme.paper.opacity(0.65)
         case .plan:
-            return ClaudePalette.paper.opacity(0.7)
+            return theme.paper.opacity(0.7)
         default:
-            return ClaudePalette.chip.opacity(0.9)
+            return theme.chip.opacity(0.9)
         }
     }
 
     private var iconBadgeFill: Color {
         switch entry.kind {
         case .tool:
-            return ClaudePalette.paper.opacity(0.7)
+            return theme.paper.opacity(0.7)
         case .plan:
-            return ClaudePalette.paper.opacity(0.72)
+            return theme.paper.opacity(0.72)
         default:
-            return ClaudePalette.paper.opacity(0.96)
+            return theme.paper.opacity(0.96)
         }
     }
 
     private var toolBodyFill: Color {
         switch entry.kind {
         case .tool:
-            return ClaudePalette.paper.opacity(0.68)
+            return theme.paper.opacity(0.68)
         case .plan:
-            return ClaudePalette.paper.opacity(0.72)
+            return theme.paper.opacity(0.72)
         default:
-            return ClaudePalette.paper
+            return theme.paper
         }
     }
 
     private var toolBodyStroke: Color {
         switch entry.kind {
         case .tool:
-            return ClaudePalette.accent.opacity(0.18)
+            return theme.accentWarm.opacity(0.18)
         case .plan:
-            return Color(red: 0.463, green: 0.392, blue: 0.361).opacity(0.14)
+            return theme.planColor.opacity(0.14)
         default:
-            return ClaudePalette.stroke
+            return theme.stroke
         }
     }
 }
