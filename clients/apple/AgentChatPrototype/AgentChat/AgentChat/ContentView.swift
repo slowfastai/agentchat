@@ -11,6 +11,7 @@ struct ContentView: View {
 
     @StateObject private var store = DaemonChatStore()
     @State private var draft = ""
+    @State private var daemonURLDraft = ""
     @State private var isScannerPresented = false
     @State private var compactPresentedThreadID: String?
     @State private var pendingCloseThread: DaemonThreadSummary?
@@ -37,7 +38,11 @@ struct ContentView: View {
                 .tag(AppTab.settings)
         }
         .task {
+            daemonURLDraft = store.daemonURL
             store.start()
+        }
+        .onChange(of: store.daemonURL) { newValue in
+            daemonURLDraft = newValue
         }
         .alert("Daemon Error", isPresented: Binding(
             get: { store.errorMessage != nil },
@@ -237,22 +242,43 @@ struct ContentView: View {
         Section("Connection") {
             HStack(spacing: 10) {
                 Circle()
-                    .fill(store.connectionStatus.contains("Connected") || store.connectionStatus.contains("Synced") ? Color.green : Color.orange)
+                    .fill(connectionStatusColor)
                     .frame(width: 10, height: 10)
                 Text(store.connectionStatus)
                     .font(.subheadline)
             }
             .padding(.vertical, 4)
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 8) {
                 Text("Daemon URL")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                Text(store.daemonURL)
+
+                TextField("ws://192.168.1.10:9390", text: $daemonURLDraft)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled(true)
+                    .keyboardType(.URL)
                     .font(.footnote.monospaced())
-                    .textSelection(.enabled)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit {
+                        submitDaemonURL()
+                    }
+
+                if !store.daemonURL.isEmpty {
+                    Text("Saved: \(store.daemonURL)")
+                        .font(.footnote.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
             }
             .padding(.vertical, 4)
+
+            Button {
+                submitDaemonURL()
+            } label: {
+                Label("Save & Connect", systemImage: "link.badge.plus")
+            }
+            .disabled(daemonURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
             Button {
                 isScannerPresented = true
@@ -265,6 +291,11 @@ struct ContentView: View {
             } label: {
                 Label("Reconnect", systemImage: "arrow.clockwise")
             }
+            .disabled(!store.hasConfiguredDaemonURL)
+
+            Text("The app will not auto-connect on first launch. Connect only by scanning a QR code, entering a URL, or tapping Reconnect.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
 
             Text("Encode the QR as ws://..., wss://..., or agentchat://connect?url=<websocket-url>.")
                 .font(.footnote)
@@ -357,6 +388,20 @@ struct ContentView: View {
         }
 
         return nil
+    }
+
+    private var connectionStatusColor: Color {
+        if store.connectionStatus.contains("Connected") || store.connectionStatus.contains("Synced") {
+            return .green
+        }
+        if store.connectionStatus.contains("Not configured") {
+            return .gray
+        }
+        return .orange
+    }
+
+    private func submitDaemonURL() {
+        store.updateDaemonURL(daemonURLDraft)
     }
 
     private func header(snapshot: DaemonThreadSnapshot) -> some View {

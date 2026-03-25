@@ -4,7 +4,7 @@ import SwiftUI
 
 @MainActor
 final class DaemonChatStore: ObservableObject {
-    @Published var connectionStatus = "Connecting…"
+    @Published var connectionStatus = "Not configured"
     @Published var agents: [DaemonAgentSummary] = []
     @Published var threads: [DaemonThreadSummary] = []
     @Published var activeThreadID: String?
@@ -14,10 +14,14 @@ final class DaemonChatStore: ObservableObject {
     @Published var selectedParticipantIDs: Set<String> = []
     @Published var errorMessage: String?
 
-    @AppStorage("agentchat_daemon_ws_url") private var daemonURLString = "ws://127.0.0.1:9390"
+    @AppStorage("agentchat_daemon_ws_url") private var daemonURLString = ""
 
     var daemonURL: String {
         daemonURLString
+    }
+
+    var hasConfiguredDaemonURL: Bool {
+        !daemonURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private let pinnedThreadsKey = "agentchat_pinned_thread_ids"
@@ -25,7 +29,6 @@ final class DaemonChatStore: ObservableObject {
 
     private var socketTask: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
-    private var reconnectTask: Task<Void, Never>?
     private var pendingThreadAgentIDs: [String] = []
     private var hasStarted = false
     private var allThreads: [DaemonThreadSummary] = []
@@ -39,12 +42,13 @@ final class DaemonChatStore: ObservableObject {
         let defaults = UserDefaults.standard
         self.pinnedThreadIDs = Set(defaults.stringArray(forKey: pinnedThreadsKey) ?? [])
         self.hiddenThreadIDs = Set(defaults.stringArray(forKey: hiddenThreadsKey) ?? [])
+        refreshIdleConnectionStatus()
     }
 
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
-        connect()
+        refreshIdleConnectionStatus()
     }
 
     func createThreadWithSelectedAgents() {
@@ -176,9 +180,21 @@ final class DaemonChatStore: ObservableObject {
     func updateDaemonURL(_ newValue: String) {
         let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        if trimmed == daemonURLString.trimmingCharacters(in: .whitespacesAndNewlines), hasActiveConnection {
+            errorMessage = nil
+            return
+        }
         daemonURLString = trimmed
         errorMessage = nil
         connect()
+    }
+
+    func disconnect() {
+        receiveTask?.cancel()
+        receiveTask = nil
+        socketTask?.cancel(with: .goingAway, reason: nil)
+        socketTask = nil
+        refreshIdleConnectionStatus()
     }
 
     func applyScannedConnectionPayload(_ payload: String) {
@@ -196,13 +212,21 @@ final class DaemonChatStore: ObservableObject {
     }
 
     private func connect() {
-        reconnectTask?.cancel()
         receiveTask?.cancel()
+        receiveTask = nil
         socketTask?.cancel(with: .goingAway, reason: nil)
+        socketTask = nil
 
-        guard let url = URL(string: daemonURLString) else {
+        let trimmedURL = daemonURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedURL.isEmpty else {
+            refreshIdleConnectionStatus()
+            errorMessage = "No daemon URL configured. Scan a QR code or enter a URL first."
+            return
+        }
+
+        guard let url = URL(string: trimmedURL) else {
             connectionStatus = "Bad URL"
-            errorMessage = "Invalid daemon URL: \(daemonURLString)"
+            errorMessage = "Invalid daemon URL: \(trimmedURL)"
             return
         }
 
@@ -225,17 +249,6 @@ final class DaemonChatStore: ObservableObject {
         }
     }
 
-    private func scheduleReconnect() {
-        guard reconnectTask == nil else { return }
-        reconnectTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            await MainActor.run {
-                self?.reconnectTask = nil
-                self?.connect()
-            }
-        }
-    }
-
     private func receiveLoop() async {
         guard let task = socketTask else { return }
 
@@ -254,9 +267,6 @@ final class DaemonChatStore: ObservableObject {
                 }
             } catch {
                 connectionStatus = "Disconnected"
-                if !Task.isCancelled {
-                    scheduleReconnect()
-                }
                 break
             }
         }
@@ -595,6 +605,20 @@ final class DaemonChatStore: ObservableObject {
         }
     }
 
+    private var hasActiveConnection: Bool {
+        guard socketTask != nil else { return false }
+        switch connectionStatus {
+        case "Disconnected", "Not connected", "Not configured", "Bad URL":
+            return false
+        default:
+            return true
+        }
+    }
+
+    private func refreshIdleConnectionStatus() {
+        connectionStatus = hasConfiguredDaemonURL ? "Not connected" : "Not configured"
+    }
+
     private func normalizedDaemonURL(from payload: String) -> String? {
         if payload.hasPrefix("ws://") || payload.hasPrefix("wss://") {
             return payload
@@ -617,7 +641,10 @@ final class DaemonChatStore: ObservableObject {
 
     private func send<Request: Encodable>(_ request: Request) async {
         guard let socketTask else {
-            connect()
+            refreshIdleConnectionStatus()
+            errorMessage = hasConfiguredDaemonURL
+                ? "Not connected to a daemon. Tap Reconnect, scan a QR code, or enter a URL first."
+                : "No daemon URL configured. Scan a QR code or enter a URL first."
             return
         }
         do {
@@ -627,7 +654,6 @@ final class DaemonChatStore: ObservableObject {
         } catch {
             errorMessage = "Send failed: \(error.localizedDescription)"
             connectionStatus = "Disconnected"
-            scheduleReconnect()
         }
     }
 }
