@@ -3,6 +3,7 @@ import SwiftUI
 private enum AppTab: Hashable {
     case feed
     case agents
+    case settings
 }
 
 struct ContentView: View {
@@ -27,6 +28,12 @@ struct ContentView: View {
                     Label("Agents", systemImage: "person.2.fill")
                 }
                 .tag(AppTab.agents)
+
+            settingsRoot
+                .tabItem {
+                    Label("Settings", systemImage: "gearshape.fill")
+                }
+                .tag(AppTab.settings)
         }
         .task {
             store.start()
@@ -88,9 +95,17 @@ struct ContentView: View {
         }
     }
 
+    private var settingsRoot: some View {
+        NavigationStack {
+            List {
+                settingsConnectionSection
+            }
+            .navigationTitle("Settings")
+        }
+    }
+
     private var feedList: some View {
         List {
-            connectionSection
             threadsSection
         }
         .navigationTitle("Feed")
@@ -98,49 +113,6 @@ struct ContentView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 feedMenu
             }
-        }
-    }
-
-    private var connectionSection: some View {
-        Section("Connection") {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(store.connectionStatus.contains("Connected") || store.connectionStatus.contains("Synced") ? Color.green : Color.orange)
-                    .frame(width: 10, height: 10)
-                Text(store.connectionStatus)
-                    .font(.subheadline)
-            }
-            .padding(.vertical, 4)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Daemon URL")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text(store.daemonURL)
-                    .font(.footnote.monospaced())
-                    .textSelection(.enabled)
-            }
-            .padding(.vertical, 4)
-
-            HStack {
-                Button {
-                    isScannerPresented = true
-                } label: {
-                    Label("Scan QR", systemImage: "qrcode.viewfinder")
-                }
-
-                Spacer()
-
-                Button {
-                    store.reconnectNow()
-                } label: {
-                    Label("Reconnect", systemImage: "arrow.clockwise")
-                }
-            }
-
-            Text("Encode the QR as ws://..., wss://..., or agentchat://connect?url=<websocket-url>.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
         }
     }
 
@@ -205,6 +177,45 @@ struct ContentView: View {
                     .buttonStyle(.plain)
                 }
             }
+        }
+    }
+
+    private var settingsConnectionSection: some View {
+        Section("Connection") {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(store.connectionStatus.contains("Connected") || store.connectionStatus.contains("Synced") ? Color.green : Color.orange)
+                    .frame(width: 10, height: 10)
+                Text(store.connectionStatus)
+                    .font(.subheadline)
+            }
+            .padding(.vertical, 4)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Daemon URL")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(store.daemonURL)
+                    .font(.footnote.monospaced())
+                    .textSelection(.enabled)
+            }
+            .padding(.vertical, 4)
+
+            Button {
+                isScannerPresented = true
+            } label: {
+                Label("Scan QR", systemImage: "qrcode.viewfinder")
+            }
+
+            Button {
+                store.reconnectNow()
+            } label: {
+                Label("Reconnect", systemImage: "arrow.clockwise")
+            }
+
+            Text("Encode the QR as ws://..., wss://..., or agentchat://connect?url=<websocket-url>.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
 
