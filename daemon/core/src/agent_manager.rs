@@ -2,17 +2,23 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use serde_json::Value;
 use tracing::info;
 
-use agentchat_protocol::AgentConfig;
+use agentchat_protocol::{AgentConfig, AgentStatus, AgentSummary};
 
 use crate::acp_client::AcpAgent;
+
+struct ManagedAgent {
+    config: AgentConfig,
+    agent: Rc<AcpAgent>,
+}
 
 /// Manages ACP agent instances.
 ///
 /// For M0: single agent support. Post-M0: multi-agent with GroupChat routing.
 pub struct AgentManager {
-    agents: HashMap<String, Rc<AcpAgent>>,
+    agents: HashMap<String, ManagedAgent>,
     /// Map session IDs to agent IDs for routing.
     session_to_agent: HashMap<String, String>,
 }
@@ -39,14 +45,20 @@ impl AgentManager {
             .await
             .map_err(|e| format!("ACP init failed: {e}"))?;
 
-        self.agents.insert(agent_id.clone(), agent);
+        self.agents.insert(
+            agent_id.clone(),
+            ManagedAgent {
+                config,
+                agent,
+            },
+        );
         info!("agent '{}' registered and initialized", agent_id);
         Ok(())
     }
 
     /// Get an agent by ID.
     pub fn get_agent(&self, agent_id: &str) -> Option<Rc<AcpAgent>> {
-        self.agents.get(agent_id).cloned()
+        self.agents.get(agent_id).map(|managed| managed.agent.clone())
     }
 
     /// Get the first registered agent ID.
@@ -54,6 +66,46 @@ impl AgentManager {
     /// M0 only supports a single configured agent, so any registered agent is valid.
     pub fn first_agent_id(&self) -> Option<&str> {
         self.agents.keys().next().map(|id| id.as_str())
+    }
+
+    /// Return all configured agent IDs in stable sorted order.
+    pub fn agent_ids(&self) -> Vec<String> {
+        let mut ids = self.agents.keys().cloned().collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+
+    /// Return app-facing summaries for all configured agents.
+    pub fn list_agents(&self) -> Vec<AgentSummary> {
+        let mut summaries = self
+            .agents
+            .values()
+            .map(|managed| AgentSummary {
+                agent_id: managed.config.id.clone(),
+                name: managed.config.name.clone(),
+                kind: managed
+                    .config
+                    .extra
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&managed.config.id)
+                    .to_string(),
+                status: if managed.agent.is_alive() {
+                    AgentStatus::Online
+                } else {
+                    AgentStatus::Crashed
+                },
+                default_working_dir: managed.config.working_dir.clone(),
+                capabilities: vec![
+                    "session".into(),
+                    "prompt".into(),
+                    "cancel".into(),
+                    "distill".into(),
+                ],
+            })
+            .collect::<Vec<_>>();
+        summaries.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+        summaries
     }
 
     /// Register a session -> agent mapping.
@@ -82,7 +134,7 @@ impl AgentManager {
     pub fn is_agent_alive(&self, agent_id: &str) -> bool {
         self.agents
             .get(agent_id)
-            .map(|agent| agent.is_alive())
+            .map(|managed| managed.agent.is_alive())
             .unwrap_or(false)
     }
 
@@ -91,7 +143,7 @@ impl AgentManager {
         let agents = self
             .agents
             .iter()
-            .map(|(id, agent)| (id.clone(), Rc::clone(agent)))
+            .map(|(id, managed)| (id.clone(), Rc::clone(&managed.agent)))
             .collect::<Vec<_>>();
 
         async move {

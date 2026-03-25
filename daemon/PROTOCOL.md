@@ -37,7 +37,8 @@ python3 scripts/ws_smoke_test.py
 Paste this sequence interactively:
 
 ```json
-{"type":"create_session","working_dir":"."}
+{"type":"list_agents"}
+{"type":"create_session","agent_id":"opencode","working_dir":"."}
 ```
 
 Copy the returned `session_id`, then send:
@@ -54,7 +55,8 @@ Copy the returned `session_id`, then send:
 ```
 
 What to expect:
-- `create_session` returns `session_created`.
+- `list_agents` returns configured daemon agents and their status.
+- `create_session` returns `session_created` and echoes the chosen `agent_id`.
 - Session-scoped streamed events now carry `event_seq`, which is monotonic within one `session_id`.
 - `prompt` streams `delta` / `tool_update` events and ends with `turn_end`.
 - `list_sessions` returns currently live daemon sessions.
@@ -78,8 +80,11 @@ lines prefixed with `<` are representative daemon responses.
 
 ```text
 $ websocat ws://127.0.0.1:9390
-> {"type":"create_session","working_dir":"."}
-< {"type":"session_created","session_id":"session-1","event_seq":1}
+> {"type":"list_agents"}
+< {"type":"agent_list","agents":[{"agent_id":"opencode","name":"OpenCode (ACP)","kind":"opencode","status":"online","default_working_dir":null,"capabilities":["session","prompt","cancel","distill"]}]}
+
+> {"type":"create_session","agent_id":"opencode","working_dir":"."}
+< {"type":"session_created","session_id":"session-1","agent_id":"opencode","event_seq":1}
 
 > {"type":"prompt","session_id":"session-1","content":"inspect the repo"}
 < {"type":"delta","session_id":"session-1","event_seq":2,"content":"thinking about the request","delta_type":"thinking"}
@@ -114,8 +119,11 @@ This example shows the same flow using its usual output format.
 ```text
 $ wscat -c ws://127.0.0.1:9390
 Connected (press CTRL+C to quit)
-> {"type":"create_session","working_dir":"."}
-< {"type":"session_created","session_id":"session-1","event_seq":1}
+> {"type":"list_agents"}
+< {"type":"agent_list","agents":[{"agent_id":"opencode","name":"OpenCode (ACP)","kind":"opencode","status":"online","default_working_dir":null,"capabilities":["session","prompt","cancel","distill"]}]}
+
+> {"type":"create_session","agent_id":"opencode","working_dir":"."}
+< {"type":"session_created","session_id":"session-1","agent_id":"opencode","event_seq":1}
 
 > {"type":"prompt","session_id":"session-1","content":"inspect the repo"}
 < {"type":"delta","session_id":"session-1","event_seq":2,"content":"thinking about the request","delta_type":"thinking"}
@@ -130,6 +138,75 @@ Connected (press CTRL+C to quit)
 
 Tip:
 - `wscat` is handy when you just want to paste one JSON message at a time and inspect raw responses.
+
+## `list_agents`
+
+List configured daemon agents and their current status.
+
+Request:
+
+```json
+{"type":"list_agents"}
+```
+
+Success response:
+
+```json
+{
+  "type": "agent_list",
+  "agents": [
+    {
+      "agent_id": "opencode",
+      "name": "OpenCode (ACP)",
+      "kind": "opencode",
+      "status": "online",
+      "default_working_dir": null,
+      "capabilities": ["session", "prompt", "cancel", "distill"]
+    }
+  ]
+}
+```
+
+Notes:
+- Clients should usually call `list_agents` before `create_session`.
+- `status` is currently coarse and mainly indicates whether the daemon still sees the agent process as alive.
+
+## `create_session`
+
+Create a new live session for a selected agent.
+
+Request:
+
+```json
+{"type":"create_session","agent_id":"opencode","working_dir":"."}
+```
+
+Backward-compatible request using the daemon default agent:
+
+```json
+{"type":"create_session","working_dir":"."}
+```
+
+Success response:
+
+```json
+{
+  "type": "session_created",
+  "session_id": "session-1",
+  "agent_id": "opencode",
+  "event_seq": 1
+}
+```
+
+Error responses:
+
+```json
+{"type":"error","code":"agent_not_found","message":"no agent with this id"}
+```
+
+```json
+{"type":"error","code":"agent_unavailable","message":"agent is not online"}
+```
 
 ## `list_sessions`
 

@@ -10,8 +10,8 @@ use agentchat_core::distiller::Distiller;
 use agentchat_core::session_store::SessionStore;
 use agentchat_core::skills::SkillStore;
 use agentchat_protocol::{
-    AgentConfig, ClientMessage, DeltaType, ResponseEvent, SessionEvent, SessionState,
-    SessionTranscript,
+    AgentConfig, AgentStatus, ClientMessage, DeltaType, ResponseEvent, SessionEvent,
+    SessionState, SessionTranscript,
 };
 use agentchat_server::ws::WebSocketServer;
 use futures::{SinkExt, StreamExt};
@@ -76,6 +76,7 @@ async fn websocket_round_trip_streams_prompt_events_and_survives_reconnect() {
             send_client_message(
                 &mut ws,
                 &ClientMessage::CreateSession {
+                    agent_id: None,
                     working_dir: ".".into(),
                 },
             )
@@ -222,6 +223,211 @@ async fn websocket_round_trip_streams_prompt_events_and_survives_reconnect() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn websocket_lists_agents_and_creates_sessions_for_requested_agent() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_multi_agent_harness(&[
+                ("alpha", FakeAgentMode::Normal),
+                ("beta", FakeAgentMode::Normal),
+            ])
+            .await;
+            let mut ws = connect_ws(harness.port).await;
+
+            send_client_message(&mut ws, &ClientMessage::ListAgents).await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::AgentList { agents } => {
+                    assert_eq!(agents.len(), 2);
+                    assert_eq!(agents[0].agent_id, "alpha");
+                    assert_eq!(agents[0].status, AgentStatus::Online);
+                    assert_eq!(agents[1].agent_id, "beta");
+                    assert_eq!(agents[1].status, AgentStatus::Online);
+                }
+                event => panic!("unexpected event while listing agents: {event:?}"),
+            }
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateSession {
+                    agent_id: Some("beta".into()),
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+
+            let session_id = match receive_event(&mut ws).await {
+                ResponseEvent::SessionCreated {
+                    session_id,
+                    agent_id,
+                    event_seq,
+                } => {
+                    assert_eq!(agent_id, "beta");
+                    assert!(event_seq > 0);
+                    session_id
+                }
+                event => panic!("expected session_created event, got {event:?}"),
+            };
+
+            send_client_message(&mut ws, &ClientMessage::ListSessions).await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::SessionList { sessions } => {
+                    assert!(sessions.iter().any(|session| {
+                        session.session_id == session_id && session.agent_id == "beta"
+                    }));
+                }
+                event => panic!("unexpected event while listing sessions: {event:?}"),
+            }
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn websocket_allows_concurrent_prompts_for_different_sessions() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_multi_agent_harness(&[
+                ("alpha", FakeAgentMode::WaitForCancel),
+                ("beta", FakeAgentMode::WaitForCancel),
+            ])
+            .await;
+            let mut ws = connect_ws(harness.port).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateSession {
+                    agent_id: Some("alpha".into()),
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+            let alpha_session = expect_session_created(&mut ws).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateSession {
+                    agent_id: Some("beta".into()),
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+            let beta_session = expect_session_created(&mut ws).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::Prompt {
+                    session_id: alpha_session.clone(),
+                    content: "wait alpha".into(),
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::Delta {
+                    session_id,
+                    content,
+                    ..
+                } => {
+                    assert_eq!(session_id, alpha_session);
+                    assert_eq!(content, "waiting for cancel");
+                }
+                event => panic!("unexpected event from first concurrent prompt: {event:?}"),
+            }
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::Prompt {
+                    session_id: beta_session.clone(),
+                    content: "wait beta".into(),
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::Delta {
+                    session_id,
+                    content,
+                    ..
+                } => {
+                    assert_eq!(session_id, beta_session);
+                    assert_eq!(content, "waiting for cancel");
+                }
+                event => panic!("unexpected event from second concurrent prompt: {event:?}"),
+            }
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::Prompt {
+                    session_id: alpha_session.clone(),
+                    content: "should fail".into(),
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::Error {
+                    session_id: Some(session_id),
+                    code,
+                    ..
+                } => {
+                    assert_eq!(session_id, alpha_session);
+                    assert_eq!(code, "prompt_in_progress");
+                }
+                event => panic!("unexpected event for same-session overlap: {event:?}"),
+            }
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::Cancel {
+                    session_id: alpha_session.clone(),
+                },
+            )
+            .await;
+            send_client_message(
+                &mut ws,
+                &ClientMessage::Cancel {
+                    session_id: beta_session.clone(),
+                },
+            )
+            .await;
+
+            let mut saw_alpha_end = false;
+            let mut saw_beta_end = false;
+            for _ in 0..4 {
+                match receive_event(&mut ws).await {
+                    ResponseEvent::TurnEnd {
+                        session_id,
+                        stop_reason,
+                        ..
+                    } if session_id == alpha_session => {
+                        assert_eq!(stop_reason, "Cancelled");
+                        saw_alpha_end = true;
+                    }
+                    ResponseEvent::TurnEnd {
+                        session_id,
+                        stop_reason,
+                        ..
+                    } if session_id == beta_session => {
+                        assert_eq!(stop_reason, "Cancelled");
+                        saw_beta_end = true;
+                    }
+                    other => panic!("unexpected event while draining concurrent cancels: {other:?}"),
+                }
+                if saw_alpha_end && saw_beta_end {
+                    break;
+                }
+            }
+            assert!(saw_alpha_end && saw_beta_end);
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn websocket_attach_session_replays_events_after_cursor() {
     let local = tokio::task::LocalSet::new();
     local
@@ -232,6 +438,7 @@ async fn websocket_attach_session_replays_events_after_cursor() {
             send_client_message(
                 &mut ws,
                 &ClientMessage::CreateSession {
+                    agent_id: None,
                     working_dir: ".".into(),
                 },
             )
@@ -324,6 +531,7 @@ async fn websocket_attach_session_rejects_cursor_ahead_of_tail() {
             send_client_message(
                 &mut ws,
                 &ClientMessage::CreateSession {
+                    agent_id: None,
                     working_dir: ".".into(),
                 },
             )
@@ -370,6 +578,7 @@ async fn websocket_persists_session_transcript_after_turn_end() {
             send_client_message(
                 &mut ws,
                 &ClientMessage::CreateSession {
+                    agent_id: None,
                     working_dir: ".".into(),
                 },
             )
@@ -578,6 +787,7 @@ async fn websocket_injects_shared_and_agent_specific_skill_context() {
             send_client_message(
                 &mut ws,
                 &ClientMessage::CreateSession {
+                    agent_id: None,
                     working_dir: ".".into(),
                 },
             )
@@ -636,6 +846,7 @@ async fn websocket_distills_session_into_skill_files() {
             send_client_message(
                 &mut ws,
                 &ClientMessage::CreateSession {
+                    agent_id: None,
                     working_dir: ".".into(),
                 },
             )
@@ -703,6 +914,7 @@ async fn websocket_injects_distilled_shared_and_agent_specific_skills_into_new_s
             send_client_message(
                 &mut ws,
                 &ClientMessage::CreateSession {
+                    agent_id: None,
                     working_dir: ".".into(),
                 },
             )
@@ -750,6 +962,7 @@ async fn websocket_injects_distilled_shared_and_agent_specific_skills_into_new_s
             send_client_message(
                 &mut ws,
                 &ClientMessage::CreateSession {
+                    agent_id: None,
                     working_dir: ".".into(),
                 },
             )
@@ -802,6 +1015,7 @@ async fn websocket_disconnect_keeps_in_flight_prompt_running_until_explicit_canc
             send_client_message(
                 &mut ws,
                 &ClientMessage::CreateSession {
+                    agent_id: None,
                     working_dir: ".".into(),
                 },
             )
@@ -888,6 +1102,7 @@ async fn websocket_close_session_removes_it_from_session_list() {
             send_client_message(
                 &mut ws,
                 &ClientMessage::CreateSession {
+                    agent_id: None,
                     working_dir: ".".into(),
                 },
             )
@@ -951,6 +1166,7 @@ async fn websocket_reports_agent_crash_to_the_client() {
             send_client_message(
                 &mut ws,
                 &ClientMessage::CreateSession {
+                    agent_id: None,
                     working_dir: ".".into(),
                 },
             )
@@ -991,6 +1207,7 @@ async fn websocket_shutdown_cancels_in_flight_prompt() {
             send_client_message(
                 &mut ws,
                 &ClientMessage::CreateSession {
+                    agent_id: None,
                     working_dir: ".".into(),
                 },
             )
@@ -1044,16 +1261,29 @@ async fn websocket_shutdown_cancels_in_flight_prompt() {
 }
 
 async fn start_harness(mode: FakeAgentMode) -> TestHarness {
+    start_multi_agent_harness(&[("fake", mode)]).await
+}
+
+async fn start_multi_agent_harness(agents: &[(&str, FakeAgentMode)]) -> TestHarness {
     let temp_dir = tempfile::tempdir().unwrap();
-    let events_path = temp_dir.path().join("fake-agent-events.log");
+    let primary_agent_id = agents.first().map(|(agent_id, _)| *agent_id).unwrap_or("fake");
+    let events_path = temp_dir
+        .path()
+        .join(format!("{primary_agent_id}-events.log"));
     let project_root = temp_dir.path().join("project");
     std::fs::create_dir_all(&project_root).unwrap();
 
     let mut manager = AgentManager::new();
-    manager
-        .add_agent(fake_agent_config(mode, &events_path), project_root.clone())
-        .await
-        .unwrap();
+    for (agent_id, mode) in agents {
+        let agent_events_path = temp_dir.path().join(format!("{agent_id}-events.log"));
+        manager
+            .add_agent(
+                fake_agent_config_with_id(agent_id, *mode, &agent_events_path),
+                project_root.clone(),
+            )
+            .await
+            .unwrap();
+    }
 
     let manager = Rc::new(RefCell::new(manager));
     let session_store = Rc::new(RefCell::new(SessionStore::new(&project_root)));
@@ -1082,22 +1312,29 @@ async fn start_harness(mode: FakeAgentMode) -> TestHarness {
     }
 }
 
-fn fake_agent_config(mode: FakeAgentMode, events_path: &Path) -> AgentConfig {
+fn fake_agent_config_with_id(agent_id: &str, mode: FakeAgentMode, events_path: &Path) -> AgentConfig {
     let mut env_vars = HashMap::new();
     env_vars.insert("FAKE_ACP_MODE".into(), mode.as_env_value().into());
     env_vars.insert(
         "FAKE_ACP_EVENTS_PATH".into(),
         events_path.display().to_string(),
     );
+    env_vars.insert(
+        "FAKE_ACP_SESSION_PREFIX".into(),
+        format!("{agent_id}-"),
+    );
+
+    let mut extra = serde_json::Map::new();
+    extra.insert("kind".into(), serde_json::Value::String("fake".into()));
 
     AgentConfig {
-        id: "fake".into(),
-        name: "Fake ACP Agent".into(),
+        id: agent_id.into(),
+        name: format!("Fake ACP Agent ({agent_id})"),
         command: fake_agent_binary().display().to_string(),
         args: Vec::new(),
         working_dir: None,
         env_vars,
-        extra: Default::default(),
+        extra: extra.into_iter().collect(),
     }
 }
 
@@ -1137,6 +1374,7 @@ async fn expect_session_created(ws: &mut TestWebSocket) -> String {
     match receive_event(ws).await {
         ResponseEvent::SessionCreated {
             session_id,
+            agent_id: _,
             event_seq,
         } => {
             assert!(event_seq > 0);

@@ -66,6 +66,20 @@ fn load_agent_config() -> AgentConfig {
     }
 }
 
+fn load_agent_configs() -> Result<Vec<AgentConfig>, String> {
+    match optional_env("AGENTCHAT_AGENTS_JSON") {
+        Some(raw) => {
+            let configs: Vec<AgentConfig> = serde_json::from_str(&raw)
+                .map_err(|err| format!("failed to parse AGENTCHAT_AGENTS_JSON: {err}"))?;
+            if configs.is_empty() {
+                return Err("AGENTCHAT_AGENTS_JSON must contain at least one agent config".into());
+            }
+            Ok(configs)
+        }
+        None => Ok(vec![load_agent_config()]),
+    }
+}
+
 fn load_relay_crypto_config() -> Result<RelayClientCryptoConfig, String> {
     if env_flag("AGENTCHAT_RELAY_DEV_CRYPTO") {
         return Ok(RelayClientCryptoConfig {
@@ -145,8 +159,14 @@ async fn main() {
 
     info!("agentchat daemon v0.1.0");
 
-    // M0: launch a single ACP-capable agent, configurable via environment.
-    let config = load_agent_config();
+    // M0+: launch one or more ACP-capable agents, configurable via environment.
+    let agent_configs = match load_agent_configs() {
+        Ok(configs) => configs,
+        Err(err) => {
+            error!("failed to load agent configuration: {err}");
+            std::process::exit(1);
+        }
+    };
     let relay_config = match load_relay_client_config() {
         Ok(config) => config,
         Err(err) => {
@@ -162,13 +182,16 @@ async fn main() {
 
     let exit_code = local
         .run_until(async move {
-            // Initialize the agent before wrapping in Rc<RefCell<>> to avoid
+            // Initialize the agents before wrapping in Rc<RefCell<>> to avoid
             // holding a RefCell borrow across an await point.
             let mut manager = AgentManager::new();
-            if let Err(e) = manager.add_agent(config, project_root.clone()).await {
-                error!("failed to start agent: {e}");
-                eprintln!("make sure the ACP agent is installed and in PATH");
-                return 1;
+            for config in agent_configs {
+                let agent_id = config.id.clone();
+                if let Err(e) = manager.add_agent(config, project_root.clone()).await {
+                    error!("failed to start agent '{agent_id}': {e}");
+                    eprintln!("make sure the ACP agent is installed and in PATH");
+                    return 1;
+                }
             }
 
             let manager = Rc::new(RefCell::new(manager));

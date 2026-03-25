@@ -28,6 +28,7 @@ impl FakeAgentMode {
 struct FakeAgent {
     session_update_tx: mpsc::UnboundedSender<acp::SessionNotification>,
     next_session_id: Cell<u64>,
+    session_prefix: String,
     cancelled_sessions: RefCell<HashSet<String>>,
     cancel_notify: Rc<Notify>,
     mode: FakeAgentMode,
@@ -39,6 +40,7 @@ impl FakeAgent {
         Self {
             session_update_tx,
             next_session_id: Cell::new(1),
+            session_prefix: std::env::var("FAKE_ACP_SESSION_PREFIX").unwrap_or_default(),
             cancelled_sessions: RefCell::new(HashSet::new()),
             cancel_notify: Rc::new(Notify::new()),
             mode: FakeAgentMode::from_env(),
@@ -117,7 +119,11 @@ impl acp::Agent for FakeAgent {
         &self,
         args: acp::NewSessionRequest,
     ) -> acp::Result<acp::NewSessionResponse> {
-        let session_id = acp::SessionId::new(format!("session-{}", self.next_session_id.get()));
+        let session_id = acp::SessionId::new(format!(
+            "{}session-{}",
+            self.session_prefix,
+            self.next_session_id.get()
+        ));
         self.next_session_id.set(self.next_session_id.get() + 1);
         self.record_event(&format!(
             "new_session:{}:{}",

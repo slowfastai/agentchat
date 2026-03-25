@@ -76,6 +76,27 @@ pub struct SkillInfo {
     pub size_bytes: u64,
 }
 
+/// Coarse liveness state for a configured agent.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentStatus {
+    Online,
+    Offline,
+    Starting,
+    Crashed,
+}
+
+/// Compact summary of a configured daemon agent.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentSummary {
+    pub agent_id: String,
+    pub name: String,
+    pub kind: String,
+    pub status: AgentStatus,
+    pub default_working_dir: Option<String>,
+    pub capabilities: Vec<String>,
+}
+
 /// Coarse session execution state exposed to reconnecting clients.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -118,7 +139,14 @@ pub struct SessionSnapshot {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseEvent {
     /// Session created successfully.
-    SessionCreated { session_id: String, event_seq: u64 },
+    SessionCreated {
+        session_id: String,
+        agent_id: String,
+        event_seq: u64,
+    },
+
+    /// List of configured agents known to the daemon.
+    AgentList { agents: Vec<AgentSummary> },
 
     /// List of live sessions known to the daemon.
     SessionList { sessions: Vec<SessionSummary> },
@@ -215,7 +243,8 @@ impl ResponseEvent {
             | ResponseEvent::DistillationStatus { session_id, .. } => Some(session_id),
             ResponseEvent::SessionSnapshot { snapshot, .. } => Some(&snapshot.session_id),
             ResponseEvent::Error { session_id, .. } => session_id.as_deref(),
-            ResponseEvent::SessionList { .. }
+            ResponseEvent::AgentList { .. }
+            | ResponseEvent::SessionList { .. }
             | ResponseEvent::SkillList { .. }
             | ResponseEvent::SkillContent { .. } => None,
         }
@@ -234,6 +263,7 @@ impl ResponseEvent {
             | ResponseEvent::SessionSnapshot { .. }
             | ResponseEvent::SessionClosed { .. }
             | ResponseEvent::SessionReplayComplete { .. }
+            | ResponseEvent::AgentList { .. }
             | ResponseEvent::SessionList { .. }
             | ResponseEvent::SkillList { .. }
             | ResponseEvent::SkillContent { .. } => None,
@@ -250,7 +280,13 @@ impl ResponseEvent {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
     /// Create a new session.
-    CreateSession { working_dir: String },
+    CreateSession {
+        #[serde(default)]
+        agent_id: Option<String>,
+        working_dir: String,
+    },
+    /// List configured agents known to the daemon.
+    ListAgents,
     /// List live sessions known to the daemon.
     ListSessions,
     /// Attach the current client connection to an existing session.
@@ -295,8 +331,10 @@ mod tests {
     fn client_messages_round_trip_through_json() {
         let messages = [
             ClientMessage::CreateSession {
+                agent_id: Some("agent-1".into()),
                 working_dir: "/tmp/project".into(),
             },
+            ClientMessage::ListAgents,
             ClientMessage::ListSessions,
             ClientMessage::AttachSession {
                 session_id: "session-1".into(),
@@ -331,7 +369,18 @@ mod tests {
         let events = [
             ResponseEvent::SessionCreated {
                 session_id: "session-1".into(),
+                agent_id: "agent-1".into(),
                 event_seq: 1,
+            },
+            ResponseEvent::AgentList {
+                agents: vec![AgentSummary {
+                    agent_id: "agent-1".into(),
+                    name: "Agent 1".into(),
+                    kind: "test".into(),
+                    status: AgentStatus::Online,
+                    default_working_dir: Some("/tmp/project".into()),
+                    capabilities: vec!["session".into(), "prompt".into()],
+                }],
             },
             ResponseEvent::SessionList {
                 sessions: vec![SessionSummary {
@@ -467,6 +516,20 @@ mod tests {
         };
 
         assert_round_trip(&skill);
+    }
+
+    #[test]
+    fn agent_summary_round_trips_through_json() {
+        let agent = AgentSummary {
+            agent_id: "agent-1".into(),
+            name: "Agent 1".into(),
+            kind: "test".into(),
+            status: AgentStatus::Online,
+            default_working_dir: Some("/tmp/project".into()),
+            capabilities: vec!["session".into(), "prompt".into()],
+        };
+
+        assert_round_trip(&agent);
     }
 
     #[test]

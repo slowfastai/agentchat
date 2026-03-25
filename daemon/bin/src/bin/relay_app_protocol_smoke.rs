@@ -88,6 +88,7 @@ async fn main() {
 
     if let Err(error) = client
         .send_encrypted_json(&ClientMessage::CreateSession {
+            agent_id: None,
             working_dir: ".".into(),
         })
         .await

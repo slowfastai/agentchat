@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -15,8 +15,8 @@ use agentchat_core::session_event_log::SessionEventLog;
 use agentchat_core::session_store::SessionStore;
 use agentchat_core::skills::SkillStore;
 use agentchat_protocol::{
-    ClientMessage, DeltaType, ResponseEvent, SessionEvent, SessionSnapshot, SessionState,
-    SessionSummary, SessionTranscript, SkillInfo,
+    AgentSummary, ClientMessage, DeltaType, ResponseEvent, SessionEvent, SessionSnapshot,
+    SessionState, SessionSummary, SessionTranscript, SkillInfo,
 };
 
 pub struct AppProtocolSession {
@@ -28,7 +28,7 @@ pub struct AppProtocolSession {
     response_tx: broadcast::Sender<ResponseEvent>,
     internal_sessions: Rc<RefCell<HashMap<String, mpsc::UnboundedSender<SessionNotification>>>>,
     created_sessions: Vec<String>,
-    active_prompt_session: Rc<RefCell<Option<String>>>,
+    active_prompt_sessions: Rc<RefCell<HashSet<String>>>,
 }
 
 impl AppProtocolSession {
@@ -40,40 +40,51 @@ impl AppProtocolSession {
     ) -> Result<Self, ResponseEvent> {
         let setup = {
             let mgr = manager.borrow();
-            match mgr.first_agent_id().map(|id| id.to_string()) {
-                Some(agent_id) => match mgr.get_agent(&agent_id) {
-                    Some(agent) if !agent.is_alive() => Err(ResponseEvent::Error {
-                        session_id: None,
-                        event_seq: None,
-                        code: "agent_crashed".into(),
-                        message: "agent process exited".into(),
-                    }),
-                    Some(agent) => match agent.take_update_rx() {
-                        Some(update_rx) => Ok((update_rx, agent.subscribe_health())),
-                        None => Err(ResponseEvent::Error {
-                            session_id: None,
-                            event_seq: None,
-                            code: "update_stream_unavailable".into(),
-                            message: "agent update stream is already in use".into(),
-                        }),
-                    },
-                    None => Err(ResponseEvent::Error {
-                        session_id: None,
-                        event_seq: None,
-                        code: "no_agent".into(),
-                        message: "no agent configured".into(),
-                    }),
-                },
-                None => Err(ResponseEvent::Error {
+            let agent_ids = mgr.agent_ids();
+            if agent_ids.is_empty() {
+                Err(ResponseEvent::Error {
                     session_id: None,
                     event_seq: None,
                     code: "no_agent".into(),
                     message: "no agent configured".into(),
-                }),
+                })
+            } else {
+                let mut streams = Vec::new();
+                for agent_id in agent_ids {
+                    let Some(agent) = mgr.get_agent(&agent_id) else {
+                        return Err(ResponseEvent::Error {
+                            session_id: None,
+                            event_seq: None,
+                            code: "no_agent".into(),
+                            message: "no agent configured".into(),
+                        });
+                    };
+
+                    if !agent.is_alive() {
+                        return Err(ResponseEvent::Error {
+                            session_id: None,
+                            event_seq: None,
+                            code: "agent_crashed".into(),
+                            message: "agent process exited".into(),
+                        });
+                    }
+
+                    let Some(update_rx) = agent.take_update_rx() else {
+                        return Err(ResponseEvent::Error {
+                            session_id: None,
+                            event_seq: None,
+                            code: "update_stream_unavailable".into(),
+                            message: "agent update stream is already in use".into(),
+                        });
+                    };
+
+                    streams.push((agent_id, update_rx, agent.subscribe_health()));
+                }
+                Ok(streams)
             }
         };
 
-        let (mut update_rx, mut health_rx) = setup?;
+        let setups = setup?;
         let (response_tx, _) = broadcast::channel::<ResponseEvent>(1024);
         let sessions_dir = session_store.borrow().sessions_dir().to_path_buf();
         let session_event_log = Rc::new(RefCell::new(SessionEventLog::new(sessions_dir)));
@@ -82,48 +93,59 @@ impl AppProtocolSession {
             mpsc::UnboundedSender<SessionNotification>,
         >::new()));
 
-        let response_tx_updates = response_tx.clone();
-        let session_store_updates = session_store.clone();
-        let session_event_log_updates = session_event_log.clone();
-        let internal_sessions_updates = internal_sessions.clone();
-        tokio::task::spawn_local(async move {
-            while let Some(notification) = update_rx.recv().await {
-                let sid = notification.session_id.to_string();
+        for (_agent_id, mut update_rx, mut health_rx) in setups {
+            let response_tx_updates = response_tx.clone();
+            let session_store_updates = session_store.clone();
+            let session_event_log_updates = session_event_log.clone();
+            let internal_sessions_updates = internal_sessions.clone();
+            tokio::task::spawn_local(async move {
+                while let Some(notification) = update_rx.recv().await {
+                    let sid = notification.session_id.to_string();
 
-                if let Some(tx) = internal_sessions_updates.borrow().get(&sid).cloned() {
-                    let _ = tx.send(notification);
-                    continue;
+                    if let Some(tx) = internal_sessions_updates.borrow().get(&sid).cloned() {
+                        let _ = tx.send(notification);
+                        continue;
+                    }
+
+                    session_store_updates
+                        .borrow_mut()
+                        .record_notification(&sid, &notification);
+                    let event_seq = session_event_log_updates.borrow_mut().next_seq(&sid);
+                    let event = map_session_update(&notification, event_seq);
+                    journal_and_broadcast_event(
+                        &session_event_log_updates,
+                        &response_tx_updates,
+                        event,
+                    );
+                }
+            });
+
+            let response_tx_health = response_tx.clone();
+            tokio::task::spawn_local(async move {
+                if !*health_rx.borrow() {
+                    let _ = response_tx_health.send(ResponseEvent::Error {
+                        session_id: None,
+                        event_seq: None,
+                        code: "agent_crashed".into(),
+                        message: "agent process exited".into(),
+                    });
+                    return;
                 }
 
-                session_store_updates
-                    .borrow_mut()
-                    .record_notification(&sid, &notification);
-                let event_seq = session_event_log_updates.borrow_mut().next_seq(&sid);
-                let event = map_session_update(&notification, event_seq);
-                journal_and_broadcast_event(
-                    &session_event_log_updates,
-                    &response_tx_updates,
-                    event,
-                );
-            }
-        });
-
-        let response_tx_health = response_tx.clone();
-        tokio::task::spawn_local(async move {
-            if !*health_rx.borrow() {
-                let _ = response_tx_health.send(ResponseEvent::Error {
-                    session_id: None,
-                    event_seq: None,
-                    code: "agent_crashed".into(),
-                    message: "agent process exited".into(),
-                });
-                return;
-            }
-
-            loop {
-                match health_rx.changed().await {
-                    Ok(()) => {
-                        if !*health_rx.borrow() {
+                loop {
+                    match health_rx.changed().await {
+                        Ok(()) => {
+                            if !*health_rx.borrow() {
+                                let _ = response_tx_health.send(ResponseEvent::Error {
+                                    session_id: None,
+                                    event_seq: None,
+                                    code: "agent_crashed".into(),
+                                    message: "agent process exited".into(),
+                                });
+                                break;
+                            }
+                        }
+                        Err(_) => {
                             let _ = response_tx_health.send(ResponseEvent::Error {
                                 session_id: None,
                                 event_seq: None,
@@ -133,18 +155,9 @@ impl AppProtocolSession {
                             break;
                         }
                     }
-                    Err(_) => {
-                        let _ = response_tx_health.send(ResponseEvent::Error {
-                            session_id: None,
-                            event_seq: None,
-                            code: "agent_crashed".into(),
-                            message: "agent process exited".into(),
-                        });
-                        break;
-                    }
                 }
-            }
-        });
+            });
+        }
 
         Ok(Self {
             manager,
@@ -155,7 +168,7 @@ impl AppProtocolSession {
             response_tx,
             internal_sessions,
             created_sessions: Vec::new(),
-            active_prompt_session: Rc::new(RefCell::new(None)),
+            active_prompt_sessions: Rc::new(RefCell::new(HashSet::new())),
         })
     }
 
@@ -169,8 +182,14 @@ impl AppProtocolSession {
 
     pub async fn handle_client_message(&mut self, client_msg: ClientMessage) {
         match client_msg {
-            ClientMessage::CreateSession { working_dir } => {
-                self.handle_create_session(working_dir).await;
+            ClientMessage::CreateSession {
+                agent_id,
+                working_dir,
+            } => {
+                self.handle_create_session(agent_id, working_dir).await;
+            }
+            ClientMessage::ListAgents => {
+                self.handle_list_agents().await;
             }
             ClientMessage::ListSessions => {
                 self.handle_list_sessions().await;
@@ -214,8 +233,13 @@ impl AppProtocolSession {
     }
 
     pub async fn shutdown(&mut self) {
-        let active_session_id = self.active_prompt_session.borrow_mut().take();
-        if let Some(session_id) = active_session_id {
+        let active_session_ids = self
+            .active_prompt_sessions
+            .borrow()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        for session_id in active_session_ids {
             let agent = {
                 let mgr = self.manager.borrow();
                 let agent_id = mgr.agent_for_session(&session_id).map(|id| id.to_string());
@@ -228,6 +252,7 @@ impl AppProtocolSession {
                 }
             }
         }
+        self.active_prompt_sessions.borrow_mut().clear();
 
         cleanup_created_sessions(&self.session_store, &self.created_sessions).await;
         self.manager
@@ -236,26 +261,39 @@ impl AppProtocolSession {
         self.created_sessions.clear();
     }
 
-    async fn handle_create_session(&mut self, working_dir: String) {
+    async fn handle_create_session(&mut self, requested_agent_id: Option<String>, working_dir: String) {
         let cwd = PathBuf::from(&working_dir);
         let (agent_id, agent, is_alive) = {
             let mgr = self.manager.borrow();
-            let agent_id = mgr.first_agent_id().map(|id| id.to_string());
-            let agent = agent_id.as_deref().and_then(|id| mgr.get_agent(id));
-            let is_alive = agent_id
+            let resolved_agent_id = requested_agent_id
+                .as_deref()
+                .map(str::to_string)
+                .or_else(|| mgr.first_agent_id().map(|id| id.to_string()));
+            let agent = resolved_agent_id
+                .as_deref()
+                .and_then(|id| mgr.get_agent(id));
+            let is_alive = resolved_agent_id
                 .as_deref()
                 .map(|id| mgr.is_agent_alive(id))
                 .unwrap_or(false);
-            (agent_id, agent, is_alive)
+            (resolved_agent_id, agent, is_alive)
         };
 
         match (agent_id, agent, is_alive) {
+            (Some(_), None, _) if requested_agent_id.is_some() => {
+                let _ = self.response_tx.send(ResponseEvent::Error {
+                    session_id: None,
+                    event_seq: None,
+                    code: "agent_not_found".into(),
+                    message: "no agent with this id".into(),
+                });
+            }
             (Some(_), Some(_), false) => {
                 let _ = self.response_tx.send(ResponseEvent::Error {
                     session_id: None,
                     event_seq: None,
-                    code: "agent_crashed".into(),
-                    message: "agent process exited".into(),
+                    code: "agent_unavailable".into(),
+                    message: "agent is not online".into(),
                 });
             }
             (Some(agent_id), Some(agent), true) => match agent.new_session(cwd).await {
@@ -275,6 +313,7 @@ impl AppProtocolSession {
                         &self.response_tx,
                         ResponseEvent::SessionCreated {
                             session_id: sid,
+                            agent_id,
                             event_seq,
                         },
                     );
@@ -297,6 +336,11 @@ impl AppProtocolSession {
                 });
             }
         }
+    }
+
+    async fn handle_list_agents(&self) {
+        let agents: Vec<AgentSummary> = self.manager.borrow().list_agents();
+        let _ = self.response_tx.send(ResponseEvent::AgentList { agents });
     }
 
     async fn handle_list_sessions(&self) {
@@ -385,7 +429,7 @@ impl AppProtocolSession {
     }
 
     async fn handle_close_session(&mut self, session_id: String) {
-        if self.active_prompt_session.borrow().as_deref() == Some(session_id.as_str()) {
+        if self.active_prompt_sessions.borrow().contains(&session_id) {
             let event_seq = Some(self.session_event_log.borrow_mut().next_seq(&session_id));
             let error = ResponseEvent::Error {
                 session_id: Some(session_id),
@@ -432,7 +476,7 @@ impl AppProtocolSession {
     }
 
     async fn handle_prompt(&mut self, session_id: String, content: String) {
-        if self.active_prompt_session.borrow().is_some() {
+        if self.active_prompt_sessions.borrow().contains(&session_id) {
             let event_seq = Some(self.session_event_log.borrow_mut().next_seq(&session_id));
             let error = ResponseEvent::Error {
                 session_id: Some(session_id),
@@ -474,18 +518,18 @@ impl AppProtocolSession {
                     maybe_inject_skill_context(self.skill_store.as_ref(), Some(&agent_id), content)
                         .await;
 
-                *self.active_prompt_session.borrow_mut() = Some(session_id.clone());
+                self.active_prompt_sessions
+                    .borrow_mut()
+                    .insert(session_id.clone());
                 let response_tx = self.response_tx.clone();
                 let session_store = self.session_store.clone();
                 let session_event_log = self.session_event_log.clone();
-                let active_prompt_session = self.active_prompt_session.clone();
+                let active_prompt_sessions = self.active_prompt_sessions.clone();
                 tokio::task::spawn_local(async move {
                     let result = agent
                         .prompt(SessionId::new(session_id.clone()), prompt_content)
                         .await;
-                    if active_prompt_session.borrow().as_deref() == Some(session_id.as_str()) {
-                        *active_prompt_session.borrow_mut() = None;
-                    }
+                    active_prompt_sessions.borrow_mut().remove(&session_id);
 
                     handle_prompt_completion(
                         response_tx,
@@ -593,7 +637,7 @@ impl AppProtocolSession {
     }
 
     fn session_state(&self, session_id: &str) -> SessionState {
-        if self.active_prompt_session.borrow().as_deref() == Some(session_id) {
+        if self.active_prompt_sessions.borrow().contains(session_id) {
             SessionState::Prompting
         } else {
             SessionState::Idle
