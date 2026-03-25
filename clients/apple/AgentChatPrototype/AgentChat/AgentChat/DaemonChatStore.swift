@@ -44,6 +44,30 @@ final class DaemonChatStore: ObservableObject {
         }
     }
 
+    func addSelectedAgentsToActiveThread() {
+        guard let threadID = activeThreadID else {
+            errorMessage = "Open a thread first, then add agents."
+            return
+        }
+
+        let existingAgentIDs = Set(activeThreadSnapshot?.participants.compactMap(\.agentID) ?? [])
+        let selectedOrAllAgents = selectedAgentIDs.isEmpty ? Set(agents.map(\.agentID)) : selectedAgentIDs
+        let agentIDsToAdd = selectedOrAllAgents.subtracting(existingAgentIDs).sorted()
+
+        guard !agentIDsToAdd.isEmpty else {
+            errorMessage = "No new selected agents to add."
+            return
+        }
+
+        Task {
+            for agentID in agentIDsToAdd {
+                await send(AddThreadParticipantRequest(threadID: threadID, agentID: agentID))
+            }
+            await send(ListThreadsRequest())
+            await send(AttachThreadRequest(threadID: threadID, afterSeq: nil))
+        }
+    }
+
     func attachThread(_ threadID: String) {
         activeThreadID = threadID
         activeThreadSnapshot = snapshotsByThread[threadID]

@@ -1,5 +1,10 @@
 import SwiftUI
 
+private enum AppTab: Hashable {
+    case feed
+    case agents
+}
+
 struct ContentView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -7,12 +12,21 @@ struct ContentView: View {
     @State private var draft = ""
     @State private var isScannerPresented = false
     @State private var compactPresentedThreadID: String?
+    @State private var selectedTab: AppTab = .feed
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-        } detail: {
-            detail
+        TabView(selection: $selectedTab) {
+            feedRoot
+                .tabItem {
+                    Label("Feed", systemImage: "bubble.left.and.bubble.right.fill")
+                }
+                .tag(AppTab.feed)
+
+            agentsRoot
+                .tabItem {
+                    Label("Agents", systemImage: "person.2.fill")
+                }
+                .tag(AppTab.agents)
         }
         .task {
             store.start()
@@ -50,18 +64,46 @@ struct ContentView: View {
         }
     }
 
-    private var sidebar: some View {
+    @ViewBuilder
+    private var feedRoot: some View {
+        if horizontalSizeClass == .compact {
+            NavigationStack {
+                feedList
+            }
+        } else {
+            NavigationSplitView {
+                feedList
+            } detail: {
+                detail
+            }
+        }
+    }
+
+    private var agentsRoot: some View {
+        NavigationStack {
+            List {
+                agentSelectionSection
+            }
+            .navigationTitle("Agents")
+        }
+    }
+
+    private var feedList: some View {
         List {
             connectionSection
-            agentSelectionSection
             threadsSection
         }
-        .navigationTitle("AgentChat")
+        .navigationTitle("Feed")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                feedMenu
+            }
+        }
     }
 
     private var connectionSection: some View {
         Section("Connection") {
-            HStack {
+            HStack(spacing: 10) {
                 Circle()
                     .fill(store.connectionStatus.contains("Connected") || store.connectionStatus.contains("Synced") ? Color.green : Color.orange)
                     .frame(width: 10, height: 10)
@@ -103,7 +145,7 @@ struct ContentView: View {
     }
 
     private var agentSelectionSection: some View {
-        Section("Start Group Chat") {
+        Section("Available Agents") {
             if store.agents.isEmpty {
                 Text("Waiting for daemon agents…")
                     .foregroundStyle(.secondary)
@@ -115,6 +157,7 @@ struct ContentView: View {
                         HStack(spacing: 12) {
                             Image(systemName: store.isSelectedAgent(agent.agentID) ? "checkmark.circle.fill" : "circle")
                                 .foregroundStyle(store.isSelectedAgent(agent.agentID) ? Color.accentColor : Color.secondary)
+
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack {
                                     Text(agent.name)
@@ -134,14 +177,9 @@ struct ContentView: View {
                     .buttonStyle(.plain)
                 }
 
-                Button {
-                    store.createThreadWithSelectedAgents()
-                } label: {
-                    Label("Create Thread", systemImage: "plus.bubble.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(store.agents.filter(\.isOnline).isEmpty)
+                Text("Selected agents are used by Feed → menu → Create Thread / Add Agent.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -149,33 +187,52 @@ struct ContentView: View {
     private var threadsSection: some View {
         Section("Threads") {
             if store.threads.isEmpty {
-                Text("No threads yet")
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("No threads yet")
+                        .foregroundStyle(.secondary)
+                    Text("Use the top-right menu to create a new thread.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
             } else {
                 ForEach(Array(store.threads.enumerated()), id: \.element.threadID) { _, thread in
                     Button {
                         openThread(thread.threadID)
                     } label: {
-                        HStack(alignment: .top) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(thread.title ?? thread.threadID)
-                                    .font(.body.weight(.medium))
-                                    .foregroundStyle(.primary)
-                                Text("\(thread.participantCount) participants · seq \(thread.lastThreadSeq)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if store.activeThreadID == thread.threadID {
-                                Image(systemName: "bubble.left.and.bubble.right.fill")
-                                    .foregroundStyle(Color.accentColor)
-                            }
-                        }
-                        .padding(.vertical, 4)
+                        ThreadFeedRow(thread: thread, isActive: store.activeThreadID == thread.threadID)
                     }
                     .buttonStyle(.plain)
                 }
             }
+        }
+    }
+
+    private var feedMenu: some View {
+        Menu {
+            Button {
+                store.createThreadWithSelectedAgents()
+                selectedTab = .feed
+            } label: {
+                Label("Create Thread", systemImage: "plus.bubble")
+            }
+            .disabled(store.agents.filter(\.isOnline).isEmpty)
+
+            Button {
+                store.addSelectedAgentsToActiveThread()
+                selectedTab = .feed
+            } label: {
+                Label("Add Agent", systemImage: "person.badge.plus")
+            }
+            .disabled(store.activeThreadID == nil || store.agents.filter(\.isOnline).isEmpty)
+
+            Button {
+                isScannerPresented = true
+            } label: {
+                Label("Scan", systemImage: "qrcode.viewfinder")
+            }
+        } label: {
+            Image(systemName: "plus.circle.fill")
         }
     }
 
@@ -191,16 +248,16 @@ struct ContentView: View {
                 }
                 .navigationTitle(snapshot.title ?? snapshot.threadID)
             } else if store.activeThreadID != nil {
-                ContentUnavailableView(
-                    "Loading Thread",
+                UnavailableStateView(
+                    title: "Loading Thread",
                     systemImage: "clock.arrow.trianglehead.2.counterclockwise.rotate.90",
-                    description: Text("Waiting for the daemon to attach and replay the thread timeline.")
+                    message: "Waiting for the daemon to attach and replay the thread timeline."
                 )
             } else {
-                ContentUnavailableView(
-                    "No Active Thread",
+                UnavailableStateView(
+                    title: "No Active Thread",
                     systemImage: "bubble.left.and.bubble.right",
-                    description: Text("Create a thread from the sidebar, then add agents and start chatting through the daemon.")
+                    message: "Open a thread from Feed, or create one from Agents."
                 )
             }
         }
@@ -245,7 +302,7 @@ struct ContentView: View {
                 .padding(20)
             }
             .background(Color(uiColor: .systemGroupedBackground))
-            .onChange(of: store.timeline.count) { _, _ in
+            .onChange(of: store.timeline.count) { _ in
                 if let lastID = store.timeline.last?.id {
                     withAnimation(.easeOut(duration: 0.2)) {
                         proxy.scrollTo(lastID, anchor: .bottom)
@@ -331,6 +388,74 @@ struct ContentView: View {
 
 private struct CompactPresentedThread: Identifiable {
     let id: String
+}
+
+private struct ThreadFeedRow: View {
+    let thread: DaemonThreadSummary
+    let isActive: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.12))
+                    .frame(width: 52, height: 52)
+
+                Image(systemName: thread.participantCount > 1 ? "person.2.fill" : "message.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(thread.title ?? thread.threadID)
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    Spacer(minLength: 8)
+
+                    if isActive {
+                        Image(systemName: "bubble.left.and.bubble.right.fill")
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
+
+                Text("\(thread.participantCount) participants · seq \(thread.lastThreadSeq)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Text(thread.state.replacingOccurrences(of: "_", with: " ").capitalized)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct UnavailableStateView: View {
+    let title: String
+    let systemImage: String
+    let message: String
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: systemImage)
+                .font(.system(size: 42, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.title3.weight(.semibold))
+            Text(message)
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
+    }
 }
 
 private struct TimelineBubble: View {
