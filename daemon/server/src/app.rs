@@ -95,9 +95,13 @@ impl AppProtocolSession {
         let setups = setup?;
         let (response_tx, _) = broadcast::channel::<ResponseEvent>(1024);
         let sessions_dir = session_store.borrow().sessions_dir().to_path_buf();
+        let threads_dir = sessions_dir
+            .parent()
+            .map(|parent| parent.join("threads"))
+            .unwrap_or_else(|| PathBuf::from(".agentchat").join("threads"));
         let session_event_log = Rc::new(RefCell::new(SessionEventLog::new(sessions_dir)));
         let thread_store = Rc::new(RefCell::new(ThreadStore::new()));
-        let thread_event_log = Rc::new(RefCell::new(ThreadEventLog::new()));
+        let thread_event_log = Rc::new(RefCell::new(ThreadEventLog::new(threads_dir)));
         let internal_sessions = Rc::new(RefCell::new(HashMap::<
             String,
             mpsc::UnboundedSender<SessionNotification>,
@@ -237,8 +241,11 @@ impl AppProtocolSession {
             ClientMessage::ListThreads => {
                 self.handle_list_threads().await;
             }
-            ClientMessage::AttachThread { thread_id } => {
-                self.handle_attach_thread(thread_id).await;
+            ClientMessage::AttachThread {
+                thread_id,
+                after_seq,
+            } => {
+                self.handle_attach_thread(thread_id, after_seq).await;
             }
             ClientMessage::AddThreadParticipant { thread_id, agent_id } => {
                 self.handle_add_thread_participant(thread_id, agent_id).await;
@@ -466,7 +473,7 @@ impl AppProtocolSession {
         let _ = self.response_tx.send(ResponseEvent::ThreadList { threads });
     }
 
-    async fn handle_attach_thread(&self, thread_id: String) {
+    async fn handle_attach_thread(&self, thread_id: String, after_seq: Option<u64>) {
         let snapshot = match self.thread_store.borrow().get_thread(&thread_id).cloned() {
             Some(thread) => self.build_thread_snapshot(&thread),
             None => {
@@ -480,6 +487,26 @@ impl AppProtocolSession {
             }
         };
 
+        let tail_seq = snapshot.last_thread_seq;
+        let replay_after = after_seq.unwrap_or(tail_seq);
+        if replay_after > tail_seq {
+            let _ = self.response_tx.send(ResponseEvent::Error {
+                session_id: None,
+                event_seq: None,
+                code: "thread_replay_after_seq_ahead_of_tail".into(),
+                message: format!(
+                    "requested after_seq {} is ahead of current thread tail {}",
+                    replay_after, tail_seq
+                ),
+            });
+            return;
+        }
+
+        let replay_events = self
+            .thread_event_log
+            .borrow()
+            .replay_after(&thread_id, replay_after);
+
         let _ = self
             .response_tx
             .send(ResponseEvent::ThreadAttached {
@@ -488,6 +515,13 @@ impl AppProtocolSession {
         let _ = self
             .response_tx
             .send(ResponseEvent::ThreadSnapshot { snapshot });
+        for event in replay_events {
+            let _ = self.response_tx.send(event);
+        }
+        let _ = self.response_tx.send(ResponseEvent::ThreadReplayComplete {
+            thread_id,
+            last_thread_seq: tail_seq,
+        });
     }
 
     async fn handle_add_thread_participant(&mut self, thread_id: String, agent_id: String) {
@@ -543,10 +577,16 @@ impl AppProtocolSession {
         };
 
         let participant = self.build_thread_participant(&participant);
-        let _ = self.response_tx.send(ResponseEvent::ThreadParticipantAdded {
-            thread_id,
-            participant,
-        });
+        let thread_seq = self.thread_event_log.borrow_mut().next_seq(&thread_id);
+        journal_and_broadcast_thread_event(
+            &self.thread_event_log,
+            &self.response_tx,
+            ResponseEvent::ThreadParticipantAdded {
+                thread_id,
+                thread_seq,
+                participant,
+            },
+        );
     }
 
     async fn handle_remove_thread_participant(&mut self, thread_id: String, participant_id: String) {
@@ -598,10 +638,16 @@ impl AppProtocolSession {
             self.created_sessions.retain(|created| created != &session_id);
         }
 
-        let _ = self.response_tx.send(ResponseEvent::ThreadParticipantRemoved {
-            thread_id,
-            participant_id,
-        });
+        let thread_seq = self.thread_event_log.borrow_mut().next_seq(&thread_id);
+        journal_and_broadcast_thread_event(
+            &self.thread_event_log,
+            &self.response_tx,
+            ResponseEvent::ThreadParticipantRemoved {
+                thread_id,
+                thread_seq,
+                participant_id,
+            },
+        );
     }
 
     async fn handle_send_thread_message(
@@ -640,18 +686,22 @@ impl AppProtocolSession {
             .map(|participant| participant.participant_id.clone())
             .collect::<Vec<_>>();
         let thread_seq = self.thread_event_log.borrow_mut().next_seq(&thread_id);
-        let _ = self.response_tx.send(ResponseEvent::ThreadMessage {
-            thread_id: thread_id.clone(),
-            thread_seq,
-            message_id: format!("message-{}", Uuid::new_v4().simple()),
-            sender: ThreadSender {
-                kind: ParticipantKind::Human,
-                participant_id: "participant-user".into(),
-                display_name: "You".into(),
+        journal_and_broadcast_thread_event(
+            &self.thread_event_log,
+            &self.response_tx,
+            ResponseEvent::ThreadMessage {
+                thread_id: thread_id.clone(),
+                thread_seq,
+                message_id: format!("message-{}", Uuid::new_v4().simple()),
+                sender: ThreadSender {
+                    kind: ParticipantKind::Human,
+                    participant_id: "participant-user".into(),
+                    display_name: "You".into(),
+                },
+                content: content.clone(),
+                target_participant_ids: targets,
             },
-            content: content.clone(),
-            target_participant_ids: targets,
-        });
+        );
 
         for participant in participants {
             if let Some(session_id) = participant.session_id {
@@ -1134,7 +1184,7 @@ fn maybe_broadcast_thread_event_for_session_event(
         },
         _ => return,
     };
-    let _ = response_tx.send(thread_event);
+    journal_and_broadcast_thread_event(thread_event_log, response_tx, thread_event);
 }
 
 fn journal_and_broadcast_event(
@@ -1144,6 +1194,16 @@ fn journal_and_broadcast_event(
 ) {
     persist_session_event(session_event_log, &event);
     session_event_log.borrow_mut().append(event.clone());
+    let _ = response_tx.send(event);
+}
+
+fn journal_and_broadcast_thread_event(
+    thread_event_log: &Rc<RefCell<ThreadEventLog>>,
+    response_tx: &broadcast::Sender<ResponseEvent>,
+    event: ResponseEvent,
+) {
+    persist_thread_event(thread_event_log, &event);
+    thread_event_log.borrow_mut().append(event.clone());
     let _ = response_tx.send(event);
 }
 
@@ -1190,6 +1250,54 @@ fn persist_session_event(session_event_log: &Rc<RefCell<SessionEventLog>>, event
             warn!(
                 "failed to append session event log for {}: {}",
                 session_id, err
+            );
+        }
+    });
+}
+
+fn persist_thread_event(thread_event_log: &Rc<RefCell<ThreadEventLog>>, event: &ResponseEvent) {
+    let Some(thread_id) = event.thread_id().map(|id| id.to_string()) else {
+        return;
+    };
+
+    let Some(json) = serialize_event(event) else {
+        return;
+    };
+
+    let path = thread_event_log.borrow().event_log_path(&thread_id);
+    tokio::task::spawn_local(async move {
+        if let Some(parent) = path.parent() {
+            if let Err(err) = tokio::fs::create_dir_all(parent).await {
+                warn!(
+                    "failed to create thread event log dir for {}: {}",
+                    thread_id, err
+                );
+                return;
+            }
+        }
+
+        let line = format!("{json}\n");
+        let mut file = match tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .await
+        {
+            Ok(file) => file,
+            Err(err) => {
+                warn!(
+                    "failed to open thread event log for {}: {}",
+                    thread_id, err
+                );
+                return;
+            }
+        };
+
+        use tokio::io::AsyncWriteExt as _;
+        if let Err(err) = file.write_all(line.as_bytes()).await {
+            warn!(
+                "failed to append thread event log for {}: {}",
+                thread_id, err
             );
         }
     });

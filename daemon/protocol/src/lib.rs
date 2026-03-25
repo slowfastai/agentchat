@@ -231,15 +231,23 @@ pub enum ResponseEvent {
     /// Compact snapshot of a live thread.
     ThreadSnapshot { snapshot: ThreadSnapshot },
 
+    /// Replay handoff is complete and live thread streaming resumes.
+    ThreadReplayComplete {
+        thread_id: String,
+        last_thread_seq: u64,
+    },
+
     /// Agent participant added to a thread.
     ThreadParticipantAdded {
         thread_id: String,
+        thread_seq: u64,
         participant: ThreadParticipant,
     },
 
     /// Participant removed from a thread.
     ThreadParticipantRemoved {
         thread_id: String,
+        thread_seq: u64,
         participant_id: String,
     },
 
@@ -401,6 +409,7 @@ impl ResponseEvent {
             | ResponseEvent::ThreadList { .. }
             | ResponseEvent::ThreadAttached { .. }
             | ResponseEvent::ThreadSnapshot { .. }
+            | ResponseEvent::ThreadReplayComplete { .. }
             | ResponseEvent::ThreadParticipantAdded { .. }
             | ResponseEvent::ThreadParticipantRemoved { .. }
             | ResponseEvent::ThreadMessage { .. }
@@ -411,6 +420,38 @@ impl ResponseEvent {
             | ResponseEvent::SessionList { .. }
             | ResponseEvent::SkillList { .. }
             | ResponseEvent::SkillContent { .. } => None,
+        }
+    }
+
+    pub fn thread_id(&self) -> Option<&str> {
+        match self {
+            ResponseEvent::ThreadCreated { thread_id, .. }
+            | ResponseEvent::ThreadAttached { thread_id, .. }
+            | ResponseEvent::ThreadReplayComplete { thread_id, .. }
+            | ResponseEvent::ThreadParticipantAdded { thread_id, .. }
+            | ResponseEvent::ThreadParticipantRemoved { thread_id, .. }
+            | ResponseEvent::ThreadMessage { thread_id, .. }
+            | ResponseEvent::ThreadAgentDelta { thread_id, .. }
+            | ResponseEvent::ThreadAgentPlanUpdate { thread_id, .. }
+            | ResponseEvent::ThreadAgentToolUpdate { thread_id, .. }
+            | ResponseEvent::ThreadAgentTurnEnd { thread_id, .. } => Some(thread_id),
+            ResponseEvent::ThreadSnapshot { snapshot, .. } => Some(&snapshot.thread_id),
+            ResponseEvent::SessionCreated { .. }
+            | ResponseEvent::AgentList { .. }
+            | ResponseEvent::ThreadList { .. }
+            | ResponseEvent::SessionList { .. }
+            | ResponseEvent::SessionAttached { .. }
+            | ResponseEvent::SessionSnapshot { .. }
+            | ResponseEvent::SessionClosed { .. }
+            | ResponseEvent::SessionReplayComplete { .. }
+            | ResponseEvent::Delta { .. }
+            | ResponseEvent::PlanUpdate { .. }
+            | ResponseEvent::ToolUpdate { .. }
+            | ResponseEvent::TurnEnd { .. }
+            | ResponseEvent::SkillList { .. }
+            | ResponseEvent::SkillContent { .. }
+            | ResponseEvent::DistillationStatus { .. }
+            | ResponseEvent::Error { .. } => None,
         }
     }
 
@@ -432,6 +473,7 @@ impl ResponseEvent {
             | ResponseEvent::ThreadList { .. }
             | ResponseEvent::ThreadAttached { .. }
             | ResponseEvent::ThreadSnapshot { .. }
+            | ResponseEvent::ThreadReplayComplete { .. }
             | ResponseEvent::ThreadParticipantAdded { .. }
             | ResponseEvent::ThreadParticipantRemoved { .. }
             | ResponseEvent::ThreadMessage { .. }
@@ -442,6 +484,38 @@ impl ResponseEvent {
             | ResponseEvent::SessionList { .. }
             | ResponseEvent::SkillList { .. }
             | ResponseEvent::SkillContent { .. } => None,
+        }
+    }
+
+    pub fn thread_seq(&self) -> Option<u64> {
+        match self {
+            ResponseEvent::ThreadParticipantAdded { thread_seq, .. }
+            | ResponseEvent::ThreadParticipantRemoved { thread_seq, .. }
+            | ResponseEvent::ThreadMessage { thread_seq, .. }
+            | ResponseEvent::ThreadAgentDelta { thread_seq, .. }
+            | ResponseEvent::ThreadAgentPlanUpdate { thread_seq, .. }
+            | ResponseEvent::ThreadAgentToolUpdate { thread_seq, .. }
+            | ResponseEvent::ThreadAgentTurnEnd { thread_seq, .. } => Some(*thread_seq),
+            ResponseEvent::SessionCreated { .. }
+            | ResponseEvent::AgentList { .. }
+            | ResponseEvent::ThreadCreated { .. }
+            | ResponseEvent::ThreadList { .. }
+            | ResponseEvent::ThreadAttached { .. }
+            | ResponseEvent::ThreadSnapshot { .. }
+            | ResponseEvent::ThreadReplayComplete { .. }
+            | ResponseEvent::SessionList { .. }
+            | ResponseEvent::SessionAttached { .. }
+            | ResponseEvent::SessionSnapshot { .. }
+            | ResponseEvent::SessionClosed { .. }
+            | ResponseEvent::SessionReplayComplete { .. }
+            | ResponseEvent::Delta { .. }
+            | ResponseEvent::PlanUpdate { .. }
+            | ResponseEvent::ToolUpdate { .. }
+            | ResponseEvent::TurnEnd { .. }
+            | ResponseEvent::SkillList { .. }
+            | ResponseEvent::SkillContent { .. }
+            | ResponseEvent::DistillationStatus { .. }
+            | ResponseEvent::Error { .. } => None,
         }
     }
 }
@@ -471,7 +545,11 @@ pub enum ClientMessage {
     /// List live threads known to the daemon.
     ListThreads,
     /// Attach the current client connection to an existing thread.
-    AttachThread { thread_id: String },
+    AttachThread {
+        thread_id: String,
+        #[serde(default)]
+        after_seq: Option<u64>,
+    },
     /// Add a new agent-backed participant to an existing thread.
     AddThreadParticipant { thread_id: String, agent_id: String },
     /// Remove a participant from an existing thread.
@@ -541,6 +619,7 @@ mod tests {
             ClientMessage::ListThreads,
             ClientMessage::AttachThread {
                 thread_id: "thread-1".into(),
+                after_seq: Some(2),
             },
             ClientMessage::AddThreadParticipant {
                 thread_id: "thread-1".into(),
@@ -637,8 +716,13 @@ mod tests {
                     }],
                 },
             },
+            ResponseEvent::ThreadReplayComplete {
+                thread_id: "thread-1".into(),
+                last_thread_seq: 5,
+            },
             ResponseEvent::ThreadParticipantAdded {
                 thread_id: "thread-1".into(),
+                thread_seq: 6,
                 participant: ThreadParticipant {
                     participant_id: "participant-1".into(),
                     kind: ParticipantKind::Agent,
@@ -650,6 +734,7 @@ mod tests {
             },
             ResponseEvent::ThreadParticipantRemoved {
                 thread_id: "thread-1".into(),
+                thread_seq: 7,
                 participant_id: "participant-1".into(),
             },
             ResponseEvent::ThreadMessage {

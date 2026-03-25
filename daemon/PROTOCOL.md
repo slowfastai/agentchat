@@ -261,10 +261,16 @@ Success response:
 
 Attach the current connection to an existing thread.
 
-Request:
+Request without replay:
 
 ```json
 {"type":"attach_thread","thread_id":"thread-1"}
+```
+
+Request with replay cursor:
+
+```json
+{"type":"attach_thread","thread_id":"thread-1","after_seq":3}
 ```
 
 Success responses:
@@ -304,6 +310,27 @@ Success responses:
 }
 ```
 
+If `after_seq` is provided and older than the current tail, the daemon replays all thread events
+with `thread_seq > after_seq`, then sends:
+
+```json
+{
+  "type": "thread_replay_complete",
+  "thread_id": "thread-1",
+  "last_thread_seq": 5
+}
+```
+
+Error response when `after_seq` is ahead of the daemon tail:
+
+```json
+{
+  "type": "error",
+  "code": "thread_replay_after_seq_ahead_of_tail",
+  "message": "requested after_seq 999 is ahead of current thread tail 5"
+}
+```
+
 ## `add_thread_participant`
 
 Add an agent-backed participant to an existing thread. The daemon creates a backing live session automatically.
@@ -320,6 +347,7 @@ Success response:
 {
   "type": "thread_participant_added",
   "thread_id": "thread-1",
+  "thread_seq": 1,
   "participant": {
     "participant_id": "participant-1",
     "kind": "agent",
@@ -397,7 +425,8 @@ Then the daemon emits thread-scoped agent events such as:
 Notes:
 - The daemon still emits session-scoped events for the backing sessions.
 - Thread events are the recommended stream for group chat UI.
-- Thread replay is not implemented yet; use `attach_thread` for snapshot-only rebuilds in this phase.
+- Thread-scoped timeline events are appended under `.agentchat/threads/<thread_id>.events.jsonl`.
+- `attach_thread { after_seq }` is the recommended reconnect path for group chat UI.
 
 ## `list_sessions`
 
