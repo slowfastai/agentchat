@@ -1,5 +1,33 @@
 import SwiftUI
 
+enum AppColors {
+    static var onlineStatus: Color {
+        Color(red: 0.3, green: 0.85, blue: 0.5)
+    }
+
+    static var unreadBadge: Color {
+        Color(red: 1.0, green: 0.35, blue: 0.35)
+    }
+
+    static var userBubble: Color {
+        Color(red: 0.15, green: 0.45, blue: 0.85)
+    }
+}
+
+enum AppSpacing {
+    static let xs: CGFloat = 6
+    static let sm: CGFloat = 10
+    static let md: CGFloat = 16
+    static let lg: CGFloat = 24
+    static let xl: CGFloat = 32
+}
+
+enum AppRadius {
+    static let card: CGFloat = 18
+    static let bubble: CGFloat = 18
+    static let pill: CGFloat = 999
+}
+
 struct IssueWorkspaceView: View {
     @EnvironmentObject private var store: DemoStore
     let issueID: UUID
@@ -188,7 +216,7 @@ private struct UserMessageBubble: View {
                 .multilineTextAlignment(.leading)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
-                .background(Color.blue, in: RoundedRectangle(cornerRadius: AppRadius.bubble, style: .continuous))
+                .background(AppColors.userBubble, in: RoundedRectangle(cornerRadius: AppRadius.bubble, style: .continuous))
                 .foregroundStyle(.white)
             Text(AppFormatters.timeString(from: timestamp))
                 .font(.caption2)
