@@ -4,6 +4,11 @@ import SwiftUI
 
 @MainActor
 final class DaemonChatStore: ObservableObject {
+    private static let pinnedThreadsKey = "agentchat_pinned_thread_ids"
+    private static let hiddenThreadsKey = "agentchat_hidden_thread_ids"
+    private static let knownAgentsKey = "agentchat_known_agents"
+    private static let selectedAgentsKey = "agentchat_selected_agent_ids"
+
     @Published var connectionStatus = "Not configured"
     @Published var agents: [DaemonAgentSummary] = []
     @Published var threads: [DaemonThreadSummary] = []
@@ -24,10 +29,7 @@ final class DaemonChatStore: ObservableObject {
         !daemonURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private let pinnedThreadsKey = "agentchat_pinned_thread_ids"
-    private let hiddenThreadsKey = "agentchat_hidden_thread_ids"
-    private let selectedAgentsKey = "agentchat_selected_agent_ids"
-
+    private let defaults: UserDefaults
     private var socketTask: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var pendingThreadAgentIDs: [String] = []
@@ -38,13 +40,14 @@ final class DaemonChatStore: ObservableObject {
     private var snapshotsByThread: [String: DaemonThreadSnapshot] = [:]
     private var timelineByThread: [String: [DaemonTimelineEntry]] = [:]
     private var cursorByThread: [String: UInt64] = [:]
-    private var legacyAssistantMessages = LegacyAssistantMessageReducer()
+    private var assistantTurns = AssistantTurnReducer()
 
-    init() {
-        let defaults = UserDefaults.standard
-        self.pinnedThreadIDs = Set(defaults.stringArray(forKey: pinnedThreadsKey) ?? [])
-        self.hiddenThreadIDs = Set(defaults.stringArray(forKey: hiddenThreadsKey) ?? [])
-        self.selectedAgentIDs = Set(defaults.stringArray(forKey: selectedAgentsKey) ?? [])
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        self.pinnedThreadIDs = Set(defaults.stringArray(forKey: Self.pinnedThreadsKey) ?? [])
+        self.hiddenThreadIDs = Set(defaults.stringArray(forKey: Self.hiddenThreadsKey) ?? [])
+        self.agents = Self.loadKnownAgents(from: defaults)
+        self.selectedAgentIDs = Set(defaults.stringArray(forKey: Self.selectedAgentsKey) ?? [])
         refreshIdleConnectionStatus()
     }
 
@@ -303,14 +306,7 @@ final class DaemonChatStore: ObservableObject {
             let envelope = try decoder.decode(DaemonEnvelope.self, from: data)
             switch envelope.type {
             case "agent_list":
-                agents = try decoder.decode(AgentListEvent.self, from: data).agents
-                    .sorted {
-                        $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
-                    }
-                if selectedAgentIDs.isEmpty {
-                    selectedAgentIDs = Set(agents.filter(\.isOnline).map(\.agentID))
-                    persistSelectedAgents()
-                }
+                upsertAgents(try decoder.decode(AgentListEvent.self, from: data).agents)
             case "thread_created":
                 let event = try decoder.decode(ThreadCreatedEvent.self, from: data)
                 let agentIDsToAdd = pendingThreadAgentIDs
@@ -437,45 +433,23 @@ final class DaemonChatStore: ObservableObject {
                 touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
             case "thread_assistant_message":
                 let event = try decoder.decode(ThreadAssistantMessageEvent.self, from: data)
-                discardActiveLegacyAssistantMessage(threadID: event.threadID, sessionID: event.sessionID)
                 upsertAssistantMessage(event)
                 touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
             case "thread_agent_delta":
                 let event = try decoder.decode(ThreadAgentDeltaEvent.self, from: data)
-                upsertLegacyAssistantDelta(event)
+                upsertAssistantDelta(event)
                 touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
             case "thread_agent_tool_update":
                 let event = try decoder.decode(ThreadAgentToolUpdateEvent.self, from: data)
-                let body = event.content.map { "\(event.title) · \(event.status)\n\($0)" } ?? "\(event.title) · \(event.status)"
-                appendTimeline(
-                    DaemonTimelineEntry(
-                        threadID: event.threadID,
-                        threadSeq: event.threadSeq,
-                        kind: .tool,
-                        title: agentDisplayName(for: event.agentID),
-                        body: body,
-                        tintName: tintName(for: event.agentID)
-                    ),
-                    to: event.threadID
-                )
+                upsertAssistantToolUpdate(event)
                 touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
             case "thread_agent_plan_update":
                 let event = try decoder.decode(ThreadAgentPlanUpdateEvent.self, from: data)
-                appendTimeline(
-                    DaemonTimelineEntry(
-                        threadID: event.threadID,
-                        threadSeq: event.threadSeq,
-                        kind: .plan,
-                        title: agentDisplayName(for: event.agentID),
-                        body: String(describing: event.planJSON),
-                        tintName: tintName(for: event.agentID)
-                    ),
-                    to: event.threadID
-                )
+                upsertAssistantPlanUpdate(event)
                 touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
             case "thread_agent_turn_end":
                 let event = try decoder.decode(ThreadAgentTurnEndEvent.self, from: data)
-                finalizeLegacyAssistantMessage(event)
+                finalizeAssistantTurn(event)
                 touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
             case "error":
                 let event = try decoder.decode(ErrorEvent.self, from: data)
@@ -505,59 +479,48 @@ final class DaemonChatStore: ObservableObject {
         }
     }
 
-    private func removeTimelineEntry(id: String, from threadID: String) {
-        guard var entries = timelineByThread[threadID] else { return }
-        entries.removeAll { $0.id == id }
-        timelineByThread[threadID] = entries
-        if activeThreadID == threadID {
-            timeline = entries
-        }
-    }
-
     private func upsertAssistantMessage(_ event: ThreadAssistantMessageEvent) {
-        let existing = timelineByThread[event.threadID]?.first(where: { $0.id == event.messageID })
-        let entry = DaemonTimelineEntry(
-            id: event.messageID,
-            sortThreadSeq: existing?.sortThreadSeq ?? event.threadSeq,
-            lastThreadSeq: event.threadSeq,
-            kind: .assistantTurn,
-            title: agentDisplayName(for: event.agentID),
-            body: event.response,
-            thinkingBody: event.thinking.isEmpty ? nil : event.thinking,
-            status: event.state,
-            tintName: tintName(for: event.agentID)
-        )
-        appendTimeline(entry, to: event.threadID)
-    }
-
-    private func upsertLegacyAssistantDelta(_ event: ThreadAgentDeltaEvent) {
-        guard let state = legacyAssistantMessages.consume(delta: event) else {
-            return
-        }
+        let state = assistantTurns.consume(snapshot: event)
         appendTimeline(
-            state.timelineEntry(status: "streaming", tintName: tintName(for: state.agentID)),
+            state.timelineEntry(tintName: tintName(for: state.agentID)),
             to: event.threadID
         )
     }
 
-    private func finalizeLegacyAssistantMessage(_ event: ThreadAgentTurnEndEvent) {
-        guard let state = legacyAssistantMessages.finish(turnEnd: event) else {
+    private func upsertAssistantDelta(_ event: ThreadAgentDeltaEvent) {
+        guard let state = assistantTurns.consume(delta: event) else {
             return
         }
         appendTimeline(
-            state.timelineEntry(status: "completed", tintName: tintName(for: state.agentID)),
+            state.timelineEntry(tintName: tintName(for: state.agentID)),
             to: event.threadID
         )
     }
 
-    private func discardActiveLegacyAssistantMessage(threadID: String, sessionID: String) {
-        guard let state = legacyAssistantMessages.removeActiveState(
-            threadID: threadID,
-            sessionID: sessionID
-        ) else {
+    private func upsertAssistantToolUpdate(_ event: ThreadAgentToolUpdateEvent) {
+        let state = assistantTurns.consume(toolUpdate: event)
+        appendTimeline(
+            state.timelineEntry(tintName: tintName(for: state.agentID)),
+            to: event.threadID
+        )
+    }
+
+    private func upsertAssistantPlanUpdate(_ event: ThreadAgentPlanUpdateEvent) {
+        let state = assistantTurns.consume(planUpdate: event)
+        appendTimeline(
+            state.timelineEntry(tintName: tintName(for: state.agentID)),
+            to: event.threadID
+        )
+    }
+
+    private func finalizeAssistantTurn(_ event: ThreadAgentTurnEndEvent) {
+        guard let state = assistantTurns.finish(turnEnd: event) else {
             return
         }
-        removeTimelineEntry(id: state.entryID, from: threadID)
+        appendTimeline(
+            state.timelineEntry(tintName: tintName(for: state.agentID)),
+            to: event.threadID
+        )
     }
 
     private func upsertParticipant(_ participant: DaemonThreadParticipant, in threadID: String) {
@@ -631,7 +594,7 @@ final class DaemonChatStore: ObservableObject {
         snapshotsByThread.removeValue(forKey: threadID)
         timelineByThread.removeValue(forKey: threadID)
         cursorByThread.removeValue(forKey: threadID)
-        legacyAssistantMessages.removeStates(for: threadID)
+        assistantTurns.removeStates(for: threadID)
 
         if activeThreadID == threadID {
             activeThreadID = nil
@@ -661,13 +624,12 @@ final class DaemonChatStore: ObservableObject {
     }
 
     private func persistThreadPreferences() {
-        let defaults = UserDefaults.standard
-        defaults.set(Array(pinnedThreadIDs).sorted(), forKey: pinnedThreadsKey)
-        defaults.set(Array(hiddenThreadIDs).sorted(), forKey: hiddenThreadsKey)
+        defaults.set(Array(pinnedThreadIDs).sorted(), forKey: Self.pinnedThreadsKey)
+        defaults.set(Array(hiddenThreadIDs).sorted(), forKey: Self.hiddenThreadsKey)
     }
 
     private func persistSelectedAgents() {
-        UserDefaults.standard.set(Array(selectedAgentIDs).sorted(), forKey: selectedAgentsKey)
+        defaults.set(Array(selectedAgentIDs).sorted(), forKey: Self.selectedAgentsKey)
     }
 
     func tintName(for agentID: String?) -> String {
@@ -719,7 +681,8 @@ final class DaemonChatStore: ObservableObject {
 
     private func markAgentsOffline() {
         guard !agents.isEmpty else { return }
-        agents = agents.map { $0.withStatus("offline") }
+        agents = AgentRoster.markOffline(agents)
+        persistKnownAgents()
     }
 
     private func handleConnectionFailure(message: String) {
@@ -746,6 +709,35 @@ final class DaemonChatStore: ObservableObject {
         connectionStatus = hasConfiguredDaemonURL ? "Not connected" : "Not configured"
     }
 
+    private func upsertAgents(_ incomingAgents: [DaemonAgentSummary]) {
+        agents = AgentRoster.merge(knownAgents: agents, incomingAgents: incomingAgents)
+        persistKnownAgents()
+
+        if selectedAgentIDs.isEmpty {
+            selectedAgentIDs = Set(agents.filter(\.isOnline).map(\.agentID))
+            persistSelectedAgents()
+        }
+    }
+
+    private func persistKnownAgents() {
+        guard let data = try? JSONEncoder().encode(agents) else { return }
+        defaults.set(data, forKey: Self.knownAgentsKey)
+    }
+
+    private static func loadKnownAgents(from defaults: UserDefaults) -> [DaemonAgentSummary] {
+        guard let data = defaults.data(forKey: Self.knownAgentsKey),
+              let agents = try? JSONDecoder().decode([DaemonAgentSummary].self, from: data)
+        else {
+            return []
+        }
+
+        // Persist the roster across launches, but never trust the last saved liveness.
+        return AgentRoster.markOffline(agents)
+    }
+
+    private func normalizedDaemonURL(from payload: String) -> String? {
+        parseScannedDaemonConnectionPayload(from: payload)?.url
+    }
     private func send<Request: Encodable>(_ request: Request) async {
         guard let socketTask else {
             markAgentsOffline()
@@ -795,4 +787,53 @@ func parseScannedDaemonConnectionPayload(from payload: String) -> ScannedDaemonC
         .filter { !$0.isEmpty } ?? []
 
     return ScannedDaemonConnectionPayload(url: urlItem, agentIDs: agentIDs)
+}
+
+enum AgentRoster {
+    nonisolated static func merge(
+        knownAgents: [DaemonAgentSummary],
+        incomingAgents: [DaemonAgentSummary]
+    ) -> [DaemonAgentSummary] {
+        var mergedByID = Dictionary(uniqueKeysWithValues: knownAgents.map { ($0.agentID, $0.withStatus("offline")) })
+
+        for agent in incomingAgents {
+            mergedByID[agent.agentID] = agent
+        }
+
+        return sorted(Array(mergedByID.values))
+    }
+
+    nonisolated static func markOffline(_ agents: [DaemonAgentSummary]) -> [DaemonAgentSummary] {
+        sorted(agents.map { $0.withStatus("offline") })
+    }
+
+    nonisolated static func sorted(_ agents: [DaemonAgentSummary]) -> [DaemonAgentSummary] {
+        agents.sorted(by: areInIncreasingOrder)
+    }
+
+    nonisolated private static func areInIncreasingOrder(_ lhs: DaemonAgentSummary, _ rhs: DaemonAgentSummary) -> Bool {
+        let lhsRank = statusRank(for: lhs.status)
+        let rhsRank = statusRank(for: rhs.status)
+        if lhsRank != rhsRank {
+            return lhsRank < rhsRank
+        }
+
+        let nameOrder = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+        if nameOrder != .orderedSame {
+            return nameOrder == .orderedAscending
+        }
+
+        return lhs.agentID.localizedCaseInsensitiveCompare(rhs.agentID) == .orderedAscending
+    }
+
+    nonisolated private static func statusRank(for status: String) -> Int {
+        switch status {
+        case "online":
+            return 0
+        case "offline":
+            return 2
+        default:
+            return 1
+        }
+    }
 }

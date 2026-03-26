@@ -38,6 +38,37 @@ enum JSONValue: Codable, Hashable {
         case .null: try container.encodeNil()
         }
     }
+
+    func prettyPrintedString() -> String {
+        let object = foundationObject
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(
+                  withJSONObject: object,
+                  options: [.prettyPrinted, .sortedKeys]
+              ),
+              let string = String(data: data, encoding: .utf8)
+        else {
+            return String(describing: self)
+        }
+        return string
+    }
+
+    private var foundationObject: Any {
+        switch self {
+        case .string(let value):
+            return value
+        case .number(let value):
+            return value
+        case .bool(let value):
+            return value
+        case .object(let value):
+            return value.mapValues { $0.foundationObject }
+        case .array(let value):
+            return value.map(\.foundationObject)
+        case .null:
+            return NSNull()
+        }
+    }
 }
 
 enum DaemonAgentFamily: String, Hashable {
@@ -186,7 +217,7 @@ struct DaemonAgentSummary: Codable, Identifiable, Hashable {
         return kindTitle
     }
 
-    func withStatus(_ status: String) -> Self {
+    nonisolated func withStatus(_ status: String) -> Self {
         Self(
             agentID: agentID,
             name: name,
@@ -559,6 +590,13 @@ struct SendThreadMessageRequest: Encodable {
     }
 }
 
+struct DaemonToolActivity: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let status: String
+    let content: String?
+}
+
 struct DaemonTimelineEntry: Identifiable, Hashable {
     enum Kind: String, Hashable {
         case user
@@ -576,6 +614,8 @@ struct DaemonTimelineEntry: Identifiable, Hashable {
     let title: String
     let body: String
     let thinkingBody: String?
+    let planBody: String?
+    let toolActivities: [DaemonToolActivity]
     let status: String?
     let tintName: String
 
@@ -586,6 +626,8 @@ struct DaemonTimelineEntry: Identifiable, Hashable {
         title: String,
         body: String,
         thinkingBody: String? = nil,
+        planBody: String? = nil,
+        toolActivities: [DaemonToolActivity] = [],
         status: String? = nil,
         tintName: String
     ) {
@@ -596,6 +638,8 @@ struct DaemonTimelineEntry: Identifiable, Hashable {
         self.title = title
         self.body = body
         self.thinkingBody = thinkingBody
+        self.planBody = planBody
+        self.toolActivities = toolActivities
         self.status = status
         self.tintName = tintName
     }
@@ -608,6 +652,8 @@ struct DaemonTimelineEntry: Identifiable, Hashable {
         title: String,
         body: String,
         thinkingBody: String? = nil,
+        planBody: String? = nil,
+        toolActivities: [DaemonToolActivity] = [],
         status: String? = nil,
         tintName: String
     ) {
@@ -618,38 +664,161 @@ struct DaemonTimelineEntry: Identifiable, Hashable {
         self.title = title
         self.body = body
         self.thinkingBody = thinkingBody
+        self.planBody = planBody
+        self.toolActivities = toolActivities
         self.status = status
         self.tintName = tintName
     }
 }
 
-struct LegacyAssistantMessageKey: Hashable {
+struct AssistantTurnKey: Hashable {
     let threadID: String
     let sessionID: String
 }
 
-struct LegacyAssistantMessageState: Equatable {
+struct AssistantTurnState: Equatable {
     let threadID: String
     let sessionID: String
     let entryID: String
     let sortThreadSeq: UInt64
-    let agentID: String
+    var agentID: String
     var lastThreadSeq: UInt64
     var thinking: String
     var response: String
+    var planBody: String?
+    var toolActivities: [DaemonToolActivity]
+    var status: String
 
-    init(delta event: ThreadAgentDeltaEvent) {
-        self.threadID = event.threadID
-        self.sessionID = event.sessionID
-        self.entryID = "legacy-\(event.threadID)-\(event.sessionID)-\(event.threadSeq)"
-        self.sortThreadSeq = event.threadSeq
-        self.agentID = event.agentID
-        self.lastThreadSeq = event.threadSeq
-        self.thinking = event.deltaType == "thinking" ? event.content : ""
-        self.response = event.deltaType == "text" ? event.content : ""
+    init(
+        threadID: String,
+        sessionID: String,
+        threadSeq: UInt64,
+        agentID: String,
+        status: String = "streaming"
+    ) {
+        self.threadID = threadID
+        self.sessionID = sessionID
+        self.entryID = "assistant-turn-\(threadID)-\(sessionID)-\(threadSeq)"
+        self.sortThreadSeq = threadSeq
+        self.agentID = agentID
+        self.lastThreadSeq = threadSeq
+        self.thinking = ""
+        self.response = ""
+        self.planBody = nil
+        self.toolActivities = []
+        self.status = status
     }
 
-    func timelineEntry(status: String, tintName: String) -> DaemonTimelineEntry {
+    init(delta event: ThreadAgentDeltaEvent) {
+        self.init(
+            threadID: event.threadID,
+            sessionID: event.sessionID,
+            threadSeq: event.threadSeq,
+            agentID: event.agentID
+        )
+        append(delta: event)
+    }
+
+    init(snapshot event: ThreadAssistantMessageEvent) {
+        self.init(
+            threadID: event.threadID,
+            sessionID: event.sessionID,
+            threadSeq: event.threadSeq,
+            agentID: event.agentID,
+            status: event.state
+        )
+    }
+
+    init(toolUpdate event: ThreadAgentToolUpdateEvent) {
+        self.init(
+            threadID: event.threadID,
+            sessionID: event.sessionID,
+            threadSeq: event.threadSeq,
+            agentID: event.agentID
+        )
+    }
+
+    init(planUpdate event: ThreadAgentPlanUpdateEvent) {
+        self.init(
+            threadID: event.threadID,
+            sessionID: event.sessionID,
+            threadSeq: event.threadSeq,
+            agentID: event.agentID
+        )
+    }
+
+    var isTerminal: Bool {
+        status == "completed" || status == "failed"
+    }
+
+    mutating func merge(snapshot event: ThreadAssistantMessageEvent) {
+        lastThreadSeq = max(lastThreadSeq, event.threadSeq)
+        agentID = event.agentID
+        thinking = event.thinking
+        response = event.response
+        status = event.state
+    }
+
+    mutating func append(delta event: ThreadAgentDeltaEvent) {
+        lastThreadSeq = max(lastThreadSeq, event.threadSeq)
+        agentID = event.agentID
+        switch event.deltaType {
+        case "thinking":
+            thinking.append(event.content)
+        case "text":
+            response.append(event.content)
+        default:
+            break
+        }
+        if !isTerminal {
+            status = "streaming"
+        }
+    }
+
+    mutating func updatePlan(_ event: ThreadAgentPlanUpdateEvent) {
+        lastThreadSeq = max(lastThreadSeq, event.threadSeq)
+        agentID = event.agentID
+        planBody = event.planJSON.prettyPrintedString()
+        if !isTerminal {
+            status = "streaming"
+        }
+    }
+
+    mutating func upsertTool(_ event: ThreadAgentToolUpdateEvent) {
+        lastThreadSeq = max(lastThreadSeq, event.threadSeq)
+        agentID = event.agentID
+
+        if let index = toolActivities.firstIndex(where: { $0.id == event.toolCallID }) {
+            let existing = toolActivities[index]
+            toolActivities[index] = DaemonToolActivity(
+                id: event.toolCallID,
+                title: event.title.isEmpty ? existing.title : event.title,
+                status: event.status.isEmpty ? existing.status : event.status,
+                content: event.content ?? existing.content
+            )
+        } else {
+            toolActivities.append(
+                DaemonToolActivity(
+                    id: event.toolCallID,
+                    title: event.title,
+                    status: event.status,
+                    content: event.content
+                )
+            )
+        }
+
+        if !isTerminal {
+            status = "streaming"
+        }
+    }
+
+    mutating func finish(turnEnd event: ThreadAgentTurnEndEvent) {
+        lastThreadSeq = max(lastThreadSeq, event.threadSeq)
+        agentID = event.agentID
+        status = "completed"
+    }
+
+    func timelineEntry(tintName: String) -> DaemonTimelineEntry {
         DaemonTimelineEntry(
             id: entryID,
             sortThreadSeq: sortThreadSeq,
@@ -658,28 +827,34 @@ struct LegacyAssistantMessageState: Equatable {
             title: agentID.capitalized,
             body: response,
             thinkingBody: thinking.isEmpty ? nil : thinking,
+            planBody: planBody,
+            toolActivities: toolActivities,
             status: status,
             tintName: tintName
         )
     }
 }
 
-struct LegacyAssistantMessageReducer {
-    private(set) var activeStates: [LegacyAssistantMessageKey: LegacyAssistantMessageState] = [:]
+struct AssistantTurnReducer {
+    private(set) var activeStates: [AssistantTurnKey: AssistantTurnState] = [:]
 
-    mutating func consume(delta event: ThreadAgentDeltaEvent) -> LegacyAssistantMessageState? {
-        let key = LegacyAssistantMessageKey(threadID: event.threadID, sessionID: event.sessionID)
+    mutating func consume(snapshot event: ThreadAssistantMessageEvent) -> AssistantTurnState {
+        let key = AssistantTurnKey(threadID: event.threadID, sessionID: event.sessionID)
+        var state = activeStates[key] ?? AssistantTurnState(snapshot: event)
+        state.merge(snapshot: event)
+        if state.isTerminal {
+            activeStates.removeValue(forKey: key)
+        } else {
+            activeStates[key] = state
+        }
+        return state
+    }
+
+    mutating func consume(delta event: ThreadAgentDeltaEvent) -> AssistantTurnState? {
+        let key = AssistantTurnKey(threadID: event.threadID, sessionID: event.sessionID)
 
         if var state = activeStates[key] {
-            state.lastThreadSeq = max(state.lastThreadSeq, event.threadSeq)
-            switch event.deltaType {
-            case "thinking":
-                state.thinking.append(event.content)
-            case "text":
-                state.response.append(event.content)
-            default:
-                break
-            }
+            state.append(delta: event)
             activeStates[key] = state
             return state
         }
@@ -688,24 +863,34 @@ struct LegacyAssistantMessageReducer {
             return nil
         }
 
-        let state = LegacyAssistantMessageState(delta: event)
+        let state = AssistantTurnState(delta: event)
         activeStates[key] = state
         return state
     }
 
-    mutating func finish(turnEnd event: ThreadAgentTurnEndEvent) -> LegacyAssistantMessageState? {
-        let key = LegacyAssistantMessageKey(threadID: event.threadID, sessionID: event.sessionID)
-        guard var state = activeStates.removeValue(forKey: key) else {
-            return nil
-        }
-        state.lastThreadSeq = max(state.lastThreadSeq, event.threadSeq)
+    mutating func consume(toolUpdate event: ThreadAgentToolUpdateEvent) -> AssistantTurnState {
+        let key = AssistantTurnKey(threadID: event.threadID, sessionID: event.sessionID)
+        var state = activeStates[key] ?? AssistantTurnState(toolUpdate: event)
+        state.upsertTool(event)
+        activeStates[key] = state
         return state
     }
 
-    mutating func removeActiveState(threadID: String, sessionID: String) -> LegacyAssistantMessageState? {
-        activeStates.removeValue(
-            forKey: LegacyAssistantMessageKey(threadID: threadID, sessionID: sessionID)
-        )
+    mutating func consume(planUpdate event: ThreadAgentPlanUpdateEvent) -> AssistantTurnState {
+        let key = AssistantTurnKey(threadID: event.threadID, sessionID: event.sessionID)
+        var state = activeStates[key] ?? AssistantTurnState(planUpdate: event)
+        state.updatePlan(event)
+        activeStates[key] = state
+        return state
+    }
+
+    mutating func finish(turnEnd event: ThreadAgentTurnEndEvent) -> AssistantTurnState? {
+        let key = AssistantTurnKey(threadID: event.threadID, sessionID: event.sessionID)
+        guard var state = activeStates.removeValue(forKey: key) else {
+            return nil
+        }
+        state.finish(turnEnd: event)
+        return state
     }
 
     mutating func removeStates(for threadID: String) {

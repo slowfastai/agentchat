@@ -1,4 +1,18 @@
 import Foundation
+import SwiftUI
+
+extension ColorToken {
+    var color: Color {
+        switch self {
+        case .blue: return .blue
+        case .purple: return .purple
+        case .green: return .green
+        case .orange: return .orange
+        case .red: return .red
+        case .gray: return .gray
+        }
+    }
+}
 
 enum SidebarDestination: String, CaseIterable, Hashable, Identifiable {
     case inbox

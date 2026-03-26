@@ -1,5 +1,15 @@
 import SwiftUI
 
+enum AppColors {
+    static var onlineStatus: Color {
+        Color(red: 0.3, green: 0.85, blue: 0.5)
+    }
+
+    static var unreadBadge: Color {
+        Color(red: 1.0, green: 0.35, blue: 0.35)
+    }
+}
+
 struct AgentListView: View {
     @EnvironmentObject private var store: DemoStore
     @State private var searchText = ""
@@ -148,7 +158,7 @@ private struct AgentFriendRow: View {
             if agent.isOnline {
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(Color.green)
+                        .fill(AppColors.onlineStatus)
                         .frame(width: 8, height: 8)
                     Text("online")
                         .font(.caption2)
