@@ -176,6 +176,7 @@ struct ContentView: View {
 
     @StateObject private var store = DaemonChatStore()
     @State private var draft = ""
+    @FocusState private var isComposerFocused: Bool
     @State private var daemonURLDraft = ""
     @State private var isScannerPresented = false
     @State private var compactPresentedThreadID: String?
@@ -573,14 +574,6 @@ struct ContentView: View {
                 .background(ChatScreenBackground().ignoresSafeArea())
             }
         }
-        .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") {
-                    dismissKeyboard()
-                }
-            }
-        }
     }
 
     private var activeClosableThread: DaemonThreadSummary? {
@@ -644,6 +637,8 @@ struct ContentView: View {
         guard !message.isEmpty else { return }
         draft = ""
         store.sendCurrentMessage(message)
+        isComposerFocused = false
+        dismissKeyboard()
     }
 
     private func dismissKeyboard() {
@@ -739,13 +734,10 @@ struct ContentView: View {
             HStack(alignment: .bottom, spacing: 12) {
                 VStack(alignment: .leading, spacing: 10) {
                     TextField("", text: $draft, axis: .vertical)
+                        .focused($isComposerFocused)
                         .textFieldStyle(.plain)
                         .lineLimit(1...6)
                         .foregroundStyle(theme.ink)
-                        .submitLabel(.send)
-                        .onSubmit {
-                            sendDraft()
-                        }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 18)
