@@ -734,10 +734,6 @@ struct ContentView: View {
                         .textFieldStyle(.plain)
                         .lineLimit(1...6)
                         .foregroundStyle(theme.ink)
-                        .submitLabel(.send)
-                        .onSubmit {
-                            sendDraft()
-                        }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 18)
