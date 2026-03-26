@@ -1,19 +1,32 @@
 import {
   buildAppRelayToken,
   buildDaemonRelayToken,
+  buildPairingTicket,
   extractBearerToken,
   hashRelaySecret,
+  parsePairingTicket,
   parseRelayToken,
 } from "./auth";
 import { DeviceHubDO } from "./device-hub";
 import { PairingIndexDO } from "./pairing-index";
-import type { DevBootstrapRequest, DevPairRequest, Env } from "./types";
+import type {
+  DevBootstrapRequest,
+  DevPairRequest,
+  Env,
+  PairingClaimRequest,
+  PairingOpenRequest,
+} from "./types";
 
 export { DeviceHubDO, PairingIndexDO };
 
 const INTERNAL_BOOTSTRAP_DAEMON_URL = "https://device-hub.internal/internal/bootstrap-daemon";
 const INTERNAL_REGISTER_APP_URL = "https://device-hub.internal/internal/register-app";
+const INTERNAL_OPEN_PAIRING_URL = "https://device-hub.internal/internal/open-pairing";
+const INTERNAL_CLAIM_PAIRING_URL = "https://device-hub.internal/internal/claim-pairing";
 const INTERNAL_WS_URL = "https://device-hub.internal/internal/ws";
+const DEFAULT_PAIRING_TTL_MS = 5 * 60 * 1000;
+const MIN_PAIRING_TTL_MS = 30 * 1000;
+const MAX_PAIRING_TTL_MS = 15 * 60 * 1000;
 
 export default {
   async fetch(request, env): Promise<Response> {
@@ -33,6 +46,14 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/v1/dev/pair") {
       return handleDevPair(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/pairing/open") {
+      return handlePairingOpen(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/pairing/claim") {
+      return handlePairingClaim(request, env);
     }
 
     return json({ error: "not_found" }, 404);
@@ -155,8 +176,119 @@ async function handleDevPair(request: Request, env: Env): Promise<Response> {
   });
 }
 
+async function handlePairingOpen(request: Request, env: Env): Promise<Response> {
+  const bearerToken = extractBearerToken(request);
+  if (!bearerToken) {
+    return json({ error: "missing_bearer_token" }, 401);
+  }
+
+  const parsedToken = parseRelayToken(bearerToken);
+  if (!parsedToken) {
+    return json({ error: "invalid_relay_token" }, 401);
+  }
+  if (parsedToken.role !== "daemon") {
+    return json({ error: "daemon_token_required" }, 403);
+  }
+
+  const payload = await readJson<PairingOpenRequest>(request);
+  const ttlMs = clampPairingTTL(payload?.ttl_ms);
+  const expiresAt = Date.now() + ttlMs;
+  const { pairingTicket, pairingId, secret } = buildPairingTicket(parsedToken.deviceId);
+  const ticketHash = await hashRelaySecret(secret);
+
+  const stub = deviceHubStub(env, parsedToken.deviceId);
+  const openResponse = await stub.fetch(
+    new Request(INTERNAL_OPEN_PAIRING_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        daemon_secret: parsedToken.secret,
+        pairing_id: pairingId,
+        ticket_hash: ticketHash,
+        expires_at: expiresAt,
+      }),
+    }),
+  );
+
+  if (!openResponse.ok) {
+    return proxyErrorResponse(openResponse, "pairing_open_failed");
+  }
+
+  return json({
+    pairing_ticket: pairingTicket,
+    expires_at: expiresAt,
+    ws_url: buildWebSocketUrl(request),
+  });
+}
+
+async function handlePairingClaim(request: Request, env: Env): Promise<Response> {
+  const payload = await readJson<PairingClaimRequest>(request);
+  if (!payload?.pairing_ticket) {
+    return json({ error: "pairing_ticket_required" }, 400);
+  }
+
+  const parsedTicket = parsePairingTicket(payload.pairing_ticket);
+  if (!parsedTicket) {
+    return json({ error: "invalid_pairing_ticket" }, 400);
+  }
+
+  const appInstallationId = payload.app_installation_id ?? crypto.randomUUID();
+  const appName = payload.app_name;
+  const { relayToken, secret } = buildAppRelayToken(
+    parsedTicket.deviceId,
+    appInstallationId,
+  );
+  const tokenHash = await hashRelaySecret(secret);
+
+  const stub = deviceHubStub(env, parsedTicket.deviceId);
+  const claimResponse = await stub.fetch(
+    new Request(INTERNAL_CLAIM_PAIRING_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        pairing_id: parsedTicket.pairingId,
+        ticket_secret: parsedTicket.secret,
+        app_installation_id: appInstallationId,
+        app_name: appName,
+        token_hash: tokenHash,
+      }),
+    }),
+  );
+
+  if (!claimResponse.ok) {
+    return proxyErrorResponse(claimResponse, "pairing_claim_failed");
+  }
+
+  return json({
+    device_id: parsedTicket.deviceId,
+    app_installation_id: appInstallationId,
+    peer_id: `app:${appInstallationId}`,
+    relay_token: relayToken,
+    ws_url: buildWebSocketUrl(request),
+  });
+}
+
 function deviceHubStub(env: Env, deviceId: string): DurableObjectStub {
   return env.DEVICE_HUB.get(env.DEVICE_HUB.idFromName(deviceId));
+}
+
+function clampPairingTTL(value: number | undefined): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_PAIRING_TTL_MS;
+  }
+
+  return Math.min(MAX_PAIRING_TTL_MS, Math.max(MIN_PAIRING_TTL_MS, Math.trunc(value!)));
+}
+
+async function proxyErrorResponse(response: Response, fallbackError: string): Promise<Response> {
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = { error: fallbackError };
+  }
+
+  return Response.json(payload, { status: response.status });
 }
 
 function isDevModeEnabled(env: Env): boolean {

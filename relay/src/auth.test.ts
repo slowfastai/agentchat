@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildAppRelayToken,
   buildDaemonRelayToken,
+  buildPairingTicket,
+  parsePairingTicket,
   parseRelayToken,
 } from "./auth";
 
@@ -36,5 +38,24 @@ describe("parseRelayToken", () => {
     expect(parseRelayToken("bad-token")).toBeNull();
     expect(parseRelayToken("achdm.dev.***")).toBeNull();
     expect(parseRelayToken("achapp.dev.app.secret.with.too.many.parts")).toBeNull();
+  });
+});
+
+describe("parsePairingTicket", () => {
+  it("parses pairing tickets", () => {
+    const { pairingTicket, pairingId } = buildPairingTicket("dev_123");
+    const parsed = parsePairingTicket(pairingTicket);
+
+    expect(parsed).toEqual({
+      deviceId: "dev_123",
+      pairingId,
+      secret: expect.any(String),
+    });
+  });
+
+  it("rejects malformed pairing tickets", () => {
+    expect(parsePairingTicket("bad-ticket")).toBeNull();
+    expect(parsePairingTicket("achpair.dev.only-three-parts")).toBeNull();
+    expect(parsePairingTicket("achpair.dev.pair.***")).toBeNull();
   });
 });

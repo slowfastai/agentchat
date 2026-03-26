@@ -21,6 +21,12 @@ export interface AppRelayToken {
   peerId: `app:${string}`;
 }
 
+export interface PairingTicket {
+  deviceId: string;
+  pairingId: string;
+  secret: string;
+}
+
 export type ParsedRelayToken = DaemonRelayToken | AppRelayToken;
 
 export interface SocketAttachment {
@@ -45,6 +51,13 @@ export interface AppRecord {
   tokenHash: string;
   pairedAt: number;
   updatedAt: number;
+}
+
+export interface PairingRecord {
+  pairingId: string;
+  ticketHash: string;
+  createdAt: number;
+  expiresAt: number;
 }
 
 export interface RelayReadyFrame {
@@ -108,6 +121,16 @@ export interface DevBootstrapRequest {
 
 export interface DevPairRequest {
   device_id: string;
+  app_installation_id?: string;
+  app_name?: string;
+}
+
+export interface PairingOpenRequest {
+  ttl_ms?: number;
+}
+
+export interface PairingClaimRequest {
+  pairing_ticket: string;
   app_installation_id?: string;
   app_name?: string;
 }

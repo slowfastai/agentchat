@@ -29,7 +29,7 @@ struct DaemonQRCodeScannerSheet: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Scan daemon QR")
                                 .font(.headline)
-                            Text("Supported payloads: ws://..., wss://..., or agentchat://connect?url=<websocket-url>&agents=<comma-separated-agent-ids>.")
+                            Text("Supported payloads: ws://..., wss://..., direct agentchat://connect?url=..., or relay agentchat://connect?relay_url=<websocket-url>&pairing_ticket=<pairing-ticket>&relay_pairing=claim&relay_crypto=dev.")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }

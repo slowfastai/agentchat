@@ -13,10 +13,7 @@ struct AgentChatTests {
     @Test func scannedDaemonPayloadParsesRawWebSocketURL() async throws {
         let payload = parseScannedDaemonConnectionPayload(from: "ws://192.168.1.8:9390")
 
-        #expect(payload == ScannedDaemonConnectionPayload(
-            url: "ws://192.168.1.8:9390",
-            agentIDs: []
-        ))
+        #expect(payload == .direct(url: "ws://192.168.1.8:9390", agentIDs: []))
     }
 
     @Test func scannedDaemonPayloadParsesPreselectedAgents() async throws {
@@ -24,9 +21,45 @@ struct AgentChatTests {
             from: "agentchat://connect?url=ws%3A%2F%2F192.168.1.8%3A9390&agents=codex-main%2Ccodex-review"
         )
 
-        #expect(payload == ScannedDaemonConnectionPayload(
+        #expect(payload == .direct(
             url: "ws://192.168.1.8:9390",
             agentIDs: ["codex-main", "codex-review"]
+        ))
+    }
+
+    @Test func scannedDaemonPayloadParsesRelayDevPairingLink() async throws {
+        let payload = parseScannedDaemonConnectionPayload(
+            from: "agentchat://connect?relay_url=wss%3A%2F%2Frelay.agentchat.dev%2Fv1%2Fws&device_id=dev_local_1&relay_pairing=dev&relay_crypto=dev&agents=codex-main"
+        )
+
+        #expect(payload == .relay(
+            RelayConnectionPayload(
+                wsURL: "wss://relay.agentchat.dev/v1/ws",
+                deviceID: "dev_local_1",
+                relayToken: nil,
+                pairingMode: .dev,
+                pairingTicket: nil,
+                cryptoMode: .dev,
+                agentIDs: ["codex-main"]
+            )
+        ))
+    }
+
+    @Test func scannedDaemonPayloadParsesRelayClaimLink() async throws {
+        let payload = parseScannedDaemonConnectionPayload(
+            from: "agentchat://connect?relay_url=wss%3A%2F%2Frelay.agentchat.dev%2Fv1%2Fws&pairing_ticket=achpair.dev_local_1.pair_abc.secretvalue1234567890&relay_pairing=claim&relay_crypto=dev"
+        )
+
+        #expect(payload == .relay(
+            RelayConnectionPayload(
+                wsURL: "wss://relay.agentchat.dev/v1/ws",
+                deviceID: nil,
+                relayToken: nil,
+                pairingMode: .claim,
+                pairingTicket: "achpair.dev_local_1.pair_abc.secretvalue1234567890",
+                cryptoMode: .dev,
+                agentIDs: []
+            )
         ))
     }
 

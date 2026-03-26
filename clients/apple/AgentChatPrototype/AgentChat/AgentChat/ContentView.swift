@@ -464,7 +464,7 @@ struct ContentView: View {
             .padding(.vertical, 4)
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Daemon URL")
+                Text("Connection link")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
 
@@ -511,7 +511,7 @@ struct ContentView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
-            Text("Encode the QR as ws://..., wss://..., or agentchat://connect?url=<websocket-url>&agents=<comma-separated-agent-ids>.")
+            Text("Paste ws://..., wss://..., or an agentchat://connect?... link. Relay QR links can use relay_url=<websocket-url>&pairing_ticket=<pairing-ticket>&relay_pairing=claim&relay_crypto=dev.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }

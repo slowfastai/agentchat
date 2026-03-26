@@ -51,6 +51,36 @@ AGENTCHAT_RELAY_REMOTE_IDENTITY_PUBLIC_KEY_B64URL=...
 In relay mode, the daemon-side transport decrypts `ClientMessage` values and forwards them
 into the same application protocol handling path used by the direct WebSocket server.
 
+## iPhone app QR flow in relay pairing mode
+
+The Apple client now understands a relay QR payload in addition to direct `ws://` / `wss://` URLs.
+
+If the daemon is running in relay mode and the current app build is using development relay crypto:
+
+```bash
+AGENTCHAT_RELAY_DEV_CRYPTO=true
+agentchat-daemon --mobile
+```
+
+then `--mobile` calls the relay pairing API and prints a QR payload shaped like:
+
+```text
+agentchat://connect?relay_url=<wss-or-ws-relay-endpoint>&pairing_ticket=<pairing-ticket>&relay_pairing=claim&relay_crypto=dev
+```
+
+The iPhone app will:
+
+1. parse the relay QR payload
+2. call `POST /v1/pairing/claim` with the one-time `pairing_ticket` and its app installation id
+3. connect to `/v1/ws` with the returned app relay token
+4. complete the signed `secure_channel_hello` / `secure_channel_accept` handshake
+5. exchange encrypted `relay_envelope` frames carrying the normal daemon app protocol
+
+Notes:
+- this removes the previous dependency on `POST /v1/dev/pair` for iPhone relay onboarding
+- the current Apple build still uses `relay_crypto=dev`; custom per-device production relay identities are not implemented yet
+- unlike direct LAN mode, the phone and Mac do **not** need to share the same Wi-Fi once both can reach the relay
+
 ## Recommended local end-to-end flow
 
 Start the local relay Worker first:
