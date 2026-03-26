@@ -563,14 +563,6 @@ struct ContentView: View {
                 .background(ChatScreenBackground().ignoresSafeArea())
             }
         }
-        .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") {
-                    dismissKeyboard()
-                }
-            }
-        }
     }
 
     private var activeClosableThread: DaemonThreadSummary? {
