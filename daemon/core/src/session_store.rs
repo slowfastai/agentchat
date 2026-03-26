@@ -2,10 +2,11 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 
-use agent_client_protocol::SessionNotification;
 use tracing::warn;
 
 use agentchat_protocol::{now_millis, SessionEvent, SessionTranscript};
+
+use crate::backend::AgentNotification;
 
 /// Captures active session trajectories and persists them to disk.
 pub struct SessionStore {
@@ -45,7 +46,7 @@ impl SessionStore {
         });
     }
 
-    pub fn record_notification(&mut self, session_id: &str, notification: &SessionNotification) {
+    pub fn record_notification(&mut self, session_id: &str, notification: &AgentNotification) {
         let Some(transcript) = self.transcripts.get_mut(session_id) else {
             return;
         };
@@ -139,15 +140,17 @@ impl SessionStore {
 
 #[cfg(test)]
 mod tests {
-    use agent_client_protocol::{ContentBlock, ContentChunk, SessionNotification, SessionUpdate};
     use tempfile::tempdir;
 
     use super::*;
+    use crate::backend::{AgentNotification, AgentUpdate};
 
-    fn sample_notification() -> SessionNotification {
-        SessionNotification::new(
+    fn sample_notification() -> AgentNotification {
+        AgentNotification::new(
             "session-1",
-            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from("hello"))),
+            AgentUpdate::TextDelta {
+                content: "hello".into(),
+            },
         )
     }
 
@@ -181,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn record_notification_serializes_acp_notification() {
+    fn record_notification_serializes_generic_notification() {
         let root = tempdir().unwrap();
         let mut store = SessionStore::new(root.path());
         let notification = sample_notification();
@@ -197,13 +200,9 @@ mod tests {
             panic!("expected agent update event");
         };
 
-        let decoded: SessionNotification =
-            serde_json::from_value(notification_json.clone()).unwrap();
+        let decoded: AgentNotification = serde_json::from_value(notification_json.clone()).unwrap();
         assert_eq!(decoded.session_id.to_string(), "session-1");
-        assert!(matches!(
-            decoded.update,
-            SessionUpdate::AgentMessageChunk(ContentChunk { .. })
-        ));
+        assert!(matches!(decoded.update, AgentUpdate::TextDelta { .. }));
     }
 
     #[tokio::test(flavor = "current_thread")]

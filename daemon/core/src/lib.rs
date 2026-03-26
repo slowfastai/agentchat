@@ -1,6 +1,8 @@
 pub mod acp_client;
 pub mod agent_manager;
+pub mod backend;
 pub mod capabilities;
+pub mod codex_app_server;
 pub mod distiller;
 pub mod relay_client;
 pub mod session_event_log;

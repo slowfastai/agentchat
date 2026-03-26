@@ -8,8 +8,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use agent_client_protocol::*;
+use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
+
+use crate::backend::{AgentNotification, AgentUpdate};
 
 const MAX_TERMINAL_OUTPUT: usize = 1_048_576;
 const TRUNCATED_OUTPUT_MARKER: &str = "[output truncated]\n";
@@ -17,7 +20,7 @@ const TRUNCATED_OUTPUT_MARKER: &str = "[output truncated]\n";
 /// Implements the ACP `Client` trait, handling agent -> client requests.
 pub struct DaemonClient {
     project_root: PathBuf,
-    update_tx: mpsc::UnboundedSender<SessionNotification>,
+    update_tx: mpsc::UnboundedSender<AgentNotification>,
     terminals: std::cell::RefCell<HashMap<String, TerminalState>>,
     next_terminal_id: AtomicU32,
 }
@@ -45,10 +48,7 @@ fn truncate_terminal_output(output: String) -> (String, bool) {
 }
 
 impl DaemonClient {
-    pub fn new(
-        project_root: PathBuf,
-        update_tx: mpsc::UnboundedSender<SessionNotification>,
-    ) -> Self {
+    pub fn new(project_root: PathBuf, update_tx: mpsc::UnboundedSender<AgentNotification>) -> Self {
         Self {
             project_root,
             update_tx,
@@ -91,6 +91,49 @@ impl DaemonClient {
 
         Ok(check_path)
     }
+
+    fn map_session_notification(&self, args: &SessionNotification) -> AgentNotification {
+        let update = match &args.update {
+            SessionUpdate::AgentMessageChunk(chunk) => AgentUpdate::TextDelta {
+                content: extract_text(&chunk.content),
+            },
+            SessionUpdate::AgentThoughtChunk(chunk) => AgentUpdate::ThinkingDelta {
+                content: extract_text(&chunk.content),
+            },
+            SessionUpdate::ToolCall(tool_call) => AgentUpdate::ToolUpdate {
+                tool_call_id: tool_call.tool_call_id.to_string(),
+                title: tool_call.title.clone(),
+                status: format!("{:?}", tool_call.status),
+                content: None,
+            },
+            SessionUpdate::ToolCallUpdate(update) => AgentUpdate::ToolUpdate {
+                tool_call_id: update.tool_call_id.to_string(),
+                title: update.fields.title.clone().unwrap_or_default(),
+                status: update
+                    .fields
+                    .status
+                    .as_ref()
+                    .map(|status| format!("{status:?}"))
+                    .unwrap_or_default(),
+                content: None,
+            },
+            SessionUpdate::Plan(plan) => AgentUpdate::Plan {
+                plan_json: serde_json::to_value(plan).unwrap_or(Value::Null),
+            },
+            _ => AgentUpdate::Raw {
+                payload: serde_json::to_value(args).unwrap_or(Value::Null),
+            },
+        };
+
+        AgentNotification::new(args.session_id.to_string(), update)
+    }
+}
+
+fn extract_text(content: &ContentBlock) -> String {
+    match content {
+        ContentBlock::Text(text) => text.text.clone(),
+        _ => String::new(),
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -113,7 +156,11 @@ impl Client for DaemonClient {
     }
 
     async fn session_notification(&self, args: SessionNotification) -> Result<()> {
-        if self.update_tx.send(args).is_err() {
+        if self
+            .update_tx
+            .send(self.map_session_notification(&args))
+            .is_err()
+        {
             warn!("session update receiver dropped");
         }
         Ok(())

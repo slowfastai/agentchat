@@ -8,10 +8,12 @@ use tracing::info;
 use agentchat_protocol::{AgentConfig, AgentStatus, AgentSummary};
 
 use crate::acp_client::AcpAgent;
+use crate::backend::AgentBackend;
+use crate::codex_app_server::CodexAppServerAgent;
 
 struct ManagedAgent {
     config: AgentConfig,
-    agent: Rc<AcpAgent>,
+    agent: Rc<dyn AgentBackend>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,9 +22,7 @@ pub struct SessionBinding {
     pub upstream_session_id: String,
 }
 
-/// Manages ACP agent instances.
-///
-/// For M0: single agent support. Post-M0: multi-agent with GroupChat routing.
+/// Manages configured agent backend instances and session bindings.
 pub struct AgentManager {
     agents: HashMap<String, ManagedAgent>,
     /// Map public daemon session IDs to their owning agent and upstream session IDs.
@@ -40,19 +40,30 @@ impl AgentManager {
         }
     }
 
-    /// Spawn and initialize an ACP agent from config.
+    /// Spawn and initialize an agent backend from config.
     pub async fn add_agent(
         &mut self,
         config: AgentConfig,
         project_root: PathBuf,
     ) -> Result<(), String> {
         let agent_id = config.id.clone();
-        let agent = Rc::new(AcpAgent::spawn(&config, project_root)?);
+        let agent: Rc<dyn AgentBackend> = match config.backend.as_str() {
+            "acp" => Rc::new(AcpAgent::spawn(&config, project_root)?),
+            "codex_app_server" | "codex-app-server" => {
+                Rc::new(CodexAppServerAgent::spawn(&config, project_root)?)
+            }
+            other => {
+                return Err(format!(
+                    "unsupported agent backend `{other}` for agent `{}`",
+                    config.id
+                ));
+            }
+        };
 
         agent
             .initialize()
             .await
-            .map_err(|e| format!("ACP init failed: {e}"))?;
+            .map_err(|e| format!("agent init failed: {e}"))?;
 
         self.agents
             .insert(agent_id.clone(), ManagedAgent { config, agent });
@@ -61,7 +72,7 @@ impl AgentManager {
     }
 
     /// Get an agent by ID.
-    pub fn get_agent(&self, agent_id: &str) -> Option<Rc<AcpAgent>> {
+    pub fn get_agent(&self, agent_id: &str) -> Option<Rc<dyn AgentBackend>> {
         self.agents
             .get(agent_id)
             .map(|managed| managed.agent.clone())
@@ -69,7 +80,7 @@ impl AgentManager {
 
     /// Get the first registered agent ID.
     ///
-    /// M0 only supports a single configured agent, so any registered agent is valid.
+    /// Returns the first configured agent, which remains the default when the client omits `agent_id`.
     pub fn first_agent_id(&self) -> Option<&str> {
         self.agents.keys().next().map(|id| id.as_str())
     }
@@ -94,7 +105,7 @@ impl AgentManager {
                     .extra
                     .get("kind")
                     .and_then(Value::as_str)
-                    .unwrap_or(&managed.config.id)
+                    .unwrap_or(&managed.config.backend)
                     .to_string(),
                 status: if managed.agent.is_alive() {
                     AgentStatus::Online
