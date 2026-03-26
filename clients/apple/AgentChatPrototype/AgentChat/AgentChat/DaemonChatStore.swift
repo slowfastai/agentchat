@@ -8,6 +8,7 @@ final class DaemonChatStore: ObservableObject {
     private static let hiddenThreadsKey = "agentchat_hidden_thread_ids"
     private static let knownAgentsKey = "agentchat_known_agents"
     private static let selectedAgentsKey = "agentchat_selected_agent_ids"
+    private static let relayAppInstallationIDKey = "agentchat_relay_app_installation_id"
 
     @Published var connectionStatus = "Not configured"
     @Published var agents: [DaemonAgentSummary] = []
@@ -32,6 +33,8 @@ final class DaemonChatStore: ObservableObject {
     private let defaults: UserDefaults
     private var socketTask: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
+    private var connectionTask: Task<Void, Never>?
+    private var relaySession: RelayAppSession?
     private var pendingThreadAgentIDs: [String] = []
     private var hasStarted = false
     private var allThreads: [DaemonThreadSummary] = []
@@ -203,6 +206,12 @@ final class DaemonChatStore: ObservableObject {
     func updateDaemonURL(_ newValue: String) {
         let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+
+        if let payload = parseScannedDaemonConnectionPayload(from: trimmed), !payload.agentIDs.isEmpty {
+            selectedAgentIDs = Set(payload.agentIDs)
+            persistSelectedAgents()
+        }
+
         if trimmed == daemonURLString.trimmingCharacters(in: .whitespacesAndNewlines), hasActiveConnection {
             errorMessage = nil
             return
@@ -213,8 +222,11 @@ final class DaemonChatStore: ObservableObject {
     }
 
     func disconnect() {
+        connectionTask?.cancel()
+        connectionTask = nil
         receiveTask?.cancel()
         receiveTask = nil
+        relaySession = nil
         socketTask?.cancel(with: .goingAway, reason: nil)
         socketTask = nil
         markAgentsOffline()
@@ -228,47 +240,104 @@ final class DaemonChatStore: ObservableObject {
             return
         }
 
-        if let payload = parseScannedDaemonConnectionPayload(from: trimmed) {
-            if !payload.agentIDs.isEmpty {
-                selectedAgentIDs = Set(payload.agentIDs)
-                persistSelectedAgents()
-            }
-            updateDaemonURL(payload.url)
-        } else {
-            errorMessage = "Unsupported QR payload. Encode either a ws:// or wss:// URL, or agentchat://connect?url=<percent-encoded-websocket-url>&agents=<comma-separated-agent-ids>."
+        guard parseScannedDaemonConnectionPayload(from: trimmed) != nil else {
+            errorMessage = "Unsupported QR payload. Encode ws://..., wss://..., agentchat://connect?url=<percent-encoded-websocket-url>&agents=<comma-separated-agent-ids>, or agentchat://connect?relay_url=<percent-encoded-relay-websocket-url>&device_id=<relay-device-id>&relay_pairing=dev&relay_crypto=dev."
+            return
         }
+
+        updateDaemonURL(trimmed)
     }
 
     private func connect() {
+        connectionTask?.cancel()
+        connectionTask = nil
         receiveTask?.cancel()
         receiveTask = nil
+        relaySession = nil
         socketTask?.cancel(with: .goingAway, reason: nil)
         socketTask = nil
 
-        let trimmedURL = daemonURLString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedURL.isEmpty else {
+        let trimmedConnection = daemonURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedConnection.isEmpty else {
             refreshIdleConnectionStatus()
             errorMessage = "No daemon URL configured. Scan a QR code or enter a URL first."
             return
         }
 
-        guard let url = URL(string: trimmedURL) else {
+        guard let connectionPayload = parseScannedDaemonConnectionPayload(from: trimmedConnection) else {
             connectionStatus = "Bad URL"
-            errorMessage = "Invalid daemon URL: \(trimmedURL)"
+            errorMessage = "Invalid daemon URL or relay link: \(trimmedConnection)"
             return
         }
 
         connectionStatus = "Connecting…"
-        let task = URLSession.shared.webSocketTask(with: url)
-        socketTask = task
-        task.resume()
+        connectionTask = Task { [weak self] in
+            guard let self else { return }
+            await self.openConnection(using: connectionPayload, rawValue: trimmedConnection)
+        }
+    }
+
+    private func openConnection(using connectionPayload: ScannedDaemonConnectionPayload, rawValue: String) async {
+        defer {
+            if !Task.isCancelled {
+                connectionTask = nil
+            }
+        }
+
+        do {
+            switch connectionPayload {
+            case .direct(let urlString, _):
+                guard let url = URL(string: urlString) else {
+                    connectionStatus = "Bad URL"
+                    errorMessage = "Invalid daemon URL: \(urlString)"
+                    return
+                }
+
+                let task = URLSession.shared.webSocketTask(with: url)
+                socketTask = task
+                task.resume()
+                try await bootstrapDirectConnection(using: task)
+            case .relay(let relayPayload):
+                connectionStatus = "Pairing with relay…"
+                let resolvedRelay = try await relayPayload.resolve(
+                    appInstallationID: relayAppInstallationID(),
+                    appName: relayAppName()
+                )
+                guard daemonURLString.trimmingCharacters(in: .whitespacesAndNewlines) == rawValue else {
+                    return
+                }
+
+                var request = URLRequest(url: resolvedRelay.wsURL)
+                request.setValue("Bearer \(resolvedRelay.relayToken)", forHTTPHeaderField: "Authorization")
+
+                connectionStatus = "Connecting to relay…"
+                let task = URLSession.shared.webSocketTask(with: request)
+                socketTask = task
+                task.resume()
+
+                connectionStatus = "Securing relay channel…"
+                relaySession = try await RelayAppSession.handshake(over: task, resolvedConnection: resolvedRelay)
+                guard socketTask === task else { return }
+                receiveTask = Task { [weak self] in
+                    await self?.receiveLoop()
+                }
+                connectionStatus = "Connected via relay"
+                await refreshDaemonState()
+            }
+        } catch {
+            guard !Task.isCancelled else { return }
+            handleConnectionFailure(message: "Failed to connect to daemon: \(error.localizedDescription)")
+        }
+    }
+
+    private func bootstrapDirectConnection(using task: URLSessionWebSocketTask) async throws {
+        try await ping(task)
+        guard socketTask === task else { return }
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
         }
-
-        Task { [weak self] in
-            await self?.bootstrapConnection(using: task)
-        }
+        connectionStatus = "Connected"
+        await refreshDaemonState()
     }
 
     private func receiveLoop() async {
@@ -279,22 +348,52 @@ final class DaemonChatStore: ObservableObject {
                 let message = try await task.receive()
                 switch message {
                 case .string(let text):
-                    handle(text: text)
+                    if relaySession != nil {
+                        handleRelay(text: text)
+                    } else {
+                        handle(text: text)
+                    }
                 case .data(let data):
                     if let text = String(data: data, encoding: .utf8) {
-                        handle(text: text)
+                        if relaySession != nil {
+                            handleRelay(text: text)
+                        } else {
+                            handle(text: text)
+                        }
                     }
                 @unknown default:
                     break
                 }
             } catch {
                 guard socketTask === task else { break }
+                relaySession = nil
                 socketTask = nil
                 receiveTask = nil
                 markAgentsOffline()
                 connectionStatus = "Disconnected"
                 break
             }
+        }
+    }
+
+    private func handleRelay(text: String) {
+        guard var relaySession else { return }
+
+        do {
+            let inbound = try relaySession.consumeIncomingFrame(text: text)
+            self.relaySession = relaySession
+
+            switch inbound {
+            case .applicationJSON(let json):
+                handle(text: json)
+            case .relayError(let message):
+                errorMessage = message
+            case .ignored:
+                break
+            }
+        } catch {
+            self.relaySession = relaySession
+            errorMessage = "Failed to decode relay frame: \(error.localizedDescription)"
         }
     }
 
@@ -647,18 +746,6 @@ final class DaemonChatStore: ObservableObject {
         return humanizeAgentIdentifier(agentID)
     }
 
-    private func bootstrapConnection(using task: URLSessionWebSocketTask) async {
-        do {
-            try await ping(task)
-            guard socketTask === task else { return }
-            connectionStatus = "Connected"
-            await refreshDaemonState()
-        } catch {
-            guard socketTask === task else { return }
-            handleConnectionFailure(message: "Failed to connect to daemon: \(error.localizedDescription)")
-        }
-    }
-
     private func refreshDaemonState() async {
         await send(ListAgentsRequest())
         await send(ListThreadsRequest())
@@ -679,6 +766,24 @@ final class DaemonChatStore: ObservableObject {
         }
     }
 
+    private func relayAppInstallationID() -> String {
+        if let existing = defaults.string(forKey: Self.relayAppInstallationIDKey),
+           !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return existing
+        }
+
+        let created = UUID().uuidString.lowercased()
+        defaults.set(created, forKey: Self.relayAppInstallationIDKey)
+        return created
+    }
+
+    private func relayAppName() -> String {
+        let appName = (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String)
+            ?? "AgentChat"
+        return "\(appName) iPhone"
+    }
+
     private func markAgentsOffline() {
         guard !agents.isEmpty else { return }
         agents = AgentRoster.markOffline(agents)
@@ -687,8 +792,11 @@ final class DaemonChatStore: ObservableObject {
 
     private func handleConnectionFailure(message: String) {
         errorMessage = message
+        connectionTask?.cancel()
+        connectionTask = nil
         receiveTask?.cancel()
         receiveTask = nil
+        relaySession = nil
         socketTask?.cancel(with: .goingAway, reason: nil)
         socketTask = nil
         markAgentsOffline()
@@ -735,9 +843,6 @@ final class DaemonChatStore: ObservableObject {
         return AgentRoster.markOffline(agents)
     }
 
-    private func normalizedDaemonURL(from payload: String) -> String? {
-        parseScannedDaemonConnectionPayload(from: payload)?.url
-    }
     private func send<Request: Encodable>(_ request: Request) async {
         guard let socketTask else {
             markAgentsOffline()
@@ -750,43 +855,18 @@ final class DaemonChatStore: ObservableObject {
         do {
             let data = try JSONEncoder().encode(request)
             guard let text = String(data: data, encoding: .utf8) else { return }
-            try await socketTask.send(.string(text))
+            let outboundText: String
+            if var relaySession {
+                outboundText = try relaySession.encryptJSONString(text)
+                self.relaySession = relaySession
+            } else {
+                outboundText = text
+            }
+            try await socketTask.send(.string(outboundText))
         } catch {
             handleConnectionFailure(message: "Send failed: \(error.localizedDescription)")
         }
     }
-}
-
-struct ScannedDaemonConnectionPayload: Equatable {
-    let url: String
-    let agentIDs: [String]
-}
-
-func parseScannedDaemonConnectionPayload(from payload: String) -> ScannedDaemonConnectionPayload? {
-    if payload.hasPrefix("ws://") || payload.hasPrefix("wss://") {
-        return ScannedDaemonConnectionPayload(url: payload, agentIDs: [])
-    }
-
-    guard let components = URLComponents(string: payload) else {
-        return nil
-    }
-
-    guard components.scheme?.lowercased() == "agentchat",
-          components.host?.lowercased() == "connect",
-          let urlItem = components.queryItems?.first(where: { $0.name == "url" })?.value,
-          urlItem.hasPrefix("ws://") || urlItem.hasPrefix("wss://")
-    else {
-        return nil
-    }
-
-    let agentIDs = components.queryItems?
-        .first(where: { $0.name == "agents" })?
-        .value?
-        .split(separator: ",")
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        .filter { !$0.isEmpty } ?? []
-
-    return ScannedDaemonConnectionPayload(url: urlItem, agentIDs: agentIDs)
 }
 
 enum AgentRoster {
