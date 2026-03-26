@@ -336,7 +336,7 @@ struct ContentView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
-            Text("Encode the QR as ws://..., wss://..., or agentchat://connect?url=<websocket-url>.")
+            Text("Encode the QR as ws://..., wss://..., or agentchat://connect?url=<websocket-url>&agents=<comma-separated-agent-ids>.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
