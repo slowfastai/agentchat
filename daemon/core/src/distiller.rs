@@ -1,11 +1,11 @@
 use std::rc::Rc;
 
-use agent_client_protocol::{ContentBlock, SessionId, SessionNotification, SessionUpdate};
+use agent_client_protocol::{ContentBlock, SessionNotification, SessionUpdate};
 use tokio::sync::mpsc;
 
 use agentchat_protocol::{SessionEvent, SessionTranscript};
 
-use crate::acp_client::AcpAgent;
+use crate::backend::{AgentBackend, AgentNotification, AgentUpdate};
 use crate::skills::{agent_skill_prefix, SkillStore, SHARED_SKILL_PREFIX};
 
 const AGENT_SKILL_PREFIX: &str = "agents/";
@@ -84,18 +84,15 @@ impl Distiller {
 
     pub async fn distill(
         &self,
-        agent: Rc<AcpAgent>,
+        agent: Rc<dyn AgentBackend>,
         session_id: String,
         transcript: SessionTranscript,
-        mut update_rx: mpsc::UnboundedReceiver<SessionNotification>,
+        mut update_rx: mpsc::UnboundedReceiver<AgentNotification>,
     ) -> Result<Vec<String>, String> {
         let prompt = self.build_distillation_prompt(&transcript);
         let prompt_session_id = session_id.clone();
-        let prompt_task = tokio::task::spawn_local(async move {
-            agent
-                .prompt(SessionId::new(prompt_session_id), prompt)
-                .await
-        });
+        let prompt_task =
+            tokio::task::spawn_local(async move { agent.prompt(prompt_session_id, prompt).await });
         tokio::pin!(prompt_task);
 
         let mut response_text = String::new();
@@ -107,7 +104,7 @@ impl Distiller {
                         .map_err(|e| format!("distillation prompt task failed: {e}"))?;
                     prompt_result.map_err(|e| format!("distillation prompt failed: {e}"))?;
 
-                    // Late ACP chunks can still be in flight when the prompt call resolves.
+                    // Late backend chunks can still be in flight when the prompt call resolves.
                     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
                     break;
                 }
@@ -182,9 +179,13 @@ fn render_transcript(transcript: &SessionTranscript) -> String {
                 notification_json, ..
             } => {
                 if let Ok(notification) =
-                    serde_json::from_value::<SessionNotification>(notification_json.clone())
+                    serde_json::from_value::<AgentNotification>(notification_json.clone())
                 {
                     lines.push(render_notification(&notification));
+                } else if let Ok(notification) =
+                    serde_json::from_value::<SessionNotification>(notification_json.clone())
+                {
+                    lines.push(render_legacy_notification(&notification));
                 } else {
                     lines.push(format!("[Notification] {notification_json}"));
                 }
@@ -198,7 +199,25 @@ fn render_transcript(transcript: &SessionTranscript) -> String {
     lines.join("\n")
 }
 
-fn render_notification(notification: &SessionNotification) -> String {
+fn render_notification(notification: &AgentNotification) -> String {
+    match &notification.update {
+        AgentUpdate::TextDelta { content } => format!("[Agent] {content}"),
+        AgentUpdate::ThinkingDelta { content } => format!("[Thinking] {content}"),
+        AgentUpdate::ToolUpdate { title, status, .. } => {
+            format!("[Tool] {title} - {status}")
+        }
+        AgentUpdate::Plan { plan_json } => format!(
+            "[Plan] {}",
+            serde_json::to_string(plan_json).unwrap_or_else(|_| "{}".into())
+        ),
+        AgentUpdate::Raw { payload } => format!(
+            "[Notification] {}",
+            serde_json::to_string(payload).unwrap_or_else(|_| "{}".into())
+        ),
+    }
+}
+
+fn render_legacy_notification(notification: &SessionNotification) -> String {
     match &notification.update {
         SessionUpdate::AgentMessageChunk(chunk) => {
             format!("[Agent] {}", extract_text(&chunk.content))
@@ -230,9 +249,9 @@ fn render_notification(notification: &SessionNotification) -> String {
     }
 }
 
-fn collect_response_text(buffer: &mut String, notification: &SessionNotification) {
-    if let SessionUpdate::AgentMessageChunk(chunk) = &notification.update {
-        buffer.push_str(&extract_text(&chunk.content));
+fn collect_response_text(buffer: &mut String, notification: &AgentNotification) {
+    if let AgentUpdate::TextDelta { content } = &notification.update {
+        buffer.push_str(content);
     }
 }
 

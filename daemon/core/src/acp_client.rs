@@ -15,6 +15,7 @@ use tracing::{debug, error, info, warn};
 
 use agentchat_protocol::AgentConfig;
 
+use crate::backend::{AgentBackend, AgentNotification, AgentPromptResult};
 use crate::capabilities::DaemonClient;
 
 /// Handle to a running ACP agent connection.
@@ -25,7 +26,7 @@ pub struct AcpAgent {
     /// ACP connection -- use this to call Agent methods (initialize, new_session, prompt, etc.)
     conn: ClientSideConnection,
     /// Channel to receive session update notifications from the DaemonClient.
-    update_rx: RefCell<Option<mpsc::UnboundedReceiver<SessionNotification>>>,
+    update_rx: RefCell<Option<mpsc::UnboundedReceiver<AgentNotification>>>,
     /// Broadcasts whether the child process is still alive.
     health_tx: watch::Sender<bool>,
     /// Signals the child-process monitor task to terminate the subprocess.
@@ -150,8 +151,7 @@ impl AcpAgent {
         })
     }
 
-    /// Run the ACP initialize handshake.
-    pub async fn initialize(&self) -> Result<InitializeResponse> {
+    async fn initialize_acp(&self) -> Result<InitializeResponse> {
         let request = InitializeRequest::new(ProtocolVersion::LATEST)
             .client_capabilities(
                 ClientCapabilities::new()
@@ -172,53 +172,62 @@ impl AcpAgent {
 
         Ok(response)
     }
+}
 
-    /// Create a new session.
-    pub async fn new_session(&self, cwd: PathBuf) -> Result<NewSessionResponse> {
+#[async_trait::async_trait(?Send)]
+impl AgentBackend for AcpAgent {
+    async fn initialize(&self) -> Result<(), String> {
+        self.initialize_acp()
+            .await
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    }
+
+    async fn new_session(&self, cwd: PathBuf) -> Result<String, String> {
         let request = NewSessionRequest::new(cwd);
-        let response = self.conn.new_session(request).await?;
+        let response = self
+            .conn
+            .new_session(request)
+            .await
+            .map_err(|err| err.to_string())?;
         info!("ACP session created: {}", response.session_id);
-        Ok(response)
+        Ok(response.session_id.to_string())
     }
 
-    /// Send a prompt (blocking until the turn completes).
-    ///
-    /// Session updates are streamed via the `update_rx` channel concurrently.
-    pub async fn prompt(&self, session_id: SessionId, text: String) -> Result<PromptResponse> {
-        let request = PromptRequest::new(session_id, vec![ContentBlock::from(text)]);
-        self.conn.prompt(request).await
+    async fn prompt(&self, session_id: String, text: String) -> Result<AgentPromptResult, String> {
+        let request =
+            PromptRequest::new(SessionId::new(session_id), vec![ContentBlock::from(text)]);
+        let response = self
+            .conn
+            .prompt(request)
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(AgentPromptResult::new(format!(
+            "{:?}",
+            response.stop_reason
+        )))
     }
 
-    /// Cancel an ongoing prompt turn.
-    pub async fn cancel(&self, session_id: SessionId) -> Result<()> {
-        self.conn.cancel(CancelNotification::new(session_id)).await
+    async fn cancel(&self, session_id: String) -> Result<(), String> {
+        self.conn
+            .cancel(CancelNotification::new(SessionId::new(session_id)))
+            .await
+            .map_err(|err| err.to_string())
     }
 
-    /// Take the update notification receiver.
-    ///
-    /// Call this once after construction to get the stream of session updates
-    /// that arrive while prompts are being processed.
-    pub fn take_update_rx(&self) -> Option<mpsc::UnboundedReceiver<SessionNotification>> {
+    fn take_update_rx(&self) -> Option<mpsc::UnboundedReceiver<AgentNotification>> {
         self.update_rx.borrow_mut().take()
     }
 
-    /// Subscribe to the agent's health state.
-    pub fn subscribe_health(&self) -> watch::Receiver<bool> {
+    fn subscribe_health(&self) -> watch::Receiver<bool> {
         self.health_tx.subscribe()
     }
 
-    /// Report whether the agent process is still alive.
-    pub fn is_alive(&self) -> bool {
+    fn is_alive(&self) -> bool {
         *self.health_tx.borrow()
     }
 
-    /// Subscribe to the raw ACP stream (all JSON-RPC messages).
-    pub fn subscribe(&self) -> StreamReceiver {
-        self.conn.subscribe()
-    }
-
-    /// Kill the agent subprocess and wait for the monitor to observe shutdown.
-    pub async fn shutdown(&self) {
+    async fn shutdown(&self) {
         if !self.is_alive() {
             return;
         }

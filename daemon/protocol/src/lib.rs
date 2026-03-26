@@ -10,13 +10,16 @@ use serde_json::Value;
 // Agent Configuration
 // ============================================================
 
-/// Configuration for an ACP agent. Specifies how to spawn the agent subprocess.
+/// Configuration for an agent backend. Specifies how to spawn the agent subprocess.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentConfig {
     /// Unique identifier for this agent.
     pub id: String,
     /// Human-readable name.
     pub name: String,
+    /// Backend adapter used to talk to the agent process.
+    #[serde(default = "default_agent_backend")]
+    pub backend: String,
     /// Command to spawn the agent subprocess (e.g., "claude-agent").
     pub command: String,
     /// Arguments for the agent command.
@@ -30,6 +33,10 @@ pub struct AgentConfig {
     /// Extra configuration (agent-specific).
     #[serde(default)]
     pub extra: HashMap<String, Value>,
+}
+
+fn default_agent_backend() -> String {
+    "acp".to_string()
 }
 
 /// Timestamp helper in milliseconds since the UNIX epoch.

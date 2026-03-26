@@ -7,6 +7,7 @@ final class DaemonChatStore: ObservableObject {
     private static let pinnedThreadsKey = "agentchat_pinned_thread_ids"
     private static let hiddenThreadsKey = "agentchat_hidden_thread_ids"
     private static let knownAgentsKey = "agentchat_known_agents"
+    private static let selectedAgentsKey = "agentchat_selected_agent_ids"
 
     @Published var connectionStatus = "Not configured"
     @Published var agents: [DaemonAgentSummary] = []
@@ -46,6 +47,7 @@ final class DaemonChatStore: ObservableObject {
         self.pinnedThreadIDs = Set(defaults.stringArray(forKey: Self.pinnedThreadsKey) ?? [])
         self.hiddenThreadIDs = Set(defaults.stringArray(forKey: Self.hiddenThreadsKey) ?? [])
         self.agents = Self.loadKnownAgents(from: defaults)
+        self.selectedAgentIDs = Set(defaults.stringArray(forKey: Self.selectedAgentsKey) ?? [])
         refreshIdleConnectionStatus()
     }
 
@@ -175,6 +177,7 @@ final class DaemonChatStore: ObservableObject {
         } else {
             selectedAgentIDs.insert(agentID)
         }
+        persistSelectedAgents()
     }
 
     func toggleParticipantSelection(_ participantID: String) {
@@ -225,10 +228,14 @@ final class DaemonChatStore: ObservableObject {
             return
         }
 
-        if let url = normalizedDaemonURL(from: trimmed) {
-            updateDaemonURL(url)
+        if let payload = parseScannedDaemonConnectionPayload(from: trimmed) {
+            if !payload.agentIDs.isEmpty {
+                selectedAgentIDs = Set(payload.agentIDs)
+                persistSelectedAgents()
+            }
+            updateDaemonURL(payload.url)
         } else {
-            errorMessage = "Unsupported QR payload. Encode either a ws:// or wss:// URL, or agentchat://connect?url=<percent-encoded websocket-url>."
+            errorMessage = "Unsupported QR payload. Encode either a ws:// or wss:// URL, or agentchat://connect?url=<percent-encoded-websocket-url>&agents=<comma-separated-agent-ids>."
         }
     }
 
@@ -475,7 +482,7 @@ final class DaemonChatStore: ObservableObject {
     private func upsertAssistantMessage(_ event: ThreadAssistantMessageEvent) {
         let state = assistantTurns.consume(snapshot: event)
         appendTimeline(
-            state.timelineEntry(tintName: colorName(for: state.agentID)),
+            state.timelineEntry(tintName: tintName(for: state.agentID)),
             to: event.threadID
         )
     }
@@ -485,7 +492,7 @@ final class DaemonChatStore: ObservableObject {
             return
         }
         appendTimeline(
-            state.timelineEntry(tintName: colorName(for: state.agentID)),
+            state.timelineEntry(tintName: tintName(for: state.agentID)),
             to: event.threadID
         )
     }
@@ -493,7 +500,7 @@ final class DaemonChatStore: ObservableObject {
     private func upsertAssistantToolUpdate(_ event: ThreadAgentToolUpdateEvent) {
         let state = assistantTurns.consume(toolUpdate: event)
         appendTimeline(
-            state.timelineEntry(tintName: colorName(for: state.agentID)),
+            state.timelineEntry(tintName: tintName(for: state.agentID)),
             to: event.threadID
         )
     }
@@ -501,7 +508,7 @@ final class DaemonChatStore: ObservableObject {
     private func upsertAssistantPlanUpdate(_ event: ThreadAgentPlanUpdateEvent) {
         let state = assistantTurns.consume(planUpdate: event)
         appendTimeline(
-            state.timelineEntry(tintName: colorName(for: state.agentID)),
+            state.timelineEntry(tintName: tintName(for: state.agentID)),
             to: event.threadID
         )
     }
@@ -511,7 +518,7 @@ final class DaemonChatStore: ObservableObject {
             return
         }
         appendTimeline(
-            state.timelineEntry(tintName: colorName(for: state.agentID)),
+            state.timelineEntry(tintName: tintName(for: state.agentID)),
             to: event.threadID
         )
     }
@@ -621,15 +628,23 @@ final class DaemonChatStore: ObservableObject {
         defaults.set(Array(hiddenThreadIDs).sorted(), forKey: Self.hiddenThreadsKey)
     }
 
-    private func colorName(for agentID: String) -> String {
-        switch agentID.lowercased() {
-        case "pi": return "purple"
-        case "beta": return "green"
-        case "alpha", "claude": return "blue"
-        case "codex": return "green"
-        case "opencode": return "orange"
-        default: return "indigo"
+    private func persistSelectedAgents() {
+        defaults.set(Array(selectedAgentIDs).sorted(), forKey: Self.selectedAgentsKey)
+    }
+
+    func tintName(for agentID: String?) -> String {
+        guard let agentID else { return "indigo" }
+        if let summary = agents.first(where: { $0.agentID == agentID }) {
+            return summary.tintName
         }
+        return DaemonAgentFamily(agentID: agentID, kind: nil, name: nil).tintName
+    }
+
+    func agentDisplayName(for agentID: String) -> String {
+        if let summary = agents.first(where: { $0.agentID == agentID }) {
+            return summary.displayName
+        }
+        return humanizeAgentIdentifier(agentID)
     }
 
     private func bootstrapConnection(using task: URLSessionWebSocketTask) async {
@@ -700,6 +715,7 @@ final class DaemonChatStore: ObservableObject {
 
         if selectedAgentIDs.isEmpty {
             selectedAgentIDs = Set(agents.filter(\.isOnline).map(\.agentID))
+            persistSelectedAgents()
         }
     }
 
@@ -720,25 +736,8 @@ final class DaemonChatStore: ObservableObject {
     }
 
     private func normalizedDaemonURL(from payload: String) -> String? {
-        if payload.hasPrefix("ws://") || payload.hasPrefix("wss://") {
-            return payload
-        }
-
-        guard let components = URLComponents(string: payload) else {
-            return nil
-        }
-
-        guard components.scheme?.lowercased() == "agentchat",
-              components.host?.lowercased() == "connect",
-              let urlItem = components.queryItems?.first(where: { $0.name == "url" })?.value,
-              urlItem.hasPrefix("ws://") || urlItem.hasPrefix("wss://")
-        else {
-            return nil
-        }
-
-        return urlItem
+        parseScannedDaemonConnectionPayload(from: payload)?.url
     }
-
     private func send<Request: Encodable>(_ request: Request) async {
         guard let socketTask else {
             markAgentsOffline()
@@ -756,6 +755,38 @@ final class DaemonChatStore: ObservableObject {
             handleConnectionFailure(message: "Send failed: \(error.localizedDescription)")
         }
     }
+}
+
+struct ScannedDaemonConnectionPayload: Equatable {
+    let url: String
+    let agentIDs: [String]
+}
+
+func parseScannedDaemonConnectionPayload(from payload: String) -> ScannedDaemonConnectionPayload? {
+    if payload.hasPrefix("ws://") || payload.hasPrefix("wss://") {
+        return ScannedDaemonConnectionPayload(url: payload, agentIDs: [])
+    }
+
+    guard let components = URLComponents(string: payload) else {
+        return nil
+    }
+
+    guard components.scheme?.lowercased() == "agentchat",
+          components.host?.lowercased() == "connect",
+          let urlItem = components.queryItems?.first(where: { $0.name == "url" })?.value,
+          urlItem.hasPrefix("ws://") || urlItem.hasPrefix("wss://")
+    else {
+        return nil
+    }
+
+    let agentIDs = components.queryItems?
+        .first(where: { $0.name == "agents" })?
+        .value?
+        .split(separator: ",")
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty } ?? []
+
+    return ScannedDaemonConnectionPayload(url: urlItem, agentIDs: agentIDs)
 }
 
 enum AgentRoster {

@@ -10,6 +10,67 @@ import Testing
 @testable import AgentChat
 
 struct AgentChatTests {
+    @Test func scannedDaemonPayloadParsesRawWebSocketURL() async throws {
+        let payload = parseScannedDaemonConnectionPayload(from: "ws://192.168.1.8:9390")
+
+        #expect(payload == ScannedDaemonConnectionPayload(
+            url: "ws://192.168.1.8:9390",
+            agentIDs: []
+        ))
+    }
+
+    @Test func scannedDaemonPayloadParsesPreselectedAgents() async throws {
+        let payload = parseScannedDaemonConnectionPayload(
+            from: "agentchat://connect?url=ws%3A%2F%2F192.168.1.8%3A9390&agents=codex-main%2Ccodex-review"
+        )
+
+        #expect(payload == ScannedDaemonConnectionPayload(
+            url: "ws://192.168.1.8:9390",
+            agentIDs: ["codex-main", "codex-review"]
+        ))
+    }
+
+    @Test func daemonAgentSummaryRecognizesCodexFromBackendKind() async throws {
+        let summary = DaemonAgentSummary(
+            agentID: "workspace-codex",
+            name: "Codex Main",
+            kind: "codex_app_server",
+            status: "online",
+            defaultWorkingDir: nil,
+            capabilities: ["session", "prompt"]
+        )
+
+        #expect(summary.family == .codex)
+        #expect(summary.kindTitle == "Codex")
+        #expect(summary.symbolName == "curlybraces.square.fill")
+        #expect(summary.tintName == "green")
+        #expect(summary.displayName == "Codex Main")
+    }
+
+    @Test func daemonAgentSummaryRecognizesClaudeAndOpenCode() async throws {
+        let claude = DaemonAgentSummary(
+            agentID: "claude-review",
+            name: "Claude Code",
+            kind: "claude_code",
+            status: "online",
+            defaultWorkingDir: nil,
+            capabilities: []
+        )
+        let openCode = DaemonAgentSummary(
+            agentID: "open-code",
+            name: "",
+            kind: "opencode",
+            status: "online",
+            defaultWorkingDir: nil,
+            capabilities: []
+        )
+
+        #expect(claude.family == .claude)
+        #expect(claude.tintName == "blue")
+        #expect(openCode.family == .opencode)
+        #expect(openCode.displayName == "OpenCode")
+    }
+
     @Test @MainActor func daemonChatStoreRestoresPersistedAgentsAsOfflineOnColdStart() async throws {
         let suiteName = "AgentChatTests.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {

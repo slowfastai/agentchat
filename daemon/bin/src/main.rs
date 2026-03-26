@@ -1,8 +1,17 @@
 use std::cell::RefCell;
 use std::env;
+use std::fs::File;
+use std::fs::{self, OpenOptions};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
+use std::process::Stdio;
 use std::rc::Rc;
+use std::sync::mpsc as std_mpsc;
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 use agentchat_core::agent_manager::AgentManager;
 use agentchat_core::distiller::Distiller;
@@ -12,13 +21,14 @@ use agentchat_core::skills::SkillStore;
 use agentchat_protocol::relay_crypto::{
     decode_base64url_exact, ed25519_public_key, seed_from_label,
 };
-use agentchat_protocol::AgentConfig;
+use agentchat_protocol::{AgentConfig, AgentStatus, AgentSummary};
 use agentchat_server::relay::RelayTransportServer;
 use agentchat_server::ws::WebSocketServer;
 use if_addrs::{get_if_addrs, IfAddr, Interface};
 use qrcode::{render::unicode, QrCode};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tracing::{error, info};
+use tracing_subscriber::fmt::writer::MakeWriter;
 
 const DEV_DAEMON_IDENTITY_LABEL: &str = "agentchat-dev-daemon-identity-v1";
 const DEV_APP_IDENTITY_LABEL: &str = "agentchat-dev-app-identity-v1";
@@ -30,6 +40,22 @@ struct CliOptions {
     mobile_qr: bool,
 }
 
+enum InteractiveCommand {
+    ShowMobile {
+        reply: std_mpsc::Sender<Vec<AgentSummary>>,
+    },
+    Shutdown,
+}
+
+#[derive(Clone)]
+struct SharedFileWriter {
+    file: Arc<Mutex<File>>,
+}
+
+struct SharedFileWriterGuard<'a> {
+    guard: std::sync::MutexGuard<'a, File>,
+}
+
 fn env_or_default(key: &str, default: &str) -> String {
     env::var(key)
         .ok()
@@ -39,6 +65,33 @@ fn env_or_default(key: &str, default: &str) -> String {
 
 fn optional_env(key: &str) -> Option<String> {
     env::var(key).ok().filter(|value| !value.trim().is_empty())
+}
+
+impl io::Write for SharedFileWriterGuard<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.guard.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.guard.flush()
+    }
+}
+
+impl<'a> MakeWriter<'a> for SharedFileWriter {
+    type Writer = SharedFileWriterGuard<'a>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        SharedFileWriterGuard {
+            guard: self.file.lock().expect("daemon log file mutex poisoned"),
+        }
+    }
+}
+
+fn command_name(command: &str) -> &str {
+    Path::new(command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(command)
 }
 
 fn env_flag(key: &str) -> bool {
@@ -70,11 +123,11 @@ fn parse_cli_options() -> Result<Option<CliOptions>, String> {
 
 fn print_usage() {
     println!(
-        "agentchat-daemon\n\nUsage:\n  agentchat-daemon [--mobile]\n\nOptions:\n  --mobile            Print a terminal QR code for the local WebSocket URL so the iOS app can scan it\n  -h, --help          Show this help text\n\nEnvironment:\n  AGENTCHAT_MOBILE_WS_URL  Override the QR payload (must be ws://... or wss://...)\n\nExample:\n  AGENTCHAT_AGENT_ID=opencode \\\n  AGENTCHAT_AGENT_NAME=\"OpenCode (ACP)\" \\\n  AGENTCHAT_AGENT_COMMAND=opencode \\\n  AGENTCHAT_AGENT_ARGS=\"acp\" \\\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon -- --mobile"
+        "agentchat-daemon\n\nUsage:\n  agentchat-daemon [--mobile]\n\nOptions:\n  --mobile            Print a terminal QR code for the local WebSocket URL so the iOS app can scan it\n  -h, --help          Show this help text\n\nEnvironment:\n  AGENTCHAT_MOBILE_WS_URL   Override the QR payload (must be ws://... or wss://...)\n  AGENTCHAT_AGENT_BACKEND   Select the agent backend adapter (default: acp)\n\nExample:\n  AGENTCHAT_AGENT_ID=opencode \\\n  AGENTCHAT_AGENT_NAME=\"OpenCode (ACP)\" \\\n  AGENTCHAT_AGENT_BACKEND=acp \\\n  AGENTCHAT_AGENT_COMMAND=opencode \\\n  AGENTCHAT_AGENT_ARGS=\"acp\" \\\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon -- --mobile"
     );
 }
 
-fn parse_agent_args() -> Vec<String> {
+fn configured_agent_args() -> Option<Vec<String>> {
     env::var("AGENTCHAT_AGENT_ARGS")
         .ok()
         .map(|value| {
@@ -84,20 +137,82 @@ fn parse_agent_args() -> Vec<String> {
                 .collect::<Vec<_>>()
         })
         .filter(|args| !args.is_empty())
-        .unwrap_or_else(|| vec!["acp".into()])
+}
+
+fn default_agent_args(backend: &str) -> Vec<String> {
+    match backend {
+        "acp" => vec!["acp".into()],
+        _ => Vec::new(),
+    }
+}
+
+fn detect_agent_backend(command: &str, args: &[String]) -> String {
+    if let Some(backend) = optional_env("AGENTCHAT_AGENT_BACKEND") {
+        return backend;
+    }
+
+    let command_name = command_name(command);
+    if matches!(command_name, "codex" | "codex.exe")
+        || args.first().map(String::as_str) == Some("app-server")
+    {
+        "codex_app_server".into()
+    } else {
+        "acp".into()
+    }
 }
 
 fn load_agent_config() -> AgentConfig {
+    let command = env_or_default("AGENTCHAT_AGENT_COMMAND", "opencode");
+    let configured_args = configured_agent_args();
+    let backend = detect_agent_backend(&command, configured_args.as_deref().unwrap_or(&[]));
+    let args = configured_args.unwrap_or_else(|| default_agent_args(&backend));
+    let mut extra = std::collections::HashMap::new();
+
+    if let Some(approval_policy) = optional_env("AGENTCHAT_AGENT_APPROVAL_POLICY") {
+        extra.insert(
+            "approval_policy".into(),
+            serde_json::Value::String(approval_policy),
+        );
+    }
+    if let Some(approval_strategy) = optional_env("AGENTCHAT_AGENT_APPROVAL_STRATEGY") {
+        extra.insert(
+            "approval_strategy".into(),
+            serde_json::Value::String(approval_strategy),
+        );
+    }
+    if let Some(approvals_reviewer) = optional_env("AGENTCHAT_AGENT_APPROVALS_REVIEWER") {
+        extra.insert(
+            "approvals_reviewer".into(),
+            serde_json::Value::String(approvals_reviewer),
+        );
+    }
+    if let Some(sandbox) = optional_env("AGENTCHAT_AGENT_SANDBOX") {
+        extra.insert("sandbox".into(), serde_json::Value::String(sandbox));
+    }
+    if env_flag("AGENTCHAT_AGENT_EXPERIMENTAL_RAW_EVENTS") {
+        extra.insert(
+            "experimental_raw_events".into(),
+            serde_json::Value::Bool(true),
+        );
+    }
+    if env_flag("AGENTCHAT_AGENT_PERSIST_EXTENDED_HISTORY") {
+        extra.insert(
+            "persist_extended_history".into(),
+            serde_json::Value::Bool(true),
+        );
+    }
+
     AgentConfig {
         id: env_or_default("AGENTCHAT_AGENT_ID", "opencode"),
         name: env_or_default("AGENTCHAT_AGENT_NAME", "OpenCode (ACP)"),
-        command: env_or_default("AGENTCHAT_AGENT_COMMAND", "opencode"),
-        args: parse_agent_args(),
+        backend,
+        command,
+        args,
         working_dir: env::var("AGENTCHAT_AGENT_WORKING_DIR")
             .ok()
             .filter(|value| !value.trim().is_empty()),
         env_vars: Default::default(),
-        extra: Default::default(),
+        extra,
     }
 }
 
@@ -162,6 +277,52 @@ fn load_relay_client_config() -> Result<Option<RelayClientConfig>, String> {
     }
 }
 
+fn default_log_path(project_root: &Path) -> PathBuf {
+    project_root
+        .join(".agentchat")
+        .join("logs")
+        .join("agentchat-daemon.log")
+}
+
+fn resolve_log_path(project_root: &Path) -> PathBuf {
+    optional_env("AGENTCHAT_LOG_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_log_path(project_root))
+}
+
+fn init_tracing(project_root: &Path) -> Result<PathBuf, String> {
+    let log_path = resolve_log_path(project_root);
+    let parent = log_path
+        .parent()
+        .ok_or_else(|| format!("invalid daemon log path: {}", log_path.display()))?;
+    fs::create_dir_all(parent).map_err(|err| {
+        format!(
+            "failed to create daemon log directory '{}': {err}",
+            parent.display()
+        )
+    })?;
+
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|err| {
+            format!(
+                "failed to open daemon log file '{}': {err}",
+                log_path.display()
+            )
+        })?;
+
+    tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(SharedFileWriter {
+            file: Arc::new(Mutex::new(file)),
+        })
+        .init();
+
+    Ok(log_path)
+}
+
 fn resolve_mobile_ws_url(port: u16) -> Result<String, String> {
     if let Some(ws_url) = optional_env("AGENTCHAT_MOBILE_WS_URL") {
         return validate_mobile_ws_url(&ws_url).map(|_| ws_url);
@@ -179,6 +340,74 @@ fn validate_mobile_ws_url(ws_url: &str) -> Result<(), String> {
             "AGENTCHAT_MOBILE_WS_URL must start with ws:// or wss:// so the iOS app can connect"
                 .into(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn detect_agent_backend_recognizes_codex_binary_without_explicit_args() {
+        assert_eq!(detect_agent_backend("codex", &[]), "codex_app_server");
+        assert_eq!(
+            detect_agent_backend("/usr/local/bin/codex", &[]),
+            "codex_app_server"
+        );
+    }
+
+    #[test]
+    fn default_agent_args_are_backend_specific() {
+        assert_eq!(default_agent_args("acp"), vec!["acp".to_string()]);
+        assert!(default_agent_args("codex_app_server").is_empty());
+    }
+
+    #[test]
+    fn mobile_qr_payload_defaults_to_raw_ws_url_without_agent_selection() {
+        assert_eq!(
+            mobile_qr_payload_for_ws_url("ws://127.0.0.1:9390", &[]),
+            "ws://127.0.0.1:9390"
+        );
+    }
+
+    #[test]
+    fn mobile_qr_payload_encodes_selected_agents_into_custom_scheme() {
+        let payload = mobile_qr_payload_for_ws_url(
+            "ws://192.168.1.10:9390",
+            &["codex-main".into(), "codex-review".into()],
+        );
+
+        assert_eq!(
+            payload,
+            "agentchat://connect?url=ws%3A%2F%2F192.168.1.10%3A9390&agents=codex-main%2Ccodex-review"
+        );
+    }
+
+    #[test]
+    fn default_log_path_uses_project_agentchat_logs_directory() {
+        let root = PathBuf::from("/tmp/agentchat-project");
+
+        assert_eq!(
+            default_log_path(&root),
+            PathBuf::from("/tmp/agentchat-project/.agentchat/logs/agentchat-daemon.log")
+        );
+    }
+
+    #[test]
+    fn resolve_log_path_prefers_environment_override() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        env::set_var("AGENTCHAT_LOG_PATH", "/tmp/custom-daemon.log");
+        let root = PathBuf::from("/tmp/agentchat-project");
+
+        assert_eq!(
+            resolve_log_path(&root),
+            PathBuf::from("/tmp/custom-daemon.log")
+        );
+
+        env::remove_var("AGENTCHAT_LOG_PATH");
     }
 }
 
@@ -257,9 +486,42 @@ fn format_mobile_ws_url(ip: IpAddr, port: u16) -> String {
     }
 }
 
-fn print_mobile_qr(port: u16) -> Result<(), String> {
+fn percent_encode_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+fn mobile_qr_payload_for_ws_url(ws_url: &str, selected_agent_ids: &[String]) -> String {
+    if selected_agent_ids.is_empty() {
+        return ws_url.to_string();
+    }
+
+    format!(
+        "agentchat://connect?url={}&agents={}",
+        percent_encode_component(ws_url),
+        percent_encode_component(&selected_agent_ids.join(","))
+    )
+}
+
+fn build_mobile_qr_payload(
+    port: u16,
+    selected_agent_ids: &[String],
+) -> Result<(String, String), String> {
     let ws_url = resolve_mobile_ws_url(port)?;
-    let qr = QrCode::new(ws_url.as_bytes())
+    let payload = mobile_qr_payload_for_ws_url(&ws_url, selected_agent_ids);
+    Ok((ws_url, payload))
+}
+
+fn print_mobile_qr(port: u16, selected_agent_ids: &[String]) -> Result<(), String> {
+    let (ws_url, payload) = build_mobile_qr_payload(port, selected_agent_ids)?;
+    let qr = QrCode::new(payload.as_bytes())
         .map_err(|err| format!("failed to generate mobile QR code: {err}"))?
         .render::<unicode::Dense1x2>()
         .quiet_zone(true)
@@ -270,13 +532,274 @@ fn print_mobile_qr(port: u16) -> Result<(), String> {
     println!(" AgentChat mobile login");
     println!(" Scan this QR from the iPhone app: Connection → Scan QR");
     println!(" WebSocket URL: {ws_url}");
+    if !selected_agent_ids.is_empty() {
+        println!(" Preselected agents: {}", selected_agent_ids.join(", "));
+    }
     println!(" Tip: phone and Mac must be on the same Wi-Fi / LAN");
     println!("════════════════════════════════════════════════════════════");
     println!("{qr}");
-    println!("{ws_url}");
+    println!("{payload}");
     println!();
 
     Ok(())
+}
+
+fn print_interactive_help() {
+    println!();
+    println!("Interactive commands:");
+    println!("  /mobile   Select one or more agents and print a mobile QR code");
+    println!("  /help     Show this help");
+    println!("  /quit     Stop the daemon");
+    println!();
+}
+
+fn start_interactive_console(command_tx: mpsc::UnboundedSender<InteractiveCommand>) {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return;
+    }
+
+    thread::spawn(move || {
+        print_interactive_help();
+
+        let stdin = io::stdin();
+        let mut lines = stdin.lock().lines();
+
+        loop {
+            print!("agentchat> ");
+            if io::stdout().flush().is_err() {
+                break;
+            }
+
+            let Some(line) = lines.next() else {
+                break;
+            };
+
+            let line = match line {
+                Ok(line) => line,
+                Err(err) => {
+                    eprintln!("failed reading CLI command: {err}");
+                    break;
+                }
+            };
+
+            match line.trim() {
+                "" => {}
+                "/help" => print_interactive_help(),
+                "/quit" | "/exit" => {
+                    let _ = command_tx.send(InteractiveCommand::Shutdown);
+                    break;
+                }
+                "/mobile" => {
+                    let (reply_tx, reply_rx) = std_mpsc::channel();
+                    if command_tx
+                        .send(InteractiveCommand::ShowMobile { reply: reply_tx })
+                        .is_err()
+                    {
+                        break;
+                    }
+
+                    let agents = match reply_rx.recv() {
+                        Ok(agents) => agents,
+                        Err(_) => {
+                            eprintln!("failed to read daemon agent list");
+                            continue;
+                        }
+                    };
+
+                    match prompt_mobile_agent_selection(&agents) {
+                        Ok(Some(selected_agent_ids)) => {
+                            if let Err(err) = print_mobile_qr(DEFAULT_PORT, &selected_agent_ids) {
+                                eprintln!("failed to prepare mobile QR output: {err}");
+                            }
+                        }
+                        Ok(None) => println!("mobile QR selection cancelled"),
+                        Err(err) => eprintln!("failed to open mobile selection: {err}"),
+                    }
+                }
+                other => eprintln!("unknown command `{other}`; run /help"),
+            }
+        }
+    });
+}
+
+struct RawTerminalGuard {
+    original_state: String,
+}
+
+impl RawTerminalGuard {
+    fn new() -> Result<Self, String> {
+        let tty = File::open("/dev/tty")
+            .map_err(|err| format!("failed to open /dev/tty for interactive terminal: {err}"))?;
+        let output = Command::new("stty")
+            .arg("-g")
+            .stdin(Stdio::from(tty.try_clone().map_err(|err| {
+                format!("failed to clone /dev/tty handle: {err}")
+            })?))
+            .output()
+            .map_err(|err| format!("failed to read terminal state with stty: {err}"))?;
+        if !output.status.success() {
+            return Err("stty -g failed while preparing interactive terminal".into());
+        }
+
+        let original_state = String::from_utf8(output.stdout)
+            .map_err(|err| format!("failed to decode terminal state: {err}"))?
+            .trim()
+            .to_string();
+
+        let status = Command::new("stty")
+            .args(["-icanon", "-echo", "min", "1", "time", "0"])
+            .stdin(Stdio::from(tty.try_clone().map_err(|err| {
+                format!("failed to clone /dev/tty handle: {err}")
+            })?))
+            .status()
+            .map_err(|err| format!("failed to switch terminal to raw mode: {err}"))?;
+        if !status.success() {
+            return Err("stty failed to switch terminal to raw mode".into());
+        }
+
+        Ok(Self { original_state })
+    }
+}
+
+impl Drop for RawTerminalGuard {
+    fn drop(&mut self) {
+        if let Ok(tty) = File::open("/dev/tty") {
+            let _ = Command::new("stty")
+                .arg(&self.original_state)
+                .stdin(Stdio::from(tty))
+                .status();
+        }
+    }
+}
+
+fn draw_mobile_selection(
+    agents: &[AgentSummary],
+    cursor: usize,
+    selected: &[bool],
+    warning: Option<&str>,
+) -> Result<(), String> {
+    print!("\x1b[2J\x1b[H");
+    println!("Select coding agents for the mobile QR");
+    println!(
+        "Use ↑/↓ or j/k to move, Space to toggle, Enter to confirm, a to toggle all online, q to cancel."
+    );
+    println!();
+
+    for (index, agent) in agents.iter().enumerate() {
+        let pointer = if index == cursor { ">" } else { " " };
+        let marker = if selected[index] { "●" } else { "○" };
+        let status = match agent.status {
+            AgentStatus::Online => "online",
+            AgentStatus::Offline => "offline",
+            AgentStatus::Starting => "starting",
+            AgentStatus::Crashed => "crashed",
+        };
+        let suffix = if matches!(agent.status, AgentStatus::Online) {
+            ""
+        } else {
+            " (unavailable)"
+        };
+        println!(
+            "{pointer} {marker} {} [{}] - {}{}",
+            agent.name, agent.agent_id, status, suffix
+        );
+    }
+
+    if let Some(warning) = warning {
+        println!();
+        println!("{warning}");
+    }
+
+    io::stdout()
+        .flush()
+        .map_err(|err| format!("failed to flush terminal output: {err}"))
+}
+
+fn prompt_mobile_agent_selection(agents: &[AgentSummary]) -> Result<Option<Vec<String>>, String> {
+    if agents.is_empty() {
+        return Err("no agents are configured in the daemon".into());
+    }
+    if !agents
+        .iter()
+        .any(|agent| matches!(agent.status, AgentStatus::Online))
+    {
+        return Err("no online agents are available to include in the QR".into());
+    }
+
+    let _guard = RawTerminalGuard::new()?;
+    let mut tty = File::open("/dev/tty")
+        .map_err(|err| format!("failed to open /dev/tty for keyboard input: {err}"))?;
+    let mut cursor = 0usize;
+    let mut selected = vec![false; agents.len()];
+    let mut warning: Option<String> = None;
+
+    loop {
+        draw_mobile_selection(agents, cursor, &selected, warning.as_deref())?;
+        warning = None;
+
+        let mut byte = [0u8; 1];
+        tty.read_exact(&mut byte)
+            .map_err(|err| format!("failed reading keyboard input: {err}"))?;
+
+        match byte[0] {
+            b' ' => {
+                if matches!(agents[cursor].status, AgentStatus::Online) {
+                    selected[cursor] = !selected[cursor];
+                } else {
+                    warning = Some("Only online agents can be selected.".into());
+                }
+            }
+            b'a' | b'A' => {
+                let should_select_all = agents.iter().enumerate().any(|(index, agent)| {
+                    matches!(agent.status, AgentStatus::Online) && !selected[index]
+                });
+                for (index, agent) in agents.iter().enumerate() {
+                    if matches!(agent.status, AgentStatus::Online) {
+                        selected[index] = should_select_all;
+                    }
+                }
+            }
+            b'k' => cursor = cursor.saturating_sub(1),
+            b'j' => cursor = (cursor + 1).min(agents.len().saturating_sub(1)),
+            b'\r' | b'\n' => {
+                let selected_ids = agents
+                    .iter()
+                    .zip(selected.iter())
+                    .filter(|(agent, is_selected)| {
+                        **is_selected && matches!(agent.status, AgentStatus::Online)
+                    })
+                    .map(|(agent, _)| agent.agent_id.clone())
+                    .collect::<Vec<_>>();
+                if selected_ids.is_empty() {
+                    warning = Some("Select at least one online agent before confirming.".into());
+                } else {
+                    print!("\x1b[2J\x1b[H");
+                    println!();
+                    return Ok(Some(selected_ids));
+                }
+            }
+            b'q' => {
+                print!("\x1b[2J\x1b[H");
+                println!();
+                return Ok(None);
+            }
+            0x1b => {
+                let mut sequence = [0u8; 2];
+                if tty.read_exact(&mut sequence).is_ok() && sequence[0] == b'[' {
+                    match sequence[1] {
+                        b'A' => cursor = cursor.saturating_sub(1),
+                        b'B' => cursor = (cursor + 1).min(agents.len().saturating_sub(1)),
+                        _ => {}
+                    }
+                } else {
+                    print!("\x1b[2J\x1b[H");
+                    println!();
+                    return Ok(None);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 async fn wait_for_shutdown_signal() -> Result<(), String> {
@@ -307,6 +830,9 @@ async fn wait_for_shutdown_signal() -> Result<(), String> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    // Use the current directory as the default project root.
+    let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
     let cli_options = match parse_cli_options() {
         Ok(Some(options)) => options,
         Ok(None) => return,
@@ -316,11 +842,18 @@ async fn main() {
         }
     };
 
-    tracing_subscriber::fmt::init();
+    let log_path = match init_tracing(&project_root) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    };
 
     info!("agentchat daemon v0.1.0");
+    info!("daemon logs redirected to {}", log_path.display());
 
-    // M0+: launch one or more ACP-capable agents, configurable via environment.
+    // Launch one or more configured agent backends from the environment.
     let agent_configs = match load_agent_configs() {
         Ok(configs) => configs,
         Err(err) => {
@@ -343,9 +876,6 @@ async fn main() {
         std::process::exit(1);
     }
 
-    // Use current directory as project root (M0 default).
-    let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-
     let local = tokio::task::LocalSet::new();
 
     let exit_code = local
@@ -357,7 +887,7 @@ async fn main() {
                 let agent_id = config.id.clone();
                 if let Err(e) = manager.add_agent(config, project_root.clone()).await {
                     error!("failed to start agent '{agent_id}': {e}");
-                    eprintln!("make sure the ACP agent is installed and in PATH");
+                    eprintln!("make sure the configured agent command is installed and in PATH");
                     return 1;
                 }
             }
@@ -368,6 +898,7 @@ async fn main() {
             let distiller = Rc::new(Distiller::new(skill_store.clone()));
             let (_shutdown_tx, shutdown_rx) = watch::channel(false);
             let signal_tx = _shutdown_tx.clone();
+            let (command_tx, mut command_rx) = mpsc::unbounded_channel::<InteractiveCommand>();
 
             tokio::task::spawn_local(async move {
                 if let Err(e) = wait_for_shutdown_signal().await {
@@ -375,6 +906,25 @@ async fn main() {
                 }
                 let _ = signal_tx.send(true);
             });
+
+            if relay_config.is_none() {
+                start_interactive_console(command_tx);
+                let manager_for_commands = manager.clone();
+                let signal_tx = _shutdown_tx.clone();
+                tokio::task::spawn_local(async move {
+                    while let Some(command) = command_rx.recv().await {
+                        match command {
+                            InteractiveCommand::ShowMobile { reply } => {
+                                let _ = reply.send(manager_for_commands.borrow().list_agents());
+                            }
+                            InteractiveCommand::Shutdown => {
+                                let _ = signal_tx.send(true);
+                                break;
+                            }
+                        }
+                    }
+                });
+            }
 
             let run_result = if let Some(relay_config) = relay_config.clone() {
                 info!("agent initialized, starting relay transport");
@@ -390,7 +940,7 @@ async fn main() {
             } else {
                 info!("agent initialized, starting WebSocket server");
                 if cli_options.mobile_qr {
-                    if let Err(err) = print_mobile_qr(DEFAULT_PORT) {
+                    if let Err(err) = print_mobile_qr(DEFAULT_PORT, &[]) {
                         error!("failed to prepare mobile QR output: {err}");
                         eprintln!("failed to prepare mobile QR output: {err}");
                         return 1;

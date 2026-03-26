@@ -3,14 +3,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use agent_client_protocol::{
-    ContentBlock, PromptResponse, SessionId, SessionNotification, SessionUpdate,
-};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, warn};
 use uuid::Uuid;
 
 use agentchat_core::agent_manager::AgentManager;
+use agentchat_core::backend::{AgentNotification, AgentPromptResult, AgentUpdate};
 use agentchat_core::distiller::Distiller;
 use agentchat_core::session_event_log::SessionEventLog;
 use agentchat_core::session_store::SessionStore;
@@ -34,7 +32,7 @@ pub struct AppProtocolSession {
     thread_store: Rc<RefCell<ThreadStore>>,
     thread_event_log: Rc<RefCell<ThreadEventLog>>,
     response_tx: broadcast::Sender<ResponseEvent>,
-    internal_sessions: Rc<RefCell<HashMap<String, mpsc::UnboundedSender<SessionNotification>>>>,
+    internal_sessions: Rc<RefCell<HashMap<String, mpsc::UnboundedSender<AgentNotification>>>>,
     created_sessions: Vec<String>,
     active_prompt_sessions: Rc<RefCell<HashSet<String>>>,
     active_assistant_messages: Rc<RefCell<HashMap<String, ActiveAssistantMessage>>>,
@@ -124,7 +122,7 @@ impl AppProtocolSession {
         let thread_event_log = Rc::new(RefCell::new(ThreadEventLog::new(threads_dir)));
         let internal_sessions = Rc::new(RefCell::new(HashMap::<
             String,
-            mpsc::UnboundedSender<SessionNotification>,
+            mpsc::UnboundedSender<AgentNotification>,
         >::new()));
         let active_assistant_messages = Rc::new(RefCell::new(HashMap::<
             String,
@@ -360,7 +358,7 @@ impl AppProtocolSession {
             };
 
             if let (Some(agent), Some(upstream_session_id)) = (agent, upstream_session_id) {
-                if let Err(err) = agent.cancel(SessionId::new(upstream_session_id)).await {
+                if let Err(err) = agent.cancel(upstream_session_id).await {
                     warn!("disconnect cleanup cancel failed for session {session_id}: {err}");
                 }
             }
@@ -410,8 +408,7 @@ impl AppProtocolSession {
                 message: "agent is not online".into(),
             }),
             (Some(agent_id), Some(agent), true) => match agent.new_session(cwd).await {
-                Ok(resp) => {
-                    let upstream_session_id = resp.session_id.to_string();
+                Ok(upstream_session_id) => {
                     let public_session_id = format!("session-{}", Uuid::new_v4().simple());
                     self.manager.borrow_mut().register_session(
                         public_session_id.clone(),
@@ -1014,9 +1011,7 @@ impl AppProtocolSession {
                 let active_prompt_sessions = self.active_prompt_sessions.clone();
                 let active_assistant_messages = self.active_assistant_messages.clone();
                 tokio::task::spawn_local(async move {
-                    let result = agent
-                        .prompt(SessionId::new(upstream_session_id), prompt_content)
-                        .await;
+                    let result = agent.prompt(upstream_session_id, prompt_content).await;
                     active_prompt_sessions.borrow_mut().remove(&session_id);
 
                     handle_prompt_completion(
@@ -1058,7 +1053,7 @@ impl AppProtocolSession {
 
         match (agent, upstream_session_id) {
             (Some(agent), Some(upstream_session_id)) => {
-                if let Err(err) = agent.cancel(SessionId::new(upstream_session_id)).await {
+                if let Err(err) = agent.cancel(upstream_session_id).await {
                     warn!("cancel failed for session {session_id}: {err}");
                 }
             }
@@ -1212,13 +1207,10 @@ fn last_stop_reason(transcript: &SessionTranscript) -> Option<String> {
 }
 
 fn rewrite_notification_session_id(
-    notification: &SessionNotification,
+    notification: &AgentNotification,
     public_session_id: &str,
-) -> SessionNotification {
-    SessionNotification::new(
-        SessionId::new(public_session_id.to_string()),
-        notification.update.clone(),
-    )
+) -> AgentNotification {
+    notification.with_session_id(public_session_id.to_string())
 }
 
 fn maybe_broadcast_thread_event_for_session_event(
@@ -1518,13 +1510,13 @@ async fn handle_prompt_completion(
     thread_event_log: Rc<RefCell<ThreadEventLog>>,
     active_assistant_messages: Rc<RefCell<HashMap<String, ActiveAssistantMessage>>>,
     session_id: String,
-    result: agent_client_protocol::Result<PromptResponse>,
+    result: Result<AgentPromptResult, String>,
 ) {
     match result {
         Ok(resp) => {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
 
-            let stop_reason = format!("{:?}", resp.stop_reason);
+            let stop_reason = resp.stop_reason;
             let event_seq = session_event_log.borrow_mut().next_seq(&session_id);
             let event = ResponseEvent::TurnEnd {
                 session_id: session_id.clone(),
@@ -1683,7 +1675,7 @@ fn spawn_distillation_task(
     manager: Rc<RefCell<AgentManager>>,
     session_store: Rc<RefCell<SessionStore>>,
     session_event_log: Rc<RefCell<SessionEventLog>>,
-    internal_sessions: Rc<RefCell<HashMap<String, mpsc::UnboundedSender<SessionNotification>>>>,
+    internal_sessions: Rc<RefCell<HashMap<String, mpsc::UnboundedSender<AgentNotification>>>>,
     distiller: Rc<Distiller>,
     session_id: String,
 ) {
@@ -1733,11 +1725,11 @@ fn spawn_distillation_task(
             }
         };
 
-        let distill_session = match agent
+        let distill_session_id = match agent
             .new_session(PathBuf::from(&transcript.working_dir))
             .await
         {
-            Ok(resp) => resp,
+            Ok(session_id) => session_id,
             Err(err) => {
                 send_distillation_status(
                     &session_event_log,
@@ -1750,7 +1742,6 @@ fn spawn_distillation_task(
             }
         };
 
-        let distill_session_id = distill_session.session_id.to_string();
         let (distill_tx, distill_rx) = mpsc::unbounded_channel();
         internal_sessions
             .borrow_mut()
@@ -1813,55 +1804,41 @@ fn send_distillation_status(
     );
 }
 
-fn map_session_update(notification: &SessionNotification, event_seq: u64) -> ResponseEvent {
-    let sid = notification.session_id.to_string();
+fn map_session_update(notification: &AgentNotification, event_seq: u64) -> ResponseEvent {
+    let sid = notification.session_id.clone();
 
     match &notification.update {
-        SessionUpdate::AgentMessageChunk(chunk) => {
-            let text = extract_text_from_content(&chunk.content);
-            ResponseEvent::Delta {
-                session_id: sid,
-                event_seq,
-                content: text,
-                delta_type: DeltaType::Text,
-            }
-        }
-        SessionUpdate::AgentThoughtChunk(chunk) => {
-            let text = extract_text_from_content(&chunk.content);
-            ResponseEvent::Delta {
-                session_id: sid,
-                event_seq,
-                content: text,
-                delta_type: DeltaType::Thinking,
-            }
-        }
-        SessionUpdate::ToolCall(tc) => ResponseEvent::ToolUpdate {
+        AgentUpdate::TextDelta { content } => ResponseEvent::Delta {
             session_id: sid,
             event_seq,
-            tool_call_id: tc.tool_call_id.to_string(),
-            title: tc.title.clone(),
-            status: format!("{:?}", tc.status),
-            content: None,
+            content: content.clone(),
+            delta_type: DeltaType::Text,
         },
-        SessionUpdate::ToolCallUpdate(tcu) => ResponseEvent::ToolUpdate {
+        AgentUpdate::ThinkingDelta { content } => ResponseEvent::Delta {
             session_id: sid,
             event_seq,
-            tool_call_id: tcu.tool_call_id.to_string(),
-            title: tcu.fields.title.clone().unwrap_or_default(),
-            status: tcu
-                .fields
-                .status
-                .as_ref()
-                .map(|status| format!("{status:?}"))
-                .unwrap_or_default(),
-            content: None,
+            content: content.clone(),
+            delta_type: DeltaType::Thinking,
         },
-        SessionUpdate::Plan(plan) => ResponseEvent::PlanUpdate {
+        AgentUpdate::ToolUpdate {
+            tool_call_id,
+            title,
+            status,
+            content,
+        } => ResponseEvent::ToolUpdate {
             session_id: sid,
             event_seq,
-            plan_json: serde_json::to_value(plan).unwrap_or_default(),
+            tool_call_id: tool_call_id.clone(),
+            title: title.clone(),
+            status: status.clone(),
+            content: content.clone(),
         },
-        _ => ResponseEvent::Delta {
+        AgentUpdate::Plan { plan_json } => ResponseEvent::PlanUpdate {
+            session_id: sid,
+            event_seq,
+            plan_json: plan_json.clone(),
+        },
+        AgentUpdate::Raw { .. } => ResponseEvent::Delta {
             session_id: sid,
             event_seq,
             content: String::new(),
@@ -1870,24 +1847,17 @@ fn map_session_update(notification: &SessionNotification, event_seq: u64) -> Res
     }
 }
 
-fn extract_text_from_content(block: &ContentBlock) -> String {
-    match block {
-        ContentBlock::Text(text) => text.text.clone(),
-        _ => String::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use agent_client_protocol::{AvailableCommandsUpdate, ContentChunk, ToolCall, ToolCallStatus};
-
     use super::*;
 
     #[test]
     fn map_session_update_maps_agent_message_chunk_to_text_delta() {
-        let notification = SessionNotification::new(
+        let notification = AgentNotification::new(
             "session-1",
-            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from("hello"))),
+            AgentUpdate::TextDelta {
+                content: "hello".into(),
+            },
         );
 
         assert_eq!(
@@ -1903,9 +1873,11 @@ mod tests {
 
     #[test]
     fn map_session_update_maps_agent_thought_chunk_to_thinking_delta() {
-        let notification = SessionNotification::new(
+        let notification = AgentNotification::new(
             "session-1",
-            SessionUpdate::AgentThoughtChunk(ContentChunk::new(ContentBlock::from("thinking"))),
+            AgentUpdate::ThinkingDelta {
+                content: "thinking".into(),
+            },
         );
 
         assert_eq!(
@@ -1921,11 +1893,14 @@ mod tests {
 
     #[test]
     fn map_session_update_maps_tool_call_to_tool_update() {
-        let notification = SessionNotification::new(
+        let notification = AgentNotification::new(
             "session-1",
-            SessionUpdate::ToolCall(
-                ToolCall::new("tool-1", "Read file").status(ToolCallStatus::InProgress),
-            ),
+            AgentUpdate::ToolUpdate {
+                tool_call_id: "tool-1".into(),
+                title: "Read file".into(),
+                status: "InProgress".into(),
+                content: None,
+            },
         );
 
         assert_eq!(
@@ -1943,9 +1918,11 @@ mod tests {
 
     #[test]
     fn map_session_update_maps_unknown_variant_to_empty_delta() {
-        let notification = SessionNotification::new(
+        let notification = AgentNotification::new(
             "session-1",
-            SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(Vec::new())),
+            AgentUpdate::Raw {
+                payload: serde_json::json!({"kind": "unknown"}),
+            },
         );
 
         assert_eq!(
