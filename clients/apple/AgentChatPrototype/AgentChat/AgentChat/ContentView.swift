@@ -1233,6 +1233,7 @@ private struct TimelineBubble: View {
                             body: thinkingBody,
                             bodyFont: .callout,
                             bodyColor: theme.subtleInk,
+                            rendersMarkdown: true,
                             fill: theme.panel.opacity(0.96),
                             stroke: theme.stroke
                         )
@@ -1246,6 +1247,7 @@ private struct TimelineBubble: View {
                             body: planBody,
                             bodyFont: .system(.body, design: .monospaced),
                             bodyColor: theme.ink,
+                            rendersMarkdown: false,
                             fill: theme.planPanel.opacity(0.72),
                             stroke: theme.planColor.opacity(0.14)
                         )
@@ -1259,6 +1261,7 @@ private struct TimelineBubble: View {
                             body: toolBody(for: activity),
                             bodyFont: .system(.body, design: .monospaced),
                             bodyColor: theme.ink,
+                            rendersMarkdown: false,
                             fill: theme.toolPanel.opacity(0.72),
                             stroke: theme.accentWarm.opacity(0.18)
                         )
@@ -1270,7 +1273,7 @@ private struct TimelineBubble: View {
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(theme.mutedInk)
 
-                            Text(entry.body.isEmpty ? "…" : entry.body)
+                            AgentMarkdownText(content: entry.body.isEmpty ? "…" : entry.body)
                                 .font(.body)
                                 .foregroundStyle(theme.ink)
                                 .lineSpacing(5)
@@ -1315,6 +1318,7 @@ private struct TimelineBubble: View {
         body: String,
         bodyFont: Font,
         bodyColor: Color,
+        rendersMarkdown: Bool,
         fill: Color,
         stroke: Color
     ) -> some View {
@@ -1323,12 +1327,23 @@ private struct TimelineBubble: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(titleColor)
 
-            Text(body)
+            if rendersMarkdown {
+                AgentMarkdownText(
+                    content: body,
+                    preferredSyntax: .inlineOnlyPreservingWhitespace
+                )
                 .font(bodyFont)
                 .foregroundStyle(bodyColor)
                 .lineSpacing(4)
-                .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text(body)
+                    .font(bodyFont)
+                    .foregroundStyle(bodyColor)
+                    .lineSpacing(4)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(14)
         .background(
