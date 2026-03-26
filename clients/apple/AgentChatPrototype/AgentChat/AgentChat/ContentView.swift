@@ -511,7 +511,7 @@ struct ContentView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
-            Text("Paste ws://..., wss://..., or an agentchat://connect?... link. Relay QR links can use relay_url=<websocket-url>&device_id=<relay-device-id>&relay_pairing=dev&relay_crypto=dev.")
+            Text("Paste ws://..., wss://..., or an agentchat://connect?... link. Relay QR links can use relay_url=<websocket-url>&pairing_ticket=<pairing-ticket>&relay_pairing=claim&relay_crypto=dev.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }

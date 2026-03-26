@@ -7,12 +7,21 @@ import {
   parseRoutableRelayFrame,
   validateRoute,
 } from "./protocol";
-import type { AppRecord, DaemonRecord, Env, SocketAttachment } from "./types";
+import type {
+  AppRecord,
+  DaemonRecord,
+  Env,
+  PairingRecord,
+  SocketAttachment,
+} from "./types";
 
 const DAEMON_RECORD_KEY = "daemon_record";
 const APP_RECORD_PREFIX = "app_record:";
+const PAIRING_RECORD_PREFIX = "pairing_record:";
 const INTERNAL_BOOTSTRAP_DAEMON_PATH = "/internal/bootstrap-daemon";
 const INTERNAL_REGISTER_APP_PATH = "/internal/register-app";
+const INTERNAL_OPEN_PAIRING_PATH = "/internal/open-pairing";
+const INTERNAL_CLAIM_PAIRING_PATH = "/internal/claim-pairing";
 const INTERNAL_WS_PATH = "/internal/ws";
 const SOCKET_CLOSE_REPLACED = 4001;
 const SOCKET_CLOSE_UNAUTHENTICATED = 4401;
@@ -30,10 +39,26 @@ interface RegisterAppPayload {
   token_hash: string;
 }
 
+interface OpenPairingPayload {
+  daemon_secret: string;
+  pairing_id: string;
+  ticket_hash: string;
+  expires_at: number;
+}
+
+interface ClaimPairingPayload {
+  pairing_id: string;
+  ticket_secret: string;
+  app_installation_id: string;
+  app_name?: string;
+  token_hash: string;
+}
+
 export class DeviceHubDO {
   private readonly ready: Promise<void>;
   private daemonRecord: DaemonRecord | null = null;
   private readonly pairedApps = new Map<string, AppRecord>();
+  private readonly pairingRecords = new Map<string, PairingRecord>();
   private daemonSocket: WebSocket | null = null;
   private readonly appSockets = new Map<string, WebSocket>();
 
@@ -54,6 +79,14 @@ export class DeviceHubDO {
 
     if (request.method === "POST" && url.pathname === INTERNAL_REGISTER_APP_PATH) {
       return this.handleRegisterApp(request);
+    }
+
+    if (request.method === "POST" && url.pathname === INTERNAL_OPEN_PAIRING_PATH) {
+      return this.handleOpenPairing(request);
+    }
+
+    if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_PAIRING_PATH) {
+      return this.handleClaimPairing(request);
     }
 
     if (request.method === "GET" && url.pathname === INTERNAL_WS_PATH) {
@@ -139,6 +172,13 @@ export class DeviceHubDO {
       this.pairedApps.set(appRecord.appInstallationId, appRecord);
     }
 
+    const pairingEntries = await this.ctx.storage.list<PairingRecord>({
+      prefix: PAIRING_RECORD_PREFIX,
+    });
+    for (const pairingRecord of pairingEntries.values()) {
+      this.pairingRecords.set(pairingRecord.pairingId, pairingRecord);
+    }
+
     this.rebuildSocketIndexes();
   }
 
@@ -187,18 +227,80 @@ export class DeviceHubDO {
       return json({ error: "invalid_request" }, 400);
     }
 
-    const timestamp = nowMs();
-    const existing = this.pairedApps.get(payload.app_installation_id);
-    const record: AppRecord = {
-      appInstallationId: payload.app_installation_id,
-      appName: payload.app_name,
-      tokenHash: payload.token_hash,
-      pairedAt: existing?.pairedAt ?? timestamp,
-      updatedAt: timestamp,
+    await this.upsertAppRecord(
+      payload.app_installation_id,
+      payload.app_name,
+      payload.token_hash,
+    );
+
+    return json({ ok: true });
+  }
+
+  private async handleOpenPairing(request: Request): Promise<Response> {
+    const payload = await readJson<OpenPairingPayload>(request);
+    if (!payload || !payload.daemon_secret || !payload.pairing_id || !payload.ticket_hash) {
+      return json({ error: "invalid_request" }, 400);
+    }
+
+    const isAuthenticated = await this.verifySecret("daemon", payload.daemon_secret);
+    if (!isAuthenticated) {
+      return json({ error: "unauthorized" }, 403);
+    }
+
+    const expiresAt = Math.trunc(payload.expires_at);
+    if (!Number.isFinite(expiresAt) || expiresAt <= nowMs()) {
+      return json({ error: "invalid_expiration" }, 400);
+    }
+
+    const record: PairingRecord = {
+      pairingId: payload.pairing_id,
+      ticketHash: payload.ticket_hash,
+      createdAt: nowMs(),
+      expiresAt,
     };
 
-    await this.ctx.storage.put(this.appStorageKey(payload.app_installation_id), record);
-    this.pairedApps.set(payload.app_installation_id, record);
+    await this.ctx.storage.put(this.pairingStorageKey(payload.pairing_id), record);
+    this.pairingRecords.set(payload.pairing_id, record);
+
+    return json({ ok: true });
+  }
+
+  private async handleClaimPairing(request: Request): Promise<Response> {
+    const payload = await readJson<ClaimPairingPayload>(request);
+    if (
+      !payload ||
+      !payload.pairing_id ||
+      !payload.ticket_secret ||
+      !payload.app_installation_id ||
+      !payload.token_hash
+    ) {
+      return json({ error: "invalid_request" }, 400);
+    }
+
+    const pairingRecord = this.pairingRecords.get(payload.pairing_id);
+    if (!pairingRecord) {
+      return json({ error: "pairing_not_found" }, 404);
+    }
+
+    if (pairingRecord.expiresAt <= nowMs()) {
+      await this.ctx.storage.delete(this.pairingStorageKey(payload.pairing_id));
+      this.pairingRecords.delete(payload.pairing_id);
+      return json({ error: "pairing_expired" }, 410);
+    }
+
+    const candidateHash = await hashRelaySecret(payload.ticket_secret);
+    if (candidateHash !== pairingRecord.ticketHash) {
+      return json({ error: "invalid_pairing_ticket" }, 403);
+    }
+
+    await this.upsertAppRecord(
+      payload.app_installation_id,
+      payload.app_name,
+      payload.token_hash,
+    );
+
+    await this.ctx.storage.delete(this.pairingStorageKey(payload.pairing_id));
+    this.pairingRecords.delete(payload.pairing_id);
 
     return json({ ok: true });
   }
@@ -251,6 +353,25 @@ export class DeviceHubDO {
       status: 101,
       webSocket: client,
     });
+  }
+
+  private async upsertAppRecord(
+    appInstallationId: string,
+    appName: string | undefined,
+    tokenHash: string,
+  ): Promise<void> {
+    const timestamp = nowMs();
+    const existing = this.pairedApps.get(appInstallationId);
+    const record: AppRecord = {
+      appInstallationId,
+      appName,
+      tokenHash,
+      pairedAt: existing?.pairedAt ?? timestamp,
+      updatedAt: timestamp,
+    };
+
+    await this.ctx.storage.put(this.appStorageKey(appInstallationId), record);
+    this.pairedApps.set(appInstallationId, record);
   }
 
   private async verifySecret(
@@ -341,6 +462,10 @@ export class DeviceHubDO {
 
   private appStorageKey(appInstallationId: string): string {
     return `${APP_RECORD_PREFIX}${appInstallationId}`;
+  }
+
+  private pairingStorageKey(pairingId: string): string {
+    return `${PAIRING_RECORD_PREFIX}${pairingId}`;
   }
 }
 

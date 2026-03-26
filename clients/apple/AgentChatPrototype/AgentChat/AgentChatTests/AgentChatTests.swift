@@ -38,8 +38,27 @@ struct AgentChatTests {
                 deviceID: "dev_local_1",
                 relayToken: nil,
                 pairingMode: .dev,
+                pairingTicket: nil,
                 cryptoMode: .dev,
                 agentIDs: ["codex-main"]
+            )
+        ))
+    }
+
+    @Test func scannedDaemonPayloadParsesRelayClaimLink() async throws {
+        let payload = parseScannedDaemonConnectionPayload(
+            from: "agentchat://connect?relay_url=wss%3A%2F%2Frelay.agentchat.dev%2Fv1%2Fws&pairing_ticket=achpair.dev_local_1.pair_abc.secretvalue1234567890&relay_pairing=claim&relay_crypto=dev"
+        )
+
+        #expect(payload == .relay(
+            RelayConnectionPayload(
+                wsURL: "wss://relay.agentchat.dev/v1/ws",
+                deviceID: nil,
+                relayToken: nil,
+                pairingMode: .claim,
+                pairingTicket: "achpair.dev_local_1.pair_abc.secretvalue1234567890",
+                cryptoMode: .dev,
+                agentIDs: []
             )
         ))
     }

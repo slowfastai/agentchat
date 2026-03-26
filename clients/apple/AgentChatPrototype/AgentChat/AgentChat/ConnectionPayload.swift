@@ -2,6 +2,7 @@ import Foundation
 
 enum RelayPairingMode: String, Codable, Equatable {
     case dev
+    case claim
 }
 
 enum RelayCryptoMode: String, Codable, Equatable {
@@ -13,6 +14,7 @@ struct RelayConnectionPayload: Codable, Equatable {
     let deviceID: String?
     let relayToken: String?
     let pairingMode: RelayPairingMode?
+    let pairingTicket: String?
     let cryptoMode: RelayCryptoMode
     let agentIDs: [String]
 }
@@ -68,6 +70,10 @@ func parseScannedDaemonConnectionPayload(from payload: String) -> ScannedDaemonC
             .first(where: { $0.name == "device_id" })?
             .value?
             .trimmedNonEmpty
+        let pairingTicket = components.queryItems?
+            .first(where: { $0.name == "pairing_ticket" })?
+            .value?
+            .trimmedNonEmpty
 
         let rawPairingMode = components.queryItems?
             .first(where: { $0.name == "relay_pairing" })?
@@ -76,6 +82,8 @@ func parseScannedDaemonConnectionPayload(from payload: String) -> ScannedDaemonC
         let pairingMode: RelayPairingMode?
         if let rawPairingMode {
             pairingMode = RelayPairingMode(rawValue: rawPairingMode)
+        } else if relayToken == nil, pairingTicket != nil {
+            pairingMode = .claim
         } else if relayToken == nil, deviceID != nil {
             pairingMode = .dev
         } else {
@@ -90,7 +98,10 @@ func parseScannedDaemonConnectionPayload(from payload: String) -> ScannedDaemonC
             return nil
         }
 
-        guard relayToken != nil || (pairingMode == .dev && deviceID != nil) else {
+        let hasResolvableCredentials = relayToken != nil
+            || (pairingMode == .dev && deviceID != nil)
+            || (pairingMode == .claim && pairingTicket != nil)
+        guard hasResolvableCredentials else {
             return nil
         }
 
@@ -100,6 +111,7 @@ func parseScannedDaemonConnectionPayload(from payload: String) -> ScannedDaemonC
                 deviceID: deviceID,
                 relayToken: relayToken,
                 pairingMode: pairingMode,
+                pairingTicket: pairingTicket,
                 cryptoMode: cryptoMode,
                 agentIDs: agentIDs
             )

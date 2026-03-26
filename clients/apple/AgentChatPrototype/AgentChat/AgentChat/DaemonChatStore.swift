@@ -241,7 +241,7 @@ final class DaemonChatStore: ObservableObject {
         }
 
         guard parseScannedDaemonConnectionPayload(from: trimmed) != nil else {
-            errorMessage = "Unsupported QR payload. Encode ws://..., wss://..., agentchat://connect?url=<percent-encoded-websocket-url>&agents=<comma-separated-agent-ids>, or agentchat://connect?relay_url=<percent-encoded-relay-websocket-url>&device_id=<relay-device-id>&relay_pairing=dev&relay_crypto=dev."
+            errorMessage = "Unsupported QR payload. Encode ws://..., wss://..., agentchat://connect?url=<percent-encoded-websocket-url>&agents=<comma-separated-agent-ids>, or relay agentchat://connect?relay_url=<percent-encoded-relay-websocket-url>&pairing_ticket=<pairing-ticket>&relay_pairing=claim&relay_crypto=dev."
             return
         }
 

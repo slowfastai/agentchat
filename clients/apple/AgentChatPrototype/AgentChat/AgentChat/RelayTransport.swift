@@ -27,7 +27,7 @@ enum RelayInboundMessage {
 
 enum RelayTransportError: LocalizedError {
     case invalidRelayURL(String)
-    case invalidDevPairURL(String)
+    case invalidPairingURL(String)
     case missingRelayCredentials
     case pairingFailed(String)
     case invalidFrame(String)
@@ -41,10 +41,10 @@ enum RelayTransportError: LocalizedError {
         switch self {
         case .invalidRelayURL(let value):
             return "Invalid relay URL: \(value)"
-        case .invalidDevPairURL(let value):
-            return "Invalid relay dev pair URL derived from \(value)"
+        case .invalidPairingURL(let value):
+            return "Invalid relay pairing URL derived from \(value)"
         case .missingRelayCredentials:
-            return "Relay connection is missing a token or pairable device ID"
+            return "Relay connection is missing a token, pairing ticket, or pairable device ID"
         case .pairingFailed(let message):
             return "Relay pairing failed: \(message)"
         case .invalidFrame(let message):
@@ -73,32 +73,46 @@ extension RelayConnectionPayload {
             return ResolvedRelayConnection(wsURL: relayURL, relayToken: relayToken, cryptoMode: cryptoMode)
         }
 
-        guard pairingMode == .dev, let deviceID else {
+        let pairingResponse: RelayPairResponse
+        switch pairingMode {
+        case .dev:
+            guard let deviceID else {
+                throw RelayTransportError.missingRelayCredentials
+            }
+            pairingResponse = try await RelayPairingClient.pairDev(
+                pairURL: try Self.pairingURL(from: relayURL, path: "/v1/dev/pair"),
+                deviceID: deviceID,
+                appInstallationID: appInstallationID,
+                appName: appName
+            )
+        case .claim:
+            guard let pairingTicket else {
+                throw RelayTransportError.missingRelayCredentials
+            }
+            pairingResponse = try await RelayPairingClient.claimTicket(
+                claimURL: try Self.pairingURL(from: relayURL, path: "/v1/pairing/claim"),
+                pairingTicket: pairingTicket,
+                appInstallationID: appInstallationID,
+                appName: appName
+            )
+        case .none:
             throw RelayTransportError.missingRelayCredentials
         }
 
-        let pairURL = try Self.devPairURL(from: relayURL)
-        let pairResponse = try await RelayDevPairClient.pair(
-            pairURL: pairURL,
-            deviceID: deviceID,
-            appInstallationID: appInstallationID,
-            appName: appName
-        )
-
-        guard let pairedRelayURL = URL(string: pairResponse.wsURL) else {
-            throw RelayTransportError.invalidRelayURL(pairResponse.wsURL)
+        guard let pairedRelayURL = URL(string: pairingResponse.wsURL) else {
+            throw RelayTransportError.invalidRelayURL(pairingResponse.wsURL)
         }
 
         return ResolvedRelayConnection(
             wsURL: pairedRelayURL,
-            relayToken: pairResponse.relayToken,
+            relayToken: pairingResponse.relayToken,
             cryptoMode: cryptoMode
         )
     }
 
-    private static func devPairURL(from relayURL: URL) throws -> URL {
+    private static func pairingURL(from relayURL: URL, path: String) throws -> URL {
         guard var components = URLComponents(url: relayURL, resolvingAgainstBaseURL: false) else {
-            throw RelayTransportError.invalidDevPairURL(relayURL.absoluteString)
+            throw RelayTransportError.invalidPairingURL(relayURL.absoluteString)
         }
 
         switch components.scheme?.lowercased() {
@@ -107,15 +121,15 @@ extension RelayConnectionPayload {
         case "ws":
             components.scheme = "http"
         default:
-            throw RelayTransportError.invalidDevPairURL(relayURL.absoluteString)
+            throw RelayTransportError.invalidPairingURL(relayURL.absoluteString)
         }
 
-        components.path = "/v1/dev/pair"
+        components.path = path
         components.query = nil
         components.fragment = nil
 
         guard let url = components.url else {
-            throw RelayTransportError.invalidDevPairURL(relayURL.absoluteString)
+            throw RelayTransportError.invalidPairingURL(relayURL.absoluteString)
         }
         return url
     }
@@ -292,23 +306,44 @@ struct RelayAppSession {
     }
 }
 
-private struct RelayDevPairClient {
-    static func pair(
+private struct RelayPairingClient {
+    static func pairDev(
         pairURL: URL,
         deviceID: String,
         appInstallationID: String,
         appName: String
-    ) async throws -> RelayDevPairResponse {
-        var request = URLRequest(url: pairURL)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(
-            RelayDevPairRequest(
+    ) async throws -> RelayPairResponse {
+        try await postPairRequest(
+            url: pairURL,
+            body: RelayDevPairRequest(
                 deviceID: deviceID,
                 appInstallationID: appInstallationID,
                 appName: appName
             )
         )
+    }
+
+    static func claimTicket(
+        claimURL: URL,
+        pairingTicket: String,
+        appInstallationID: String,
+        appName: String
+    ) async throws -> RelayPairResponse {
+        try await postPairRequest(
+            url: claimURL,
+            body: RelayClaimPairRequest(
+                pairingTicket: pairingTicket,
+                appInstallationID: appInstallationID,
+                appName: appName
+            )
+        )
+    }
+
+    private static func postPairRequest<Body: Encodable>(url: URL, body: Body) async throws -> RelayPairResponse {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -319,7 +354,7 @@ private struct RelayDevPairClient {
             throw RelayTransportError.pairingFailed("HTTP \(httpResponse.statusCode) \(body)")
         }
 
-        return try JSONDecoder().decode(RelayDevPairResponse.self, from: data)
+        return try JSONDecoder().decode(RelayPairResponse.self, from: data)
     }
 }
 
@@ -443,7 +478,19 @@ private struct RelayDevPairRequest: Encodable {
     }
 }
 
-private struct RelayDevPairResponse: Decodable {
+private struct RelayClaimPairRequest: Encodable {
+    let pairingTicket: String
+    let appInstallationID: String
+    let appName: String
+
+    enum CodingKeys: String, CodingKey {
+        case pairingTicket = "pairing_ticket"
+        case appInstallationID = "app_installation_id"
+        case appName = "app_name"
+    }
+}
+
+private struct RelayPairResponse: Decodable {
     let deviceID: String
     let appInstallationID: String
     let peerID: String

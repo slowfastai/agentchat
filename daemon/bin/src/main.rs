@@ -26,6 +26,7 @@ use agentchat_server::relay::RelayTransportServer;
 use agentchat_server::ws::WebSocketServer;
 use if_addrs::{get_if_addrs, IfAddr, Interface};
 use qrcode::{render::unicode, QrCode};
+use serde::Deserialize;
 use tokio::sync::{mpsc, watch};
 use tracing::{error, info};
 use tracing_subscriber::fmt::writer::MakeWriter;
@@ -277,6 +278,13 @@ fn load_relay_client_config() -> Result<Option<RelayClientConfig>, String> {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct RelayPairingOpenResponse {
+    pairing_ticket: String,
+    ws_url: String,
+    expires_at: u64,
+}
+
 fn default_log_path(project_root: &Path) -> PathBuf {
     project_root
         .join(".agentchat")
@@ -387,24 +395,28 @@ mod tests {
     }
 
     #[test]
-    fn relay_mobile_qr_payload_encodes_device_and_agents() {
-        let payload = relay_mobile_qr_payload_for_ws_url(
+    fn relay_mobile_qr_payload_encodes_pairing_ticket_and_agents() {
+        let payload = relay_mobile_qr_payload_for_pairing_ticket(
             "wss://relay.agentchat.dev/v1/ws",
-            "dev_local_1",
+            "achpair.dev_local_1.pair_abc.secret_value",
             &["codex-main".into()],
         );
 
         assert_eq!(
             payload,
-            "agentchat://connect?relay_url=wss%3A%2F%2Frelay.agentchat.dev%2Fv1%2Fws&device_id=dev_local_1&relay_pairing=dev&relay_crypto=dev&agents=codex-main"
+            "agentchat://connect?relay_url=wss%3A%2F%2Frelay.agentchat.dev%2Fv1%2Fws&pairing_ticket=achpair.dev_local_1.pair_abc.secret_value&relay_pairing=claim&relay_crypto=dev&agents=codex-main"
         );
     }
 
     #[test]
-    fn daemon_device_id_is_extracted_from_relay_token() {
+    fn pairing_open_http_url_is_derived_from_websocket_url() {
         assert_eq!(
-            daemon_device_id_from_relay_token("achdm.dev_local_1.secret_value").unwrap(),
-            "dev_local_1"
+            relay_pairing_open_url_from_ws_url("wss://relay.agentchat.dev/v1/ws").unwrap(),
+            "https://relay.agentchat.dev/v1/pairing/open"
+        );
+        assert_eq!(
+            relay_pairing_open_url_from_ws_url("ws://127.0.0.1:8787/v1/ws").unwrap(),
+            "http://127.0.0.1:8787/v1/pairing/open"
         );
     }
 
@@ -532,15 +544,15 @@ fn mobile_qr_payload_for_ws_url(ws_url: &str, selected_agent_ids: &[String]) -> 
     )
 }
 
-fn relay_mobile_qr_payload_for_ws_url(
+fn relay_mobile_qr_payload_for_pairing_ticket(
     relay_ws_url: &str,
-    device_id: &str,
+    pairing_ticket: &str,
     selected_agent_ids: &[String],
 ) -> String {
     let mut payload = format!(
-        "agentchat://connect?relay_url={}&device_id={}&relay_pairing=dev&relay_crypto=dev",
+        "agentchat://connect?relay_url={}&pairing_ticket={}&relay_pairing=claim&relay_crypto=dev",
         percent_encode_component(relay_ws_url),
-        percent_encode_component(device_id)
+        percent_encode_component(pairing_ticket)
     );
 
     if !selected_agent_ids.is_empty() {
@@ -551,23 +563,69 @@ fn relay_mobile_qr_payload_for_ws_url(
     payload
 }
 
-fn daemon_device_id_from_relay_token(relay_token: &str) -> Result<String, String> {
-    let mut parts = relay_token.split('.');
-    let prefix = parts.next();
-    let device_id = parts.next();
-    let secret = parts.next();
+fn relay_pairing_open_url_from_ws_url(relay_ws_url: &str) -> Result<String, String> {
+    let mut url = reqwest::Url::parse(relay_ws_url)
+        .map_err(|err| format!("invalid relay websocket url '{relay_ws_url}': {err}"))?;
 
-    match (prefix, device_id, secret, parts.next()) {
-        (Some("achdm"), Some(device_id), Some(secret), None)
-            if !device_id.trim().is_empty() && !secret.trim().is_empty() =>
-        {
-            Ok(device_id.to_string())
+    match url.scheme() {
+        "wss" => url.set_scheme("https").map_err(|_| {
+            "failed to derive https pairing url from relay websocket url".to_string()
+        })?,
+        "ws" => url.set_scheme("http").map_err(|_| {
+            "failed to derive http pairing url from relay websocket url".to_string()
+        })?,
+        _ => {
+            return Err(format!(
+                "relay websocket url must use ws:// or wss://, got '{relay_ws_url}'"
+            ))
         }
-        _ => Err(
-            "AGENTCHAT_RELAY_TOKEN must be a daemon relay token in the form achdm.<device-id>.<secret> for relay mobile QR output"
-                .into(),
-        ),
     }
+
+    url.set_path("/v1/pairing/open");
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url.to_string())
+}
+
+fn open_pairing_ticket_for_relay(
+    relay_ws_url: &str,
+    relay_token: &str,
+) -> Result<RelayPairingOpenResponse, String> {
+    let pairing_open_url = relay_pairing_open_url_from_ws_url(relay_ws_url)?;
+    let client = reqwest::blocking::Client::builder()
+        .build()
+        .map_err(|err| format!("failed to build relay pairing http client: {err}"))?;
+    let response = client
+        .post(&pairing_open_url)
+        .bearer_auth(relay_token)
+        .header("content-type", "application/json")
+        .body("{}")
+        .send()
+        .map_err(|err| format!("failed to open relay pairing session: {err}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|err| format!("failed reading relay pairing response body: {err}"))?;
+
+    if !status.is_success() {
+        return Err(format!(
+            "relay pairing open failed with HTTP {}: {}",
+            status.as_u16(),
+            body.trim()
+        ));
+    }
+
+    let pairing: RelayPairingOpenResponse = serde_json::from_str(&body)
+        .map_err(|err| format!("failed to decode relay pairing response: {err}"))?;
+    validate_mobile_ws_url(&pairing.ws_url)?;
+    if pairing.pairing_ticket.trim().is_empty() {
+        return Err("relay pairing response did not include a pairing_ticket".into());
+    }
+    if pairing.expires_at == 0 {
+        return Err("relay pairing response did not include a valid expires_at timestamp".into());
+    }
+
+    Ok(pairing)
 }
 
 fn build_relay_mobile_qr_payload(
@@ -589,9 +647,13 @@ fn build_relay_mobile_qr_payload(
 
     let relay_token = optional_env("AGENTCHAT_RELAY_TOKEN")
         .ok_or("relay mobile QR requires AGENTCHAT_RELAY_TOKEN to be set")?;
-    let device_id = daemon_device_id_from_relay_token(&relay_token)?;
-    let payload = relay_mobile_qr_payload_for_ws_url(&relay_ws_url, &device_id, selected_agent_ids);
-    Ok(Some((relay_ws_url, payload)))
+    let pairing = open_pairing_ticket_for_relay(&relay_ws_url, &relay_token)?;
+    let payload = relay_mobile_qr_payload_for_pairing_ticket(
+        &pairing.ws_url,
+        &pairing.pairing_ticket,
+        selected_agent_ids,
+    );
+    Ok(Some((pairing.ws_url, payload)))
 }
 
 fn build_mobile_qr_payload(

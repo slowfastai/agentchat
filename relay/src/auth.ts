@@ -1,5 +1,10 @@
 import { randomSecret, sha256Base64Url } from "./crypto";
-import type { AppRelayToken, DaemonRelayToken, ParsedRelayToken } from "./types";
+import type {
+  AppRelayToken,
+  DaemonRelayToken,
+  PairingTicket,
+  ParsedRelayToken,
+} from "./types";
 
 const TOKEN_COMPONENT_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const TOKEN_SECRET_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
@@ -58,6 +63,44 @@ export function parseRelayToken(token: string): ParsedRelayToken | null {
 
 export async function hashRelaySecret(secret: string): Promise<string> {
   return sha256Base64Url(secret);
+}
+
+export function parsePairingTicket(ticket: string): PairingTicket | null {
+  const parts = ticket.split(".");
+  const prefix = parts[0];
+
+  if (prefix !== "achpair" || parts.length !== 4) {
+    return null;
+  }
+
+  const [, deviceId, pairingId, secret] = parts;
+  if (
+    !isTokenComponent(deviceId) ||
+    !isTokenComponent(pairingId) ||
+    !isTokenSecret(secret)
+  ) {
+    return null;
+  }
+
+  return {
+    deviceId,
+    pairingId,
+    secret,
+  };
+}
+
+export function buildPairingTicket(deviceId: string): {
+  pairingTicket: string;
+  pairingId: string;
+  secret: string;
+} {
+  const pairingId = `pair_${crypto.randomUUID().replace(/-/g, "")}`;
+  const secret = randomSecret();
+  return {
+    pairingTicket: `achpair.${deviceId}.${pairingId}.${secret}`,
+    pairingId,
+    secret,
+  };
 }
 
 export function buildDaemonRelayToken(deviceId: string): {

@@ -8,6 +8,12 @@ This is a minimal Cloudflare relay skeleton. It currently implements:
 - `relay_ready` delivery
 - `from` validation
 - routing by `to` for `secure_channel_hello`, `secure_channel_accept`, and `relay_envelope`
+- QR-driven relay pairing endpoints:
+  - `POST /v1/pairing/open`
+  - `POST /v1/pairing/claim`
+- dev helper endpoints:
+  - `POST /v1/dev/bootstrap`
+  - `POST /v1/dev/pair`
 - minimal protocol-level errors for:
   - `PEER_OFFLINE`
   - `FORBIDDEN_SENDER`
@@ -16,8 +22,7 @@ This is a minimal Cloudflare relay skeleton. It currently implements:
 
 The following are **not** implemented yet:
 
-- the full bootstrap / pairing flow
-- real end-to-end encryption inside the Worker
+- custom per-device production relay crypto identity provisioning for the Apple app
 - presence / `peer_upsert` / `peer_remove`
 - offline message storage
 
@@ -53,6 +58,62 @@ Run the stronger end-to-end validation against the real daemon binary:
 
 ```bash
 npm run test:e2e:main-daemon
+```
+
+## Relay pairing endpoints used by the iPhone app QR flow
+
+The current Apple client uses a ticket-based pairing flow:
+
+1. the daemon calls `POST /v1/pairing/open` with its daemon relay token
+2. the Worker returns a short-lived `pairing_ticket`
+3. the daemon embeds that ticket in the QR payload
+4. the iPhone app calls `POST /v1/pairing/claim` with the ticket and its local app installation id
+5. the Worker creates an app relay token and returns it to the app
+
+### `POST /v1/pairing/open`
+
+Requires `Authorization: Bearer <daemon-relay-token>`.
+
+Optional request:
+
+```json
+{
+  "ttl_ms": 300000
+}
+```
+
+Response:
+
+```json
+{
+  "pairing_ticket": "achpair.dev_local_1.pair_abcd1234.<secret>",
+  "expires_at": 1774257900000,
+  "ws_url": "wss://relay.agentchat.dev/v1/ws"
+}
+```
+
+### `POST /v1/pairing/claim`
+
+Request:
+
+```json
+{
+  "pairing_ticket": "achpair.dev_local_1.pair_abcd1234.<secret>",
+  "app_installation_id": "app_local_1",
+  "app_name": "My iPhone"
+}
+```
+
+Response:
+
+```json
+{
+  "device_id": "dev_local_1",
+  "app_installation_id": "app_local_1",
+  "peer_id": "app:app_local_1",
+  "relay_token": "achapp.dev_local_1.app_local_1.<secret>",
+  "ws_url": "wss://relay.agentchat.dev/v1/ws"
+}
 ```
 
 ## Current development helper endpoints
