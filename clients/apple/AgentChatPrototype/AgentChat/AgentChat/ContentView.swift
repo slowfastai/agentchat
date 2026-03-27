@@ -737,7 +737,8 @@ struct ContentView: View {
                         ThreadParticipantChip(
                             participant: participant,
                             color: chipColor(for: participant),
-                            avatarData: avatarData(for: participant)
+                            avatarData: avatarData(for: participant),
+                            customName: customDisplayName(for: participant)
                         )
                     }
                 }
@@ -864,6 +865,11 @@ struct ContentView: View {
         return store.agents.first { $0.agentID == agentID }?.avatarImageData
     }
 
+    private func customDisplayName(for participant: DaemonThreadParticipant) -> String? {
+        guard let agentID = participant.agentID else { return nil }
+        return store.agents.first { $0.agentID == agentID }?.customDisplayName
+    }
+
     private func color(named tintName: String) -> Color {
         switch tintName {
         case "purple": return .purple
@@ -935,10 +941,15 @@ private struct ThreadParticipantChip: View {
     let participant: DaemonThreadParticipant
     let color: Color
     let avatarData: Data?
+    let customName: String?
     @Environment(\.colorScheme) private var colorScheme
 
     private var theme: Theme {
         Theme(colorScheme: colorScheme)
+    }
+
+    private var displayName: String {
+        customName ?? participant.displayName
     }
 
     var body: some View {
@@ -947,10 +958,18 @@ private struct ThreadParticipantChip: View {
                 .frame(width: 30, height: 30)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(participant.displayName)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(theme.ink)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(displayName)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(theme.ink)
+                        .lineLimit(1)
+
+                    if customName != nil {
+                        Image(systemName: "pencil.circle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Text(participant.kindTitle)
                     .font(.caption)
                     .foregroundStyle(theme.mutedInk)
@@ -984,7 +1003,7 @@ private struct ThreadParticipantChip: View {
     }
 
     private var initials: String {
-        let parts = participant.displayName.split(separator: " ")
+        let parts = displayName.split(separator: " ")
         let value = parts.prefix(2).compactMap { $0.first }.map(String.init).joined()
         return value.isEmpty ? "?" : value.uppercased()
     }
