@@ -486,6 +486,7 @@ Notes:
 - The daemon still emits session-scoped events for the backing sessions.
 - Thread events are the recommended stream for group chat UI.
 - `thread_assistant_message` is an upsert-style snapshot keyed by `message_id`; clients should replace the prior snapshot for the same message instead of rendering a new bubble.
+- Thread-scoped `thread_agent_delta`, `thread_agent_plan_update`, `thread_agent_tool_update`, and `thread_agent_turn_end` events carry the same `turn_id` as the matching assistant turn so clients can group execution details reliably.
 - Thread-scoped timeline events are appended under `.agentchat/threads/<thread_id>.events.jsonl`.
 - `attach_thread { after_seq }` is the recommended reconnect path for group chat UI.
 

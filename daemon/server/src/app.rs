@@ -57,6 +57,15 @@ impl ActiveAssistantMessage {
     }
 }
 
+fn ensure_active_assistant_message<'a>(
+    active_messages: &'a mut HashMap<String, ActiveAssistantMessage>,
+    session_id: &str,
+) -> &'a mut ActiveAssistantMessage {
+    active_messages
+        .entry(session_id.to_string())
+        .or_insert_with(ActiveAssistantMessage::new)
+}
+
 impl AppProtocolSession {
     pub fn new(
         manager: Rc<RefCell<AgentManager>>,
@@ -1246,9 +1255,7 @@ fn maybe_broadcast_thread_event_for_session_event(
             DeltaType::Thinking | DeltaType::Text if !content.is_empty() => {
                 let thread_seq = thread_event_log.borrow_mut().next_seq(&binding.thread_id);
                 let mut active_messages = active_assistant_messages.borrow_mut();
-                let message = active_messages
-                    .entry(session_id.clone())
-                    .or_insert_with(ActiveAssistantMessage::new);
+                let message = ensure_active_assistant_message(&mut active_messages, session_id);
                 match delta_type {
                     DeltaType::Thinking => message.thinking.push_str(content),
                     DeltaType::Text => message.response.push_str(content),
@@ -1285,6 +1292,12 @@ fn maybe_broadcast_thread_event_for_session_event(
                 ResponseEvent::ThreadAgentPlanUpdate {
                     thread_id: binding.thread_id,
                     thread_seq,
+                    turn_id: {
+                        let mut active_messages = active_assistant_messages.borrow_mut();
+                        ensure_active_assistant_message(&mut active_messages, session_id)
+                            .turn_id
+                            .clone()
+                    },
                     participant_id: binding.participant_id,
                     agent_id: binding.agent_id,
                     session_id: session_id.clone(),
@@ -1308,6 +1321,12 @@ fn maybe_broadcast_thread_event_for_session_event(
                 ResponseEvent::ThreadAgentToolUpdate {
                     thread_id: binding.thread_id,
                     thread_seq,
+                    turn_id: {
+                        let mut active_messages = active_assistant_messages.borrow_mut();
+                        ensure_active_assistant_message(&mut active_messages, session_id)
+                            .turn_id
+                            .clone()
+                    },
                     participant_id: binding.participant_id,
                     agent_id: binding.agent_id,
                     session_id: session_id.clone(),

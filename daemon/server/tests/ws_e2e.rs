@@ -599,6 +599,142 @@ async fn websocket_thread_group_chat_fans_out_to_multiple_agents() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn websocket_thread_tool_updates_share_turn_id_with_assistant_snapshots() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_multi_agent_harness(&[("alpha", FakeAgentMode::Normal)]).await;
+            let mut ws = connect_ws(harness.port).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateThread {
+                    title: Some("Review".into()),
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+            let thread_id = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadCreated { thread_id, .. } => thread_id,
+                event => panic!("unexpected event while creating thread: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AddThreadParticipant {
+                    thread_id: thread_id.clone(),
+                    agent_id: "alpha".into(),
+                },
+            )
+            .await;
+            let (participant_id, session_id) = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadParticipantAdded {
+                    thread_id: tid,
+                    participant,
+                    ..
+                } => {
+                    assert_eq!(tid, thread_id);
+                    assert_eq!(participant.agent_id.as_deref(), Some("alpha"));
+                    (
+                        participant.participant_id,
+                        participant
+                            .session_id
+                            .expect("missing participant session id"),
+                    )
+                }
+                event => panic!("unexpected event while adding participant: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::SendThreadMessage {
+                    thread_id: thread_id.clone(),
+                    content: "review this".into(),
+                    target_participant_ids: None,
+                },
+            )
+            .await;
+
+            match receive_event(&mut ws).await {
+                ResponseEvent::ThreadMessage {
+                    thread_id: tid,
+                    content,
+                    ..
+                } => {
+                    assert_eq!(tid, thread_id);
+                    assert_eq!(content, "review this");
+                }
+                event => panic!("unexpected thread message event: {event:?}"),
+            }
+
+            let mut snapshot_turn_id: Option<String> = None;
+            let mut tool_turn_id: Option<String> = None;
+            let mut completed_turn_id: Option<String> = None;
+
+            for _ in 0..12 {
+                match receive_event(&mut ws).await {
+                    ResponseEvent::ThreadAssistantMessage {
+                        thread_id: tid,
+                        participant_id: pid,
+                        session_id: sid,
+                        turn_id,
+                        state,
+                        ..
+                    } => {
+                        assert_eq!(tid, thread_id);
+                        assert_eq!(pid, participant_id);
+                        assert_eq!(sid, session_id);
+                        if let Some(existing_tool_turn_id) = &tool_turn_id {
+                            assert_eq!(existing_tool_turn_id, &turn_id);
+                        }
+                        snapshot_turn_id.get_or_insert(turn_id.clone());
+                        if state == AssistantMessageState::Completed {
+                            completed_turn_id = Some(turn_id);
+                        }
+                    }
+                    ResponseEvent::ThreadAgentToolUpdate {
+                        thread_id: tid,
+                        participant_id: pid,
+                        session_id: sid,
+                        turn_id,
+                        ..
+                    } => {
+                        assert_eq!(tid, thread_id);
+                        assert_eq!(pid, participant_id);
+                        assert_eq!(sid, session_id);
+                        if let Some(existing_snapshot_turn_id) = &snapshot_turn_id {
+                            assert_eq!(existing_snapshot_turn_id, &turn_id);
+                        }
+                        tool_turn_id = Some(turn_id);
+                    }
+                    ResponseEvent::Delta { .. }
+                    | ResponseEvent::ToolUpdate { .. }
+                    | ResponseEvent::TurnEnd { .. } => {}
+                    other => panic!("unexpected thread event: {other:?}"),
+                }
+
+                if snapshot_turn_id.is_some()
+                    && tool_turn_id.is_some()
+                    && completed_turn_id.is_some()
+                {
+                    break;
+                }
+            }
+
+            let snapshot_turn_id = snapshot_turn_id.expect("missing assistant turn id");
+            let tool_turn_id = tool_turn_id.expect("missing tool turn id");
+            let completed_turn_id = completed_turn_id.expect("missing completed turn id");
+            assert_eq!(snapshot_turn_id, tool_turn_id);
+            assert_eq!(snapshot_turn_id, completed_turn_id);
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn websocket_thread_attach_without_cursor_replays_full_history() {
     let local = tokio::task::LocalSet::new();
     local
