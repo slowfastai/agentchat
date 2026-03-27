@@ -9,9 +9,60 @@ final class DemoStore: ObservableObject {
     @Published var timelineByIssue: [UUID: [TimelineItem]] = [:]
     @Published var selectedProjectID: UUID?
     @Published var selectedIssueID: UUID?
+    
+    @Published var agentCustomNames: [String: String] = [:]
+    @Published var agentAvatarData: [String: Data] = [:]
+    @Published var connectingAgentIDs: Set<String> = []
 
     init() {
         seed()
+    }
+    
+    func updateAgent(id agentID: String, name: String?, avatarData: Data?) {
+        if let name = name {
+            agentCustomNames[agentID] = name
+        } else {
+            agentCustomNames.removeValue(forKey: agentID)
+        }
+
+        if let avatarData = avatarData {
+            agentAvatarData[agentID] = avatarData
+        } else {
+            agentAvatarData.removeValue(forKey: agentID)
+        }
+    }
+
+    func removeAgent(id agentID: String) {
+        agentCustomNames.removeValue(forKey: agentID)
+        agentAvatarData.removeValue(forKey: agentID)
+        
+        if let index = agents.firstIndex(where: { $0.id.uuidString == agentID }) {
+            agents.remove(at: index)
+        }
+    }
+
+    func connectToAgent(id agentID: String) {
+        guard !connectingAgentIDs.contains(agentID) else { return }
+        connectingAgentIDs.insert(agentID)
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.connectingAgentIDs.remove(agentID)
+            if let index = self?.agents.firstIndex(where: { $0.id.uuidString == agentID }) {
+                self?.agents[index].isOnline = true
+            }
+        }
+    }
+
+    func customName(for agentID: String) -> String? {
+        agentCustomNames[agentID]
+    }
+
+    func avatarData(for agentID: String) -> Data? {
+        agentAvatarData[agentID]
+    }
+
+    func isConnecting(agentID: String) -> Bool {
+        connectingAgentIDs.contains(agentID)
     }
 
     var currentProject: Project? {

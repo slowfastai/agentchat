@@ -5,7 +5,7 @@ use std::rc::Rc;
 use serde_json::Value;
 use tracing::info;
 
-use agentchat_protocol::{AgentConfig, AgentStatus, AgentSummary};
+use agentchat_protocol::{canonical_mention_handle, AgentConfig, AgentStatus, AgentSummary};
 
 use crate::acp_client::AcpAgent;
 use crate::backend::AgentBackend;
@@ -100,6 +100,7 @@ impl AgentManager {
             .map(|managed| AgentSummary {
                 agent_id: managed.config.id.clone(),
                 name: managed.config.name.clone(),
+                mention_handle: Some(canonical_mention_handle(&managed.config.id)),
                 kind: managed
                     .config
                     .extra

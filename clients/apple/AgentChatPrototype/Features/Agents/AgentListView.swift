@@ -1,4 +1,8 @@
 import SwiftUI
+import PhotosUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 enum AppColors {
     static var onlineStatus: Color {
@@ -13,6 +17,11 @@ enum AppColors {
 struct AgentListView: View {
     @EnvironmentObject private var store: DemoStore
     @State private var searchText = ""
+    @State private var selectedAgentID: UUID?
+    @State private var showEditSheet = false
+    @State private var showDeleteAlert = false
+    @State private var agentToDelete: AgentProfile?
+    @State private var editingAgent: AgentProfile?
 
     private var shortcutItems: [AgentShortcutItem] {
         [
@@ -30,8 +39,9 @@ struct AgentListView: View {
 
         return store.agents
             .filter { agent in
+                let displayName = store.customName(for: agent.id.uuidString) ?? agent.name
                 let searchable = [
-                    agent.name,
+                    displayName,
                     agent.shortDescription,
                     agent.capabilityTags.joined(separator: " ")
                 ]
@@ -45,7 +55,8 @@ struct AgentListView: View {
 
     private var groupedAgents: [AgentSection] {
         let grouped = Dictionary(grouping: filteredAgents) { agent in
-            String(agent.name.prefix(1)).uppercased()
+            let displayName = store.customName(for: agent.id.uuidString) ?? agent.name
+            return String(displayName.prefix(1)).uppercased()
         }
 
         return grouped.keys.sorted().map { key in
@@ -58,24 +69,53 @@ struct AgentListView: View {
 
     var body: some View {
         ZStack(alignment: .trailing) {
-            List {
+            List(selection: $selectedAgentID) {
                 Section {
                     ForEach(shortcutItems) { item in
                         AgentShortcutRow(item: item)
                             .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                            .tag(nil as UUID?)
                     }
                 }
 
                 ForEach(groupedAgents) { section in
                     Section(section.title) {
                         ForEach(section.agents) { agent in
-                            AgentFriendRow(agent: agent)
-                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                            let agentID = agent.id.uuidString
+                            AgentFriendRow(
+                                agent: agent,
+                                customName: store.customName(for: agentID),
+                                avatarData: store.avatarData(for: agentID),
+                                isConnecting: store.isConnecting(agentID: agentID),
+                                isSelected: selectedAgentID == agent.id
+                            )
+                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    agentToDelete = agent
+                                    showDeleteAlert = true
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+
+                                Button {
+                                    editingAgent = agent
+                                    showEditSheet = true
+                                } label: {
+                                    Label("Edit", systemImage: "pencil")
+                                }
+                                .tint(.blue)
+                            }
+                            .tag(agent.id)
+                            .onTapGesture {
+                                handleAgentTap(agent)
+                            }
                         }
                     }
                 }
             }
             .listStyle(.plain)
+            .environment(\.editMode, .constant(.active))
             .scrollContentBackground(.hidden)
             .background(Color.appCanvasBackground)
             .searchable(text: $searchText, prompt: "Search agents")
@@ -87,6 +127,34 @@ struct AgentListView: View {
                         Image(systemName: "person.badge.plus")
                     }
                 }
+                
+                if selectedAgentID != nil {
+                    ToolbarItem(placement: .secondaryAction) {
+                        Menu {
+                            Button {
+                                if let agentID = selectedAgentID,
+                                   let agent = store.agents.first(where: { $0.id == agentID }) {
+                                    editingAgent = agent
+                                    showEditSheet = true
+                                }
+                            } label: {
+                                Label("Edit Agent", systemImage: "pencil")
+                            }
+                            
+                            Button(role: .destructive) {
+                                if let agentID = selectedAgentID,
+                                   let agent = store.agents.first(where: { $0.id == agentID }) {
+                                    agentToDelete = agent
+                                    showDeleteAlert = true
+                                }
+                            } label: {
+                                Label("Delete Agent", systemImage: "trash")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                    }
+                }
             }
 
             if !groupedAgents.isEmpty {
@@ -94,9 +162,38 @@ struct AgentListView: View {
                     .padding(.trailing, 6)
             }
         }
+        .sheet(isPresented: $showEditSheet) {
+            if let agent = editingAgent {
+                EditAgentSheet(agent: agent)
+            }
+        }
+        .alert("Delete Agent", isPresented: $showDeleteAlert) {
+            Button("Cancel", role: .cancel) {
+                agentToDelete = nil
+            }
+            Button("Delete", role: .destructive) {
+                if let agent = agentToDelete {
+                    store.removeAgent(id: agent.id.uuidString)
+                }
+                agentToDelete = nil
+            }
+        } message: {
+            if let agent = agentToDelete {
+                let displayName = store.customName(for: agent.id.uuidString) ?? agent.name
+                Text("Are you sure you want to delete \(displayName)? This action cannot be undone.")
+            }
+        }
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+    }
+
+    private func handleAgentTap(_ agent: AgentProfile) {
+        let agentID = agent.id.uuidString
+        if store.isConnecting(agentID: agentID) {
+            return
+        }
+        store.connectToAgent(id: agentID)
     }
 }
 
@@ -133,17 +230,26 @@ private struct AgentShortcutRow: View {
 
 private struct AgentFriendRow: View {
     let agent: AgentProfile
+    let customName: String?
+    let avatarData: Data?
+    let isConnecting: Bool
+    let isSelected: Bool
 
     var body: some View {
         HStack(spacing: 14) {
             ContactIconTile(
-                title: agent.name,
+                title: customName ?? agent.name,
                 accent: agent.accent,
-                systemImage: systemImage(for: agent.kind)
+                systemImage: systemImage(for: agent.kind),
+                avatarData: avatarData
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(isSelected ? Color.blue : Color.clear, lineWidth: 2)
             )
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(agent.name)
+                Text(customName ?? agent.name)
                     .font(.body)
                     .foregroundStyle(.primary)
 
@@ -155,7 +261,16 @@ private struct AgentFriendRow: View {
 
             Spacer()
 
-            if agent.isOnline {
+            if isConnecting {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Color.orange)
+                        .frame(width: 8, height: 8)
+                    Text("Connecting...")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+            } else if agent.isOnline {
                 HStack(spacing: 6) {
                     Circle()
                         .fill(AppColors.onlineStatus)
@@ -196,16 +311,25 @@ private struct ContactIconTile: View {
     let title: String
     let accent: ColorToken
     let systemImage: String
+    var avatarData: Data?
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(accent.color)
-            .frame(width: 42, height: 42)
-            .overlay {
-                Image(systemName: systemImage)
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
+        if let data = avatarData, let uiImage = UIImage(data: data) {
+            Image(uiImage: uiImage)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 42, height: 42)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        } else {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(accent.color)
+                .frame(width: 42, height: 42)
+                .overlay {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+        }
     }
 }
 
@@ -228,5 +352,112 @@ private struct AgentSectionIndexOverlay: View {
         .padding(.vertical, 8)
         .frame(width: 18)
         .background(Color.clear)
+    }
+}
+
+struct EditAgentSheet: View {
+    @EnvironmentObject private var store: DemoStore
+    @Environment(\.dismiss) private var dismiss
+
+    let agent: AgentProfile
+
+    @State private var editedName: String = ""
+    @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var selectedImageData: Data?
+    @State private var showError = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Agent Info") {
+                    TextField("Name", text: $editedName)
+
+                    if let data = selectedImageData, let uiImage = UIImage(data: data) {
+                        HStack {
+                            Spacer()
+                            Image(uiImage: uiImage)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 80, height: 80)
+                                .clipShape(RoundedRectangle(cornerRadius: 16))
+                            Spacer()
+                        }
+                    }
+                }
+
+                Section("Avatar") {
+                    PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                        Label("Choose Photo", systemImage: "photo")
+                    }
+                    .onChange(of: selectedPhotoItem) { _, newValue in
+                        Task {
+                            if let data = try? await newValue?.loadTransferable(type: Data.self) {
+                                selectedImageData = processImage(data)
+                            }
+                        }
+                    }
+
+                    if selectedImageData != nil || store.avatarData(for: agent.id.uuidString) != nil {
+                        Button(role: .destructive) {
+                            selectedImageData = nil
+                            selectedPhotoItem = nil
+                        } label: {
+                            Label("Remove Photo", systemImage: "trash")
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Edit Agent")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saveChanges()
+                    }
+                    .disabled(editedName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && selectedImageData == nil)
+                }
+            }
+            .onAppear {
+                editedName = store.customName(for: agent.id.uuidString) ?? agent.name
+                selectedImageData = store.avatarData(for: agent.id.uuidString)
+            }
+            .alert("Error", isPresented: $showError) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Failed to save changes. Please try again.")
+            }
+        }
+    }
+
+    private func processImage(_ data: Data) -> Data? {
+        guard let uiImage = UIImage(data: data) else { return nil }
+
+        let maxSize: CGFloat = 200
+        let scale = min(maxSize / uiImage.size.width, maxSize / uiImage.size.height)
+        let newSize = CGSize(width: uiImage.size.width * scale, height: uiImage.size.height * scale)
+
+        UIGraphicsBeginImageContextWithOptions(newSize, false, 1.0)
+        uiImage.draw(in: CGRect(origin: .zero, size: newSize))
+        let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+
+        return resizedImage?.jpegData(compressionQuality: 0.8)
+    }
+
+    private func saveChanges() {
+        let trimmedName = editedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nameToSave = trimmedName.isEmpty ? nil : trimmedName
+
+        store.updateAgent(
+            id: agent.id.uuidString,
+            name: nameToSave,
+            avatarData: selectedImageData
+        )
+        dismiss()
     }
 }

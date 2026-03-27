@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use agentchat_protocol::{
-    now_millis, ParticipantKind, ThreadParticipant, ThreadSnapshot, ThreadSummary,
+    canonical_mention_handle, now_millis, ParticipantKind, ThreadParticipant, ThreadSnapshot,
+    ThreadSummary,
 };
 
 #[derive(Debug, Clone)]
@@ -186,6 +187,10 @@ pub fn participant_to_protocol(
         kind: participant.kind.clone(),
         display_name: participant.display_name.clone(),
         agent_id: participant.agent_id.clone(),
+        mention_handle: participant
+            .agent_id
+            .as_deref()
+            .map(canonical_mention_handle),
         session_id: participant.session_id.clone(),
         state,
     }

@@ -176,9 +176,36 @@ func humanizeAgentIdentifier(_ value: String) -> String {
         .joined(separator: " ")
 }
 
+private func normalizedMentionSearchToken(_ value: String) -> String {
+    value
+        .lowercased()
+        .filter { $0.isLetter || $0.isNumber }
+}
+
+private func mentionHandleValue(_ value: String) -> String {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "agent" }
+
+    var result = ""
+    var previousWasSeparator = false
+    for character in trimmed.lowercased() {
+        if character.isLetter || character.isNumber || character == "-" || character == "_" || character == "." {
+            result.append(character)
+            previousWasSeparator = false
+        } else if !previousWasSeparator {
+            result.append("-")
+            previousWasSeparator = true
+        }
+    }
+
+    let cleaned = result.trimmingCharacters(in: CharacterSet(charactersIn: "-_."))
+    return cleaned.isEmpty ? "agent" : cleaned
+}
+
 struct DaemonAgentSummary: Codable, Identifiable, Hashable {
     let agentID: String
     let name: String
+    let mentionHandleOverride: String? = nil
     let kind: String
     let status: String
     let defaultWorkingDir: String?
@@ -189,6 +216,7 @@ struct DaemonAgentSummary: Codable, Identifiable, Hashable {
     enum CodingKeys: String, CodingKey {
         case agentID = "agent_id"
         case name
+        case mentionHandleOverride = "mention_handle"
         case kind
         case status
         case defaultWorkingDir = "default_working_dir"
@@ -198,6 +226,13 @@ struct DaemonAgentSummary: Codable, Identifiable, Hashable {
     }
 
     var id: String { agentID }
+    var mentionHandle: String {
+        if let mentionHandleOverride,
+           !mentionHandleOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return mentionHandleOverride
+        }
+        return mentionHandleValue(agentID)
+    }
     var isOnline: Bool { status == "online" }
     var isOffline: Bool { status == "offline" }
     var family: DaemonAgentFamily { DaemonAgentFamily(agentID: agentID, kind: kind, name: name) }
@@ -292,6 +327,7 @@ struct DaemonThreadParticipant: Codable, Identifiable, Hashable {
     let kind: String
     let displayName: String
     let agentID: String?
+    let mentionHandleOverride: String? = nil
     let sessionID: String?
     let state: String
 
@@ -300,6 +336,7 @@ struct DaemonThreadParticipant: Codable, Identifiable, Hashable {
         case kind
         case displayName = "display_name"
         case agentID = "agent_id"
+        case mentionHandleOverride = "mention_handle"
         case sessionID = "session_id"
         case state
     }
@@ -309,6 +346,27 @@ struct DaemonThreadParticipant: Codable, Identifiable, Hashable {
     var family: DaemonAgentFamily { DaemonAgentFamily(agentID: agentID, kind: kind, name: displayName) }
     var tintName: String { family.tintName }
     var kindTitle: String { isAgent ? family.title : humanizeAgentIdentifier(kind) }
+    var mentionHandle: String {
+        if let mentionHandleOverride,
+           !mentionHandleOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return mentionHandleOverride
+        }
+        if let agentID, !agentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return mentionHandleValue(agentID)
+        }
+        return mentionHandleValue(displayName)
+    }
+
+    func matchesMentionQuery(_ query: String) -> Bool {
+        let normalizedQuery = normalizedMentionSearchToken(query)
+        if normalizedQuery.isEmpty {
+            return true
+        }
+
+        return normalizedMentionSearchToken(mentionHandle).hasPrefix(normalizedQuery)
+            || normalizedMentionSearchToken(displayName).contains(normalizedQuery)
+            || normalizedMentionSearchToken(kindTitle).contains(normalizedQuery)
+    }
 }
 
 struct DaemonThreadSnapshot: Codable, Hashable {
