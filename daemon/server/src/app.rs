@@ -57,6 +57,15 @@ impl ActiveAssistantMessage {
     }
 }
 
+fn ensure_active_assistant_message<'a>(
+    active_messages: &'a mut HashMap<String, ActiveAssistantMessage>,
+    session_id: &str,
+) -> &'a mut ActiveAssistantMessage {
+    active_messages
+        .entry(session_id.to_string())
+        .or_insert_with(ActiveAssistantMessage::new)
+}
+
 impl AppProtocolSession {
     pub fn new(
         manager: Rc<RefCell<AgentManager>>,
@@ -524,7 +533,9 @@ impl AppProtocolSession {
         };
 
         let tail_seq = snapshot.last_thread_seq;
-        let replay_after = after_seq.unwrap_or(tail_seq);
+        // Thread snapshots only contain metadata + participant state, so attaching
+        // without a cursor should replay the full thread timeline by default.
+        let replay_after = after_seq.unwrap_or(0);
         if replay_after > tail_seq {
             let _ = self.response_tx.send(ResponseEvent::Error {
                 session_id: None,
@@ -1244,9 +1255,7 @@ fn maybe_broadcast_thread_event_for_session_event(
             DeltaType::Thinking | DeltaType::Text if !content.is_empty() => {
                 let thread_seq = thread_event_log.borrow_mut().next_seq(&binding.thread_id);
                 let mut active_messages = active_assistant_messages.borrow_mut();
-                let message = active_messages
-                    .entry(session_id.clone())
-                    .or_insert_with(ActiveAssistantMessage::new);
+                let message = ensure_active_assistant_message(&mut active_messages, session_id);
                 match delta_type {
                     DeltaType::Thinking => message.thinking.push_str(content),
                     DeltaType::Text => message.response.push_str(content),
@@ -1283,6 +1292,12 @@ fn maybe_broadcast_thread_event_for_session_event(
                 ResponseEvent::ThreadAgentPlanUpdate {
                     thread_id: binding.thread_id,
                     thread_seq,
+                    turn_id: {
+                        let mut active_messages = active_assistant_messages.borrow_mut();
+                        ensure_active_assistant_message(&mut active_messages, session_id)
+                            .turn_id
+                            .clone()
+                    },
                     participant_id: binding.participant_id,
                     agent_id: binding.agent_id,
                     session_id: session_id.clone(),
@@ -1306,6 +1321,12 @@ fn maybe_broadcast_thread_event_for_session_event(
                 ResponseEvent::ThreadAgentToolUpdate {
                     thread_id: binding.thread_id,
                     thread_seq,
+                    turn_id: {
+                        let mut active_messages = active_assistant_messages.borrow_mut();
+                        ensure_active_assistant_message(&mut active_messages, session_id)
+                            .turn_id
+                            .clone()
+                    },
                     participant_id: binding.participant_id,
                     agent_id: binding.agent_id,
                     session_id: session_id.clone(),
@@ -1358,25 +1379,52 @@ fn finalize_active_assistant_message(
         return;
     };
 
-    let thread_seq = thread_event_log.borrow_mut().next_seq(&binding.thread_id);
+    let ActiveAssistantMessage {
+        message_id,
+        turn_id,
+        thinking,
+        response,
+    } = message;
+
+    let assistant_thread_seq = thread_event_log.borrow_mut().next_seq(&binding.thread_id);
     journal_and_broadcast_thread_event(
         thread_event_log,
         response_tx,
         ResponseEvent::ThreadAssistantMessage {
-            thread_id: binding.thread_id,
-            thread_seq,
-            message_id: message.message_id,
-            turn_id: message.turn_id,
-            participant_id: binding.participant_id,
-            agent_id: binding.agent_id,
+            thread_id: binding.thread_id.clone(),
+            thread_seq: assistant_thread_seq,
+            message_id,
+            turn_id: turn_id.clone(),
+            participant_id: binding.participant_id.clone(),
+            agent_id: binding.agent_id.clone(),
             session_id: session_id.to_string(),
             session_event_seq,
-            thinking: message.thinking,
-            response: message.response,
-            state,
-            stop_reason,
+            thinking,
+            response,
+            state: state.clone(),
+            stop_reason: stop_reason.clone(),
         },
     );
+
+    if state == AssistantMessageState::Completed {
+        if let Some(stop_reason) = stop_reason {
+            let turn_end_thread_seq = thread_event_log.borrow_mut().next_seq(&binding.thread_id);
+            journal_and_broadcast_thread_event(
+                thread_event_log,
+                response_tx,
+                ResponseEvent::ThreadAgentTurnEnd {
+                    thread_id: binding.thread_id,
+                    thread_seq: turn_end_thread_seq,
+                    turn_id,
+                    participant_id: binding.participant_id,
+                    agent_id: binding.agent_id,
+                    session_id: session_id.to_string(),
+                    session_event_seq,
+                    stop_reason,
+                },
+            );
+        }
+    }
 }
 
 fn journal_and_broadcast_event(

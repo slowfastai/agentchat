@@ -318,6 +318,7 @@ pub enum ResponseEvent {
     ThreadAgentDelta {
         thread_id: String,
         thread_seq: u64,
+        turn_id: String,
         participant_id: String,
         agent_id: String,
         session_id: String,
@@ -330,6 +331,7 @@ pub enum ResponseEvent {
     ThreadAgentPlanUpdate {
         thread_id: String,
         thread_seq: u64,
+        turn_id: String,
         participant_id: String,
         agent_id: String,
         session_id: String,
@@ -341,6 +343,7 @@ pub enum ResponseEvent {
     ThreadAgentToolUpdate {
         thread_id: String,
         thread_seq: u64,
+        turn_id: String,
         participant_id: String,
         agent_id: String,
         session_id: String,
@@ -355,6 +358,7 @@ pub enum ResponseEvent {
     ThreadAgentTurnEnd {
         thread_id: String,
         thread_seq: u64,
+        turn_id: String,
         participant_id: String,
         agent_id: String,
         session_id: String,
@@ -817,6 +821,7 @@ mod tests {
             ResponseEvent::ThreadAgentDelta {
                 thread_id: "thread-1".into(),
                 thread_seq: 3,
+                turn_id: "turn-1".into(),
                 participant_id: "participant-1".into(),
                 agent_id: "agent-1".into(),
                 session_id: "session-1".into(),
@@ -827,6 +832,7 @@ mod tests {
             ResponseEvent::ThreadAgentPlanUpdate {
                 thread_id: "thread-1".into(),
                 thread_seq: 4,
+                turn_id: "turn-1".into(),
                 participant_id: "participant-1".into(),
                 agent_id: "agent-1".into(),
                 session_id: "session-1".into(),
@@ -836,6 +842,7 @@ mod tests {
             ResponseEvent::ThreadAgentToolUpdate {
                 thread_id: "thread-1".into(),
                 thread_seq: 5,
+                turn_id: "turn-1".into(),
                 participant_id: "participant-1".into(),
                 agent_id: "agent-1".into(),
                 session_id: "session-1".into(),
@@ -848,6 +855,7 @@ mod tests {
             ResponseEvent::ThreadAgentTurnEnd {
                 thread_id: "thread-1".into(),
                 thread_seq: 6,
+                turn_id: "turn-1".into(),
                 participant_id: "participant-1".into(),
                 agent_id: "agent-1".into(),
                 session_id: "session-1".into(),

@@ -279,7 +279,7 @@ Success response:
 
 Attach the current connection to an existing thread.
 
-Request without replay:
+Request without a cursor. This replays the full thread timeline so the client can rebuild the thread UI from daemon history:
 
 ```json
 {"type":"attach_thread","thread_id":"thread-1"}
@@ -327,6 +327,8 @@ Success responses:
   }
 }
 ```
+
+If `after_seq` is omitted, the daemon replays the full thread history (`thread_seq > 0`).
 
 If `after_seq` is provided and older than the current tail, the daemon replays all thread events
 with `thread_seq > after_seq`, then sends:
@@ -480,10 +482,25 @@ Then the daemon emits thread-scoped assistant message snapshots such as:
 }
 ```
 
+```json
+{
+  "type": "thread_agent_turn_end",
+  "thread_id": "thread-1",
+  "thread_seq": 6,
+  "turn_id": "turn-1",
+  "participant_id": "participant-1",
+  "agent_id": "pi",
+  "session_id": "session-1",
+  "session_event_seq": 7,
+  "stop_reason": "EndTurn"
+}
+```
+
 Notes:
 - The daemon still emits session-scoped events for the backing sessions.
 - Thread events are the recommended stream for group chat UI.
 - `thread_assistant_message` is an upsert-style snapshot keyed by `message_id`; clients should replace the prior snapshot for the same message instead of rendering a new bubble.
+- Thread-scoped `thread_agent_delta`, `thread_agent_plan_update`, `thread_agent_tool_update`, and `thread_agent_turn_end` events carry the same `turn_id` as the matching assistant turn so clients can group execution details reliably.
 - Thread-scoped timeline events are appended under `.agentchat/threads/<thread_id>.events.jsonl`.
 - `attach_thread { after_seq }` is the recommended reconnect path for group chat UI.
 

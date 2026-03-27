@@ -432,6 +432,7 @@ struct ThreadAssistantMessageEvent: Decodable {
 struct ThreadAgentDeltaEvent: Decodable {
     let threadID: String
     let threadSeq: UInt64
+    let turnID: String?
     let participantID: String
     let agentID: String
     let sessionID: String
@@ -442,6 +443,7 @@ struct ThreadAgentDeltaEvent: Decodable {
     enum CodingKeys: String, CodingKey {
         case threadID = "thread_id"
         case threadSeq = "thread_seq"
+        case turnID = "turn_id"
         case participantID = "participant_id"
         case agentID = "agent_id"
         case sessionID = "session_id"
@@ -454,6 +456,7 @@ struct ThreadAgentDeltaEvent: Decodable {
 struct ThreadAgentToolUpdateEvent: Decodable {
     let threadID: String
     let threadSeq: UInt64
+    let turnID: String?
     let participantID: String
     let agentID: String
     let sessionID: String
@@ -466,6 +469,7 @@ struct ThreadAgentToolUpdateEvent: Decodable {
     enum CodingKeys: String, CodingKey {
         case threadID = "thread_id"
         case threadSeq = "thread_seq"
+        case turnID = "turn_id"
         case participantID = "participant_id"
         case agentID = "agent_id"
         case sessionID = "session_id"
@@ -480,6 +484,7 @@ struct ThreadAgentToolUpdateEvent: Decodable {
 struct ThreadAgentPlanUpdateEvent: Decodable {
     let threadID: String
     let threadSeq: UInt64
+    let turnID: String?
     let participantID: String
     let agentID: String
     let sessionID: String
@@ -489,6 +494,7 @@ struct ThreadAgentPlanUpdateEvent: Decodable {
     enum CodingKeys: String, CodingKey {
         case threadID = "thread_id"
         case threadSeq = "thread_seq"
+        case turnID = "turn_id"
         case participantID = "participant_id"
         case agentID = "agent_id"
         case sessionID = "session_id"
@@ -500,6 +506,7 @@ struct ThreadAgentPlanUpdateEvent: Decodable {
 struct ThreadAgentTurnEndEvent: Decodable {
     let threadID: String
     let threadSeq: UInt64
+    let turnID: String?
     let participantID: String
     let agentID: String
     let sessionID: String
@@ -509,6 +516,7 @@ struct ThreadAgentTurnEndEvent: Decodable {
     enum CodingKeys: String, CodingKey {
         case threadID = "thread_id"
         case threadSeq = "thread_seq"
+        case turnID = "turn_id"
         case participantID = "participant_id"
         case agentID = "agent_id"
         case sessionID = "session_id"
@@ -597,6 +605,89 @@ struct DaemonToolActivity: Identifiable, Hashable {
     let content: String?
 }
 
+struct AssistantExecutionSummary: Hashable {
+    enum Tone: Hashable {
+        case neutral
+        case active
+        case warning
+        case failure
+    }
+
+    let headline: String
+    let footnote: String?
+    let detailLine: String?
+    let tone: Tone
+    let showsProgress: Bool
+
+    var requiresAttention: Bool {
+        tone == .warning || tone == .failure
+    }
+}
+
+private func normalizedExecutionStatusToken(_ value: String) -> String {
+    value
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .replacingOccurrences(of: "_", with: "")
+        .replacingOccurrences(of: "-", with: "")
+        .replacingOccurrences(of: " ", with: "")
+        .lowercased()
+}
+
+private func humanizedExecutionStatus(_ value: String) -> String {
+    switch normalizedExecutionStatusToken(value) {
+    case "", "update":
+        return "Update"
+    case "streaming", "inprogress", "running":
+        return "Running"
+    case "completed":
+        return "Done"
+    case "failed":
+        return "Failed"
+    case "needsapproval":
+        return "Approval required"
+    default:
+        return value
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .capitalized
+    }
+}
+
+private func pluralizedExecutionLabel(_ count: Int, singular: String) -> String {
+    count == 1 ? "1 \(singular)" : "\(count) \(singular)s"
+}
+
+extension DaemonToolActivity {
+    fileprivate var statusToken: String {
+        normalizedExecutionStatusToken(status)
+    }
+
+    var displayTitle: String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Tool" : trimmed
+    }
+
+    var displayStatus: String {
+        humanizedExecutionStatus(status)
+    }
+
+    var isCompleted: Bool {
+        statusToken == "completed"
+    }
+
+    var isFailed: Bool {
+        statusToken == "failed"
+    }
+
+    var needsApproval: Bool {
+        statusToken == "needsapproval"
+    }
+
+    var isRunning: Bool {
+        statusToken == "streaming" || statusToken == "inprogress" || statusToken == "running"
+    }
+}
+
 struct DaemonTimelineEntry: Identifiable, Hashable {
     enum Kind: String, Hashable {
         case user
@@ -671,14 +762,173 @@ struct DaemonTimelineEntry: Identifiable, Hashable {
     }
 }
 
+extension DaemonTimelineEntry {
+    var hasThinkingBody: Bool {
+        guard let thinkingBody else { return false }
+        return !thinkingBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var hasPlanBody: Bool {
+        guard let planBody else { return false }
+        return !planBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var hasExecutionDetails: Bool {
+        kind == .assistantTurn && (hasThinkingBody || hasPlanBody || !toolActivities.isEmpty)
+    }
+
+    var normalizedStatusToken: String {
+        normalizedExecutionStatusToken(status ?? "")
+    }
+
+    var orderedToolActivities: [DaemonToolActivity] {
+        toolActivities.sorted { lhs, rhs in
+            let lhsRank = executionToolSortRank(lhs)
+            let rhsRank = executionToolSortRank(rhs)
+            if lhsRank != rhsRank {
+                return lhsRank < rhsRank
+            }
+
+            let titleOrder = lhs.displayTitle.localizedCaseInsensitiveCompare(rhs.displayTitle)
+            if titleOrder != .orderedSame {
+                return titleOrder == .orderedAscending
+            }
+
+            return lhs.id.localizedCaseInsensitiveCompare(rhs.id) == .orderedAscending
+        }
+    }
+
+    var executionSummary: AssistantExecutionSummary? {
+        guard kind == .assistantTurn else { return nil }
+
+        let runningTools = orderedToolActivities.filter(\.isRunning)
+        let failedTools = orderedToolActivities.filter(\.isFailed)
+        let approvalTools = orderedToolActivities.filter(\.needsApproval)
+        let hasResponse = !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let metadataLabels = executionMetadataLabels(
+            hasThinking: hasThinkingBody,
+            hasPlan: hasPlanBody
+        )
+        let toolCountLabel = toolActivities.isEmpty
+            ? nil
+            : pluralizedExecutionLabel(toolActivities.count, singular: "tool")
+        let detailLine = detailLineText(labels: metadataLabels)
+        let detailLineWithToolCount = detailLineText(labels: metadataLabels + (toolCountLabel.map { [$0] } ?? []))
+
+        if !approvalTools.isEmpty {
+            return AssistantExecutionSummary(
+                headline: approvalTools.count == 1 ? "Approval required" : "\(approvalTools.count) approvals required",
+                footnote: approvalTools.first?.displayTitle,
+                detailLine: detailLineWithToolCount,
+                tone: .warning,
+                showsProgress: normalizedStatusToken == "streaming"
+            )
+        }
+
+        if !failedTools.isEmpty || normalizedStatusToken == "failed" {
+            return AssistantExecutionSummary(
+                headline: !failedTools.isEmpty
+                    ? (failedTools.count == 1 ? "1 tool failed" : "\(failedTools.count) tools failed")
+                    : "Response failed",
+                footnote: failedTools.first?.displayTitle,
+                detailLine: detailLineWithToolCount,
+                tone: .failure,
+                showsProgress: false
+            )
+        }
+
+        if normalizedStatusToken == "streaming" {
+            guard hasExecutionDetails else { return nil }
+
+            let headline: String
+            let footnote: String?
+
+            if let activeTool = runningTools.first {
+                headline = toolActivities.count > 1 ? "Running tools" : "Running tool"
+                footnote = activeTool.displayTitle
+            } else if hasThinkingBody && !hasResponse {
+                headline = "Thinking..."
+                footnote = nil
+            } else {
+                headline = "Working..."
+                footnote = nil
+            }
+
+            return AssistantExecutionSummary(
+                headline: headline,
+                footnote: footnote,
+                detailLine: detailLineWithToolCount,
+                tone: .active,
+                showsProgress: true
+            )
+        }
+
+        guard hasExecutionDetails else { return nil }
+
+        let headline: String
+        if !toolActivities.isEmpty {
+            headline = "Used \(pluralizedExecutionLabel(toolActivities.count, singular: "tool"))"
+        } else if hasThinkingBody {
+            headline = "Reasoning available"
+        } else {
+            headline = "Plan available"
+        }
+
+        return AssistantExecutionSummary(
+            headline: headline,
+            footnote: nil,
+            detailLine: detailLine,
+            tone: .neutral,
+            showsProgress: false
+        )
+    }
+
+    private func executionToolSortRank(_ activity: DaemonToolActivity) -> Int {
+        if activity.needsApproval {
+            return 0
+        }
+        if activity.isFailed {
+            return 1
+        }
+        if activity.isRunning {
+            return 2
+        }
+        if activity.isCompleted {
+            return 4
+        }
+        return 3
+    }
+
+    private func executionMetadataLabels(hasThinking: Bool, hasPlan: Bool) -> [String] {
+        var labels: [String] = []
+        if hasThinking {
+            labels.append("Thinking")
+        }
+        if hasPlan {
+            labels.append("Plan")
+        }
+        return labels
+    }
+
+    private func detailLineText(labels: [String]) -> String? {
+        labels.isEmpty ? nil : labels.joined(separator: " · ")
+    }
+}
+
+private func assistantTurnIdentity(turnID: String?, sessionID: String) -> String {
+    let trimmed = turnID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? "session-\(sessionID)" : trimmed
+}
+
 struct AssistantTurnKey: Hashable {
     let threadID: String
-    let sessionID: String
+    let turnIdentity: String
 }
 
 struct AssistantTurnState: Equatable {
     let threadID: String
     let sessionID: String
+    let turnIdentity: String
     let entryID: String
     let sortThreadSeq: UInt64
     var agentID: String
@@ -692,13 +942,15 @@ struct AssistantTurnState: Equatable {
     init(
         threadID: String,
         sessionID: String,
+        turnID: String?,
         threadSeq: UInt64,
         agentID: String,
         status: String = "streaming"
     ) {
         self.threadID = threadID
         self.sessionID = sessionID
-        self.entryID = "assistant-turn-\(threadID)-\(sessionID)-\(threadSeq)"
+        self.turnIdentity = assistantTurnIdentity(turnID: turnID, sessionID: sessionID)
+        self.entryID = "assistant-turn-\(threadID)-\(turnIdentity)"
         self.sortThreadSeq = threadSeq
         self.agentID = agentID
         self.lastThreadSeq = threadSeq
@@ -713,6 +965,7 @@ struct AssistantTurnState: Equatable {
         self.init(
             threadID: event.threadID,
             sessionID: event.sessionID,
+            turnID: event.turnID,
             threadSeq: event.threadSeq,
             agentID: event.agentID
         )
@@ -723,6 +976,7 @@ struct AssistantTurnState: Equatable {
         self.init(
             threadID: event.threadID,
             sessionID: event.sessionID,
+            turnID: event.turnID,
             threadSeq: event.threadSeq,
             agentID: event.agentID,
             status: event.state
@@ -733,6 +987,7 @@ struct AssistantTurnState: Equatable {
         self.init(
             threadID: event.threadID,
             sessionID: event.sessionID,
+            turnID: event.turnID,
             threadSeq: event.threadSeq,
             agentID: event.agentID
         )
@@ -742,6 +997,7 @@ struct AssistantTurnState: Equatable {
         self.init(
             threadID: event.threadID,
             sessionID: event.sessionID,
+            turnID: event.turnID,
             threadSeq: event.threadSeq,
             agentID: event.agentID
         )
@@ -839,7 +1095,10 @@ struct AssistantTurnReducer {
     private(set) var activeStates: [AssistantTurnKey: AssistantTurnState] = [:]
 
     mutating func consume(snapshot event: ThreadAssistantMessageEvent) -> AssistantTurnState {
-        let key = AssistantTurnKey(threadID: event.threadID, sessionID: event.sessionID)
+        let key = AssistantTurnKey(
+            threadID: event.threadID,
+            turnIdentity: assistantTurnIdentity(turnID: event.turnID, sessionID: event.sessionID)
+        )
         var state = activeStates[key] ?? AssistantTurnState(snapshot: event)
         state.merge(snapshot: event)
         if state.isTerminal {
@@ -851,7 +1110,10 @@ struct AssistantTurnReducer {
     }
 
     mutating func consume(delta event: ThreadAgentDeltaEvent) -> AssistantTurnState? {
-        let key = AssistantTurnKey(threadID: event.threadID, sessionID: event.sessionID)
+        let key = AssistantTurnKey(
+            threadID: event.threadID,
+            turnIdentity: assistantTurnIdentity(turnID: event.turnID, sessionID: event.sessionID)
+        )
 
         if var state = activeStates[key] {
             state.append(delta: event)
@@ -869,7 +1131,10 @@ struct AssistantTurnReducer {
     }
 
     mutating func consume(toolUpdate event: ThreadAgentToolUpdateEvent) -> AssistantTurnState {
-        let key = AssistantTurnKey(threadID: event.threadID, sessionID: event.sessionID)
+        let key = AssistantTurnKey(
+            threadID: event.threadID,
+            turnIdentity: assistantTurnIdentity(turnID: event.turnID, sessionID: event.sessionID)
+        )
         var state = activeStates[key] ?? AssistantTurnState(toolUpdate: event)
         state.upsertTool(event)
         activeStates[key] = state
@@ -877,7 +1142,10 @@ struct AssistantTurnReducer {
     }
 
     mutating func consume(planUpdate event: ThreadAgentPlanUpdateEvent) -> AssistantTurnState {
-        let key = AssistantTurnKey(threadID: event.threadID, sessionID: event.sessionID)
+        let key = AssistantTurnKey(
+            threadID: event.threadID,
+            turnIdentity: assistantTurnIdentity(turnID: event.turnID, sessionID: event.sessionID)
+        )
         var state = activeStates[key] ?? AssistantTurnState(planUpdate: event)
         state.updatePlan(event)
         activeStates[key] = state
@@ -885,7 +1153,10 @@ struct AssistantTurnReducer {
     }
 
     mutating func finish(turnEnd event: ThreadAgentTurnEndEvent) -> AssistantTurnState? {
-        let key = AssistantTurnKey(threadID: event.threadID, sessionID: event.sessionID)
+        let key = AssistantTurnKey(
+            threadID: event.threadID,
+            turnIdentity: assistantTurnIdentity(turnID: event.turnID, sessionID: event.sessionID)
+        )
         guard var state = activeStates.removeValue(forKey: key) else {
             return nil
         }

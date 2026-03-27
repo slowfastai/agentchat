@@ -9,39 +9,6 @@ private enum AppTab: Hashable {
     case settings
 }
 
-struct TypingDotsView: View {
-    let color: Color
-    @State private var animationPhase: Int = 0
-    
-    private let dotSize: CGFloat = 6
-    private let spacing: CGFloat = 3
-    
-    var body: some View {
-        HStack(spacing: spacing) {
-            ForEach(0..<3, id: \.self) { index in
-                Circle()
-                    .fill(color.opacity(index == animationPhase ? 1.0 : 0.3))
-                    .frame(width: dotSize, height: dotSize)
-                    .animation(.easeInOut(duration: 0.4).repeatForever(autoreverses: true).delay(Double(index) * 0.15), value: animationPhase)
-            }
-        }
-        .onAppear {
-            withAnimation {
-                animationPhase = (animationPhase + 1) % 3
-            }
-            startAnimation()
-        }
-    }
-    
-    private func startAnimation() {
-        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
-            withAnimation(.easeInOut(duration: 0.3)) {
-                animationPhase = (animationPhase + 1) % 3
-            }
-        }
-    }
-}
-
 struct Theme {
     let colorScheme: ColorScheme
 
@@ -628,6 +595,13 @@ struct ContentView: View {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var timelineScrollMarker: String {
+        guard let lastEntry = store.timeline.last else {
+            return "empty"
+        }
+        return "\(lastEntry.id)-\(lastEntry.lastThreadSeq)-\(store.timeline.count)"
+    }
+
     private func submitDaemonURL() {
         store.updateDaemonURL(daemonURLDraft)
     }
@@ -719,7 +693,7 @@ struct ContentView: View {
             .onTapGesture {
                 dismissKeyboard()
             }
-            .onChange(of: store.timeline.count) { _ in
+            .onChange(of: timelineScrollMarker) { _ in
                 if let lastID = store.timeline.last?.id {
                     withAnimation(.easeOut(duration: 0.22)) {
                         proxy.scrollTo(lastID, anchor: .bottom)
@@ -1121,6 +1095,7 @@ private struct UnavailableStateView: View {
 private struct TimelineBubble: View {
     let entry: DaemonTimelineEntry
     @Environment(\.colorScheme) private var colorScheme
+    @State private var isShowingExecutionDetails = false
 
     private var theme: Theme {
         Theme(colorScheme: colorScheme)
@@ -1135,6 +1110,20 @@ private struct TimelineBubble: View {
             } else {
                 assistantRow
             }
+        }
+        .sheet(isPresented: $isShowingExecutionDetails) {
+            NavigationStack {
+                AssistantExecutionDetailSheet(entry: entry)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Done") {
+                                isShowingExecutionDetails = false
+                            }
+                        }
+                    }
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
         }
     }
 
@@ -1155,7 +1144,7 @@ private struct TimelineBubble: View {
                         .foregroundStyle(.white.opacity(0.70))
                 }
 
-                Text(entry.body.isEmpty ? "…" : entry.body)
+                Text(entry.body.isEmpty ? "..." : entry.body)
                     .font(.body)
                     .foregroundStyle(.white)
                     .lineSpacing(3)
@@ -1202,7 +1191,12 @@ private struct TimelineBubble: View {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .stroke(borderColor, lineWidth: 1)
+                    .stroke(borderColor, lineWidth: attentionSummary == nil ? 1 : 1.4)
+            )
+            .shadow(
+                color: attentionHighlightColor.opacity(colorScheme == .dark ? 0.22 : 0.12),
+                radius: attentionSummary == nil ? 0 : 18,
+                y: attentionSummary == nil ? 0 : 8
             )
 
             Spacer(minLength: 0)
@@ -1221,7 +1215,7 @@ private struct TimelineBubble: View {
                     }
                     .foregroundStyle(typeColor)
 
-                    Text(entry.body.isEmpty ? "…" : entry.body)
+                    Text(entry.body.isEmpty ? "..." : entry.body)
                         .font(.system(.body, design: .monospaced))
                         .foregroundStyle(theme.ink)
                         .lineSpacing(4)
@@ -1238,75 +1232,38 @@ private struct TimelineBubble: View {
                         .stroke(toolBodyStroke, lineWidth: 1)
                 )
             } else if entry.kind == .assistantTurn {
-                VStack(alignment: .leading, spacing: 12) {
-                    if let thinkingBody = entry.thinkingBody, !thinkingBody.isEmpty {
-                        assistantActivityPanel(
-                            title: "Thinking",
-                            systemImage: "brain.head.profile",
-                            titleColor: theme.subtleInk,
-                            body: thinkingBody,
-                            bodyFont: .callout,
-                            bodyColor: theme.subtleInk,
-                            rendersMarkdown: true,
-                            fill: theme.panel.opacity(0.96),
-                            stroke: theme.stroke
+                VStack(alignment: .leading, spacing: 14) {
+                    if let summary = attentionSummary {
+                        executionSummaryButton(summary)
+                    }
+
+                    if !entry.body.isEmpty {
+                        AgentMarkdownText(content: entry.body)
+                            .font(.body)
+                            .foregroundStyle(theme.ink)
+                            .lineSpacing(5)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else if entry.executionSummary == nil {
+                        Text("...")
+                            .font(.body)
+                            .foregroundStyle(theme.subtleInk)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    if let summary = regularSummary {
+                        executionSummaryButton(summary)
+                    } else if entry.executionSummary == nil,
+                              let status = entry.status,
+                              entry.normalizedStatusToken != "completed" {
+                        assistantStatusStrip(
+                            title: entry.normalizedStatusToken == "streaming"
+                                ? "Working..."
+                                : status.replacingOccurrences(of: "_", with: " ").capitalized
                         )
-                    }
-
-                    if let planBody = entry.planBody, !planBody.isEmpty {
-                        assistantActivityPanel(
-                            title: "Plan draft",
-                            systemImage: "list.bullet.clipboard",
-                            titleColor: theme.planColor,
-                            body: planBody,
-                            bodyFont: .system(.body, design: .monospaced),
-                            bodyColor: theme.ink,
-                            rendersMarkdown: false,
-                            fill: theme.planPanel.opacity(0.72),
-                            stroke: theme.planColor.opacity(0.14)
-                        )
-                    }
-
-                    ForEach(entry.toolActivities) { activity in
-                        assistantActivityPanel(
-                            title: "Tool activity",
-                            systemImage: "hammer",
-                            titleColor: theme.accentWarm,
-                            body: toolBody(for: activity),
-                            bodyFont: .system(.body, design: .monospaced),
-                            bodyColor: theme.ink,
-                            rendersMarkdown: false,
-                            fill: theme.toolPanel.opacity(0.72),
-                            stroke: theme.accentWarm.opacity(0.18)
-                        )
-                    }
-
-                    if !entry.body.isEmpty || (entry.thinkingBody == nil && entry.planBody == nil && entry.toolActivities.isEmpty) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Label("Response", systemImage: "text.bubble")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(theme.mutedInk)
-
-                            AgentMarkdownText(content: entry.body.isEmpty ? "…" : entry.body)
-                                .font(.body)
-                                .foregroundStyle(theme.ink)
-                                .lineSpacing(5)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-
-                    if let status = entry.status, status != "completed" {
-                        if status == "streaming" {
-                            TypingDotsView(color: theme.mutedInk)
-                        } else {
-                            Text(status.replacingOccurrences(of: "_", with: " ").capitalized)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(theme.subtleInk)
-                        }
                     }
                 }
             } else {
-                Text(entry.body.isEmpty ? "…" : entry.body)
+                Text(entry.body.isEmpty ? "..." : entry.body)
                     .font(.body)
                     .foregroundStyle(theme.ink)
                     .lineSpacing(5)
@@ -1315,59 +1272,165 @@ private struct TimelineBubble: View {
         }
     }
 
-    private func toolBody(for activity: DaemonToolActivity) -> String {
-        let headline = activity.title.isEmpty
-            ? activity.status
-            : "\(activity.title) · \(activity.status)"
-        guard let content = activity.content, !content.isEmpty else {
-            return headline
+    private func executionSummaryButton(_ summary: AssistantExecutionSummary) -> some View {
+        Button {
+            isShowingExecutionDetails = true
+        } label: {
+            VStack(alignment: .leading, spacing: summary.detailLine == nil ? 0 : 8) {
+                HStack(alignment: .center, spacing: 10) {
+                    executionSummaryIndicator(for: summary)
+                        .frame(width: 18, height: 18)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(summary.headline)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(executionToneColor(summary.tone))
+
+                        if let footnote = summary.footnote, !footnote.isEmpty {
+                            Text(footnote)
+                                .font(.caption)
+                                .foregroundStyle(theme.mutedInk)
+                                .lineLimit(1)
+                        }
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(theme.subtleInk)
+                }
+
+                if let detailLine = summary.detailLine, !detailLine.isEmpty {
+                    Text(detailLine)
+                        .font(.caption)
+                        .foregroundStyle(theme.mutedInk)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(executionSummaryFill(summary.tone))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(executionSummaryStroke(summary.tone), lineWidth: 1)
+            )
         }
-        return "\(headline)\n\(content)"
+        .buttonStyle(.plain)
     }
 
-    private func assistantActivityPanel(
-        title: String,
-        systemImage: String,
-        titleColor: Color,
-        body: String,
-        bodyFont: Font,
-        bodyColor: Color,
-        rendersMarkdown: Bool,
-        fill: Color,
-        stroke: Color
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label(title, systemImage: systemImage)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(titleColor)
+    private func assistantStatusStrip(title: String) -> some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(theme.mutedInk)
 
-            if rendersMarkdown {
-                AgentMarkdownText(
-                    content: body,
-                    preferredSyntax: .inlineOnlyPreservingWhitespace
-                )
-                .font(bodyFont)
-                .foregroundStyle(bodyColor)
-                .lineSpacing(4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                Text(body)
-                    .font(bodyFont)
-                    .foregroundStyle(bodyColor)
-                    .lineSpacing(4)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(theme.subtleInk)
+
+            Spacer(minLength: 0)
         }
-        .padding(14)
+        .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(fill)
+                .fill(theme.panel.opacity(0.94))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(stroke, lineWidth: 1)
+                .stroke(theme.stroke, lineWidth: 1)
         )
+    }
+
+    @ViewBuilder
+    private func executionSummaryIndicator(for summary: AssistantExecutionSummary) -> some View {
+        if summary.showsProgress {
+            ProgressView()
+                .controlSize(.small)
+                .tint(executionToneColor(summary.tone))
+        } else {
+            Image(systemName: executionSummaryIconName(for: summary))
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(executionToneColor(summary.tone))
+        }
+    }
+
+    private func executionSummaryIconName(for summary: AssistantExecutionSummary) -> String {
+        switch summary.tone {
+        case .warning:
+            return "exclamationmark.shield.fill"
+        case .failure:
+            return "xmark.octagon.fill"
+        case .active, .neutral:
+            if !entry.toolActivities.isEmpty {
+                return "hammer"
+            }
+            if entry.hasPlanBody {
+                return "list.bullet.clipboard"
+            }
+            if entry.hasThinkingBody {
+                return "brain.head.profile"
+            }
+            return "ellipsis.bubble"
+        }
+    }
+
+    private func executionToneColor(_ tone: AssistantExecutionSummary.Tone) -> Color {
+        switch tone {
+        case .neutral:
+            return theme.mutedInk
+        case .active:
+            return theme.mutedInk
+        case .warning:
+            return theme.accentWarm
+        case .failure:
+            return .red
+        }
+    }
+
+    private func executionSummaryFill(_ tone: AssistantExecutionSummary.Tone) -> Color {
+        switch tone {
+        case .neutral, .active:
+            return theme.panel.opacity(0.94)
+        case .warning:
+            return theme.toolPanel.opacity(0.78)
+        case .failure:
+            return Color.red.opacity(colorScheme == .dark ? 0.16 : 0.08)
+        }
+    }
+
+    private func executionSummaryStroke(_ tone: AssistantExecutionSummary.Tone) -> Color {
+        switch tone {
+        case .neutral, .active:
+            return theme.stroke
+        case .warning:
+            return theme.accentWarm.opacity(0.22)
+        case .failure:
+            return Color.red.opacity(0.24)
+        }
+    }
+
+    private var attentionSummary: AssistantExecutionSummary? {
+        guard let summary = entry.executionSummary, summary.requiresAttention else {
+            return nil
+        }
+        return summary
+    }
+
+    private var regularSummary: AssistantExecutionSummary? {
+        guard let summary = entry.executionSummary, !summary.requiresAttention else {
+            return nil
+        }
+        return summary
+    }
+
+    private var attentionHighlightColor: Color {
+        guard let summary = attentionSummary else {
+            return .clear
+        }
+        return executionToneColor(summary.tone)
     }
 
     private var centeredEvent: some View {
@@ -1445,12 +1508,18 @@ private struct TimelineBubble: View {
 
     private var typeColor: Color {
         switch entry.kind {
-        case .assistantTurn: return theme.mutedInk
-        case .tool: return theme.accentWarm
-        case .plan: return theme.planColor
-        case .user: return .white
-        case .turnEnd: return theme.mutedInk
-        case .system: return theme.mutedInk
+        case .assistantTurn:
+            return attentionSummary.map { executionToneColor($0.tone) } ?? theme.mutedInk
+        case .tool:
+            return theme.accentWarm
+        case .plan:
+            return theme.planColor
+        case .user:
+            return .white
+        case .turnEnd:
+            return theme.mutedInk
+        case .system:
+            return theme.mutedInk
         }
     }
 
@@ -1473,7 +1542,11 @@ private struct TimelineBubble: View {
             return theme.accentWarm.opacity(0.22)
         case .plan:
             return theme.planColor.opacity(0.16)
-        case .assistantTurn, .user, .turnEnd, .system:
+        case .assistantTurn:
+            return attentionSummary == nil
+                ? theme.stroke
+                : attentionHighlightColor.opacity(0.28)
+        case .user, .turnEnd, .system:
             return theme.stroke
         }
     }
@@ -1520,5 +1593,332 @@ private struct TimelineBubble: View {
         default:
             return theme.stroke
         }
+    }
+}
+
+private struct AssistantExecutionDetailSheet: View {
+    let entry: DaemonTimelineEntry
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: Theme {
+        Theme(colorScheme: colorScheme)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                if let summary = entry.executionSummary {
+                    summaryCard(summary)
+                }
+
+                if entry.hasThinkingBody, let thinkingBody = entry.thinkingBody {
+                    AssistantExecutionPanel(
+                        title: "Thinking",
+                        systemImage: "brain.head.profile",
+                        content: thinkingBody,
+                        titleColor: theme.subtleInk,
+                        bodyFont: .callout,
+                        bodyColor: theme.subtleInk,
+                        rendersMarkdown: true,
+                        fill: theme.panel.opacity(0.96),
+                        stroke: theme.stroke
+                    )
+                }
+
+                if entry.hasPlanBody, let planBody = entry.planBody {
+                    AssistantExecutionPanel(
+                        title: "Plan draft",
+                        systemImage: "list.bullet.clipboard",
+                        content: planBody,
+                        titleColor: theme.planColor,
+                        bodyFont: .system(.body, design: .monospaced),
+                        bodyColor: theme.ink,
+                        rendersMarkdown: false,
+                        fill: theme.planPanel.opacity(0.74),
+                        stroke: theme.planColor.opacity(0.14)
+                    )
+                }
+
+                if !entry.orderedToolActivities.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label("Tool activity", systemImage: "hammer")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(theme.accentWarm)
+
+                        ForEach(entry.orderedToolActivities) { activity in
+                            AssistantExecutionToolCard(activity: activity)
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: 760, alignment: .leading)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .scrollIndicators(.hidden)
+        .background(ChatScreenBackground().ignoresSafeArea())
+        .navigationTitle("Execution")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func summaryCard(_ summary: AssistantExecutionSummary) -> some View {
+        VStack(alignment: .leading, spacing: summary.detailLine == nil ? 0 : 10) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: summaryIconName(for: summary))
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(summaryToneColor(summary.tone))
+                    .frame(width: 20, height: 20)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(summary.headline)
+                        .font(.headline)
+                        .foregroundStyle(summaryToneColor(summary.tone))
+
+                    if let footnote = summary.footnote, !footnote.isEmpty {
+                        Text(footnote)
+                            .font(.subheadline)
+                            .foregroundStyle(theme.mutedInk)
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                if let stateLabel = stateLabel {
+                    AssistantExecutionBadge(text: stateLabel, color: summaryToneColor(summary.tone))
+                }
+            }
+
+            if let detailLine = summary.detailLine, !detailLine.isEmpty {
+                Text(detailLine)
+                    .font(.caption)
+                    .foregroundStyle(theme.mutedInk)
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(summaryFill(summary.tone))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(summaryStroke(summary.tone), lineWidth: 1)
+        )
+    }
+
+    private var stateLabel: String? {
+        guard let status = entry.status, !status.isEmpty else { return nil }
+        switch entry.normalizedStatusToken {
+        case "streaming":
+            return "Live"
+        case "completed":
+            return "Completed"
+        case "failed":
+            return "Failed"
+        default:
+            return status.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    private func summaryIconName(for summary: AssistantExecutionSummary) -> String {
+        switch summary.tone {
+        case .warning:
+            return "exclamationmark.shield.fill"
+        case .failure:
+            return "xmark.octagon.fill"
+        case .active, .neutral:
+            if !entry.toolActivities.isEmpty {
+                return "hammer"
+            }
+            if entry.hasPlanBody {
+                return "list.bullet.clipboard"
+            }
+            if entry.hasThinkingBody {
+                return "brain.head.profile"
+            }
+            return "ellipsis.bubble"
+        }
+    }
+
+    private func summaryToneColor(_ tone: AssistantExecutionSummary.Tone) -> Color {
+        switch tone {
+        case .neutral:
+            return theme.mutedInk
+        case .active:
+            return theme.mutedInk
+        case .warning:
+            return theme.accentWarm
+        case .failure:
+            return .red
+        }
+    }
+
+    private func summaryFill(_ tone: AssistantExecutionSummary.Tone) -> Color {
+        switch tone {
+        case .neutral, .active:
+            return theme.panel.opacity(0.95)
+        case .warning:
+            return theme.toolPanel.opacity(0.80)
+        case .failure:
+            return Color.red.opacity(colorScheme == .dark ? 0.16 : 0.08)
+        }
+    }
+
+    private func summaryStroke(_ tone: AssistantExecutionSummary.Tone) -> Color {
+        switch tone {
+        case .neutral, .active:
+            return theme.stroke
+        case .warning:
+            return theme.accentWarm.opacity(0.22)
+        case .failure:
+            return Color.red.opacity(0.24)
+        }
+    }
+}
+
+private struct AssistantExecutionPanel: View {
+    let title: String
+    let systemImage: String
+    let content: String
+    let titleColor: Color
+    let bodyFont: Font
+    let bodyColor: Color
+    let rendersMarkdown: Bool
+    let fill: Color
+    let stroke: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: systemImage)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(titleColor)
+
+            if rendersMarkdown {
+                AgentMarkdownText(
+                    content: content,
+                    preferredSyntax: .inlineOnlyPreservingWhitespace
+                )
+                .font(bodyFont)
+                .foregroundStyle(bodyColor)
+                .lineSpacing(4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text(content)
+                    .font(bodyFont)
+                    .foregroundStyle(bodyColor)
+                    .lineSpacing(4)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(fill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(stroke, lineWidth: 1)
+        )
+    }
+}
+
+private struct AssistantExecutionToolCard: View {
+    let activity: DaemonToolActivity
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: Theme {
+        Theme(colorScheme: colorScheme)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(activity.displayTitle)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(theme.ink)
+                }
+
+                Spacer(minLength: 8)
+
+                AssistantExecutionBadge(text: activity.displayStatus, color: statusColor)
+            }
+
+            if let content = activity.content,
+               !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(content)
+                    .font(.system(.footnote, design: .monospaced))
+                    .foregroundStyle(theme.ink)
+                    .lineSpacing(3)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(cardFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(cardStroke, lineWidth: 1)
+        )
+    }
+
+    private var statusColor: Color {
+        if activity.needsApproval {
+            return theme.accentWarm
+        }
+        if activity.isFailed {
+            return .red
+        }
+        if activity.isRunning {
+            return theme.mutedInk
+        }
+        return theme.subtleInk
+    }
+
+    private var cardFill: Color {
+        if activity.needsApproval {
+            return theme.toolPanel.opacity(0.80)
+        }
+        if activity.isFailed {
+            return Color.red.opacity(colorScheme == .dark ? 0.14 : 0.07)
+        }
+        return theme.panel.opacity(0.95)
+    }
+
+    private var cardStroke: Color {
+        if activity.needsApproval {
+            return theme.accentWarm.opacity(0.22)
+        }
+        if activity.isFailed {
+            return Color.red.opacity(0.24)
+        }
+        return theme.stroke
+    }
+}
+
+private struct AssistantExecutionBadge: View {
+    let text: String
+    let color: Color
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: Theme {
+        Theme(colorScheme: colorScheme)
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(theme.paper.opacity(0.9), in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(color.opacity(0.18), lineWidth: 1)
+            )
     }
 }
