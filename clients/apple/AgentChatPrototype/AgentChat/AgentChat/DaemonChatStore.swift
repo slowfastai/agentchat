@@ -183,6 +183,25 @@ final class DaemonChatStore: ObservableObject {
         persistSelectedAgents()
     }
 
+    func removeAgent(_ agentID: String) {
+        agents.removeAll { $0.agentID == agentID }
+        selectedAgentIDs.remove(agentID)
+        persistKnownAgents()
+        persistSelectedAgents()
+    }
+
+    func updateAgentDisplayName(_ agentID: String, displayName: String?) {
+        guard let index = agents.firstIndex(where: { $0.agentID == agentID }) else { return }
+        agents[index] = agents[index].withCustomDisplayName(displayName)
+        persistKnownAgents()
+    }
+
+    func updateAgentAvatar(_ agentID: String, imageData: Data?) {
+        guard let index = agents.firstIndex(where: { $0.agentID == agentID }) else { return }
+        agents[index] = agents[index].withAvatarImageData(imageData)
+        persistKnownAgents()
+    }
+
     func toggleParticipantSelection(_ participantID: String) {
         if selectedParticipantIDs.contains(participantID) {
             selectedParticipantIDs.remove(participantID)

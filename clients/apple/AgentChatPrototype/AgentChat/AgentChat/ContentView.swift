@@ -149,6 +149,9 @@ struct ContentView: View {
     @State private var compactPresentedThreadID: String?
     @State private var pendingCloseThread: DaemonThreadSummary?
     @State private var selectedTab: AppTab = .feed
+    @State private var editingAgent: DaemonAgentSummary?
+    @State private var pendingDeleteAgent: DaemonAgentSummary?
+    @State private var connectingAgentID: String?
 
     private var theme: Theme {
         Theme(colorScheme: colorScheme)
@@ -240,6 +243,42 @@ struct ContentView: View {
                 Text("\"\(thread.title ?? thread.threadID)\" will be closed in the daemon and removed for every client, not just hidden on this device.")
             }
         }
+        .confirmationDialog(
+            "Delete Agent?",
+            isPresented: Binding(
+                get: { pendingDeleteAgent != nil },
+                set: { newValue in
+                    if !newValue {
+                        pendingDeleteAgent = nil
+                    }
+                }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let agent = pendingDeleteAgent {
+                Button("Delete", role: .destructive) {
+                    store.removeAgent(agent.agentID)
+                    pendingDeleteAgent = nil
+                }
+            }
+
+            Button("Cancel", role: .cancel) {
+                pendingDeleteAgent = nil
+            }
+        } message: {
+            if let agent = pendingDeleteAgent {
+                Text("\"\(agent.displayName)\" will be removed from your agents list. You can rediscover it by reconnecting to the daemon.")
+            }
+        }
+        .sheet(item: $editingAgent) { agent in
+            AgentEditSheet(agent: agent) { updatedAgent in
+                if let name = updatedAgent.customDisplayName {
+                    store.updateAgentDisplayName(agent.agentID, displayName: name)
+                }
+                store.updateAgentAvatar(agent.agentID, imageData: updatedAgent.avatarImageData)
+                editingAgent = nil
+            }
+        }
     }
 
     @ViewBuilder
@@ -307,61 +346,106 @@ struct ContentView: View {
                 .padding(.vertical, 4)
             } else {
                 ForEach(store.agents, id: \.agentID) { agent in
-                    HStack(alignment: .top, spacing: 12) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(color(named: agent.tintName).opacity(0.14))
-
-                            Image(systemName: agent.symbolName)
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(color(named: agent.tintName))
-                        }
-                        .frame(width: 40, height: 40)
-
-                        Button {
-                            store.toggleAgentSelection(agent.agentID)
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: store.isSelectedAgent(agent.agentID) ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(store.isSelectedAgent(agent.agentID) ? Color.accentColor : Color.secondary)
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(agent.displayName)
-                                        .font(.body.weight(.medium))
-
-                                    Text(agentSubtitle(for: agent))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .buttonStyle(.plain)
-
-                        VStack(alignment: .trailing, spacing: 6) {
-                            Text(agent.status.replacingOccurrences(of: "_", with: " ").capitalized)
-                                .font(.caption)
-                                .foregroundStyle(agentStatusColor(for: agent))
-
-                            if agent.isOffline {
-                                Button {
-                                    store.reconnectNow()
-                                } label: {
-                                    Text("Reconnect")
-                                        .font(.caption2.weight(.semibold))
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .disabled(!store.hasConfiguredDaemonURL)
+                    agentRow(agent: agent)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                pendingDeleteAgent = agent
+                            } label: {
+                                Label("Delete", systemImage: "trash")
                             }
                         }
-                    }
+                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                            Button {
+                                editingAgent = agent
+                            } label: {
+                                Label("Edit", systemImage: "pencil")
+                            }
+                            .tint(.blue)
+                        }
                 }
 
                 Text("Agents stay in this list after first discovery. Selected agents are used by Feed → menu → Create Thread / Add Agent, and only online agents can join right now.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func agentRow(agent: DaemonAgentSummary) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            AgentAvatarView(agent: agent, size: 40)
+
+            Button {
+                handleAgentSelection(agent)
+            } label: {
+                HStack(spacing: 12) {
+                    if connectingAgentID == agent.agentID {
+                        ProgressView()
+                            .controlSize(.small)
+                            .padding(.trailing, 4)
+                    } else {
+                        Image(systemName: store.isSelectedAgent(agent.agentID) ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(store.isSelectedAgent(agent.agentID) ? Color.accentColor : Color.secondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 4) {
+                            Text(agent.displayName)
+                                .font(.body.weight(.medium))
+
+                            if agent.customDisplayName != nil {
+                                Image(systemName: "pencil.circle.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        Text(agentSubtitle(for: agent))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .disabled(connectingAgentID != nil)
+
+            VStack(alignment: .trailing, spacing: 6) {
+                if connectingAgentID == agent.agentID {
+                    Text("Connecting...")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else {
+                    Text(agent.status.replacingOccurrences(of: "_", with: " ").capitalized)
+                        .font(.caption)
+                        .foregroundStyle(agentStatusColor(for: agent))
+                }
+
+                if agent.isOffline {
+                    Button {
+                        store.reconnectNow()
+                    } label: {
+                        Text("Reconnect")
+                            .font(.caption2.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(!store.hasConfiguredDaemonURL)
+                }
+            }
+        }
+    }
+
+    private func handleAgentSelection(_ agent: DaemonAgentSummary) {
+        if connectingAgentID != nil { return }
+
+        connectingAgentID = agent.agentID
+        store.toggleAgentSelection(agent.agentID)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            if connectingAgentID == agent.agentID {
+                connectingAgentID = nil
             }
         }
     }
@@ -1920,5 +2004,250 @@ private struct AssistantExecutionBadge: View {
                 Capsule()
                     .stroke(color.opacity(0.18), lineWidth: 1)
             )
+    }
+}
+
+struct AgentAvatarView: View {
+    let agent: DaemonAgentSummary
+    var size: CGFloat = 40
+
+    var body: some View {
+        ZStack {
+            if let imageData = agent.avatarImageData,
+               let uiImage = UIImage(data: imageData) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: size, height: size)
+                    .clipShape(Circle())
+            } else {
+                ZStack {
+                    Circle()
+                        .fill(Self.tintColor(named: agent.tintName).opacity(0.14))
+
+                    Image(systemName: agent.symbolName)
+                        .font(.system(size: size * 0.45, weight: .semibold))
+                        .foregroundStyle(Self.tintColor(named: agent.tintName))
+                }
+                .frame(width: size, height: size)
+            }
+        }
+    }
+
+    private static func tintColor(named tintName: String) -> Color {
+        switch tintName {
+        case "purple": return .purple
+        case "green": return .green
+        case "orange": return .orange
+        case "blue": return .blue
+        case "gray": return .gray
+        case "red": return .red
+        default: return .indigo
+        }
+    }
+}
+
+struct AgentEditSheet: View {
+    let agent: DaemonAgentSummary
+    let onSave: (DaemonAgentSummary) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var displayName: String
+    @State private var selectedImage: UIImage?
+    @State private var showImagePicker = false
+    @State private var showRemovePhotoAlert = false
+
+    init(agent: DaemonAgentSummary, onSave: @escaping (DaemonAgentSummary) -> Void) {
+        self.agent = agent
+        self.onSave = onSave
+        _displayName = State(initialValue: agent.customDisplayName ?? "")
+        if let imageData = agent.avatarImageData {
+            _selectedImage = State(initialValue: UIImage(data: imageData))
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    avatarSection
+                }
+
+                Section("Display Name") {
+                    TextField("Enter a custom name", text: $displayName)
+                        .textInputAutocapitalization(.words)
+                }
+
+                Section {
+                    Text("Customize how this agent appears in your list. The original agent name from the daemon will still be used for identification.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Edit Agent")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saveChanges()
+                    }
+                }
+            }
+            .sheet(isPresented: $showImagePicker) {
+                ImagePicker(image: $selectedImage)
+            }
+            .alert("Remove Photo?", isPresented: $showRemovePhotoAlert) {
+                Button("Remove", role: .destructive) {
+                    selectedImage = nil
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This will remove the custom avatar and show the default icon.")
+            }
+        }
+    }
+
+    private var avatarSection: some View {
+        VStack(spacing: 16) {
+            ZStack(alignment: .bottomTrailing) {
+                avatarPreview
+                    .frame(width: 100, height: 100)
+
+                Button {
+                    if selectedImage != nil {
+                        showRemovePhotoAlert = true
+                    } else {
+                        showImagePicker = true
+                    }
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(Color.accentColor)
+                            .frame(width: 32, height: 32)
+
+                        Image(systemName: selectedImage != nil ? "pencil" : "plus")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+    }
+
+    private var avatarPreview: some View {
+        Group {
+            if let image = selectedImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .clipShape(Circle())
+            } else {
+                Circle()
+                    .fill(Self.tintColor(named: agent.tintName).opacity(0.14))
+                    .overlay {
+                        Image(systemName: agent.symbolName)
+                            .font(.system(size: 36, weight: .semibold))
+                            .foregroundStyle(Self.tintColor(named: agent.tintName))
+                    }
+            }
+        }
+    }
+
+    private static func tintColor(named tintName: String) -> Color {
+        switch tintName {
+        case "purple": return .purple
+        case "green": return .green
+        case "orange": return .orange
+        case "blue": return .blue
+        case "gray": return .gray
+        case "red": return .red
+        default: return .indigo
+        }
+    }
+
+    private func saveChanges() {
+        var updatedAgent = agent
+        updatedAgent = updatedAgent.withCustomDisplayName(displayName.isEmpty ? nil : displayName)
+
+        if let image = selectedImage {
+            let processedData = processImage(image)
+            updatedAgent = updatedAgent.withAvatarImageData(processedData)
+        } else {
+            updatedAgent = updatedAgent.withAvatarImageData(nil)
+        }
+
+        onSave(updatedAgent)
+    }
+
+    private func processImage(_ image: UIImage) -> Data? {
+        let targetSize = CGSize(width: 200, height: 200)
+        let squareImage = cropToSquare(image)
+
+        let renderer = UIGraphicsImageRenderer(size: targetSize)
+        let resizedImage = renderer.image { _ in
+            squareImage.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+
+        return resizedImage.jpegData(compressionQuality: 0.8)
+    }
+
+    private func cropToSquare(_ image: UIImage) -> UIImage {
+        let originalSize = image.size
+        let sideLength = min(originalSize.width, originalSize.height)
+
+        let x = (originalSize.width - sideLength) / 2
+        let y = (originalSize.height - sideLength) / 2
+
+        let cropRect = CGRect(x: x, y: y, width: sideLength, height: sideLength)
+
+        guard let cgImage = image.cgImage?.cropping(to: cropRect) else {
+            return image
+        }
+
+        return UIImage(cgImage: cgImage, scale: image.scale, orientation: image.imageOrientation)
+    }
+}
+
+struct ImagePicker: UIViewControllerRepresentable {
+    @Binding var image: UIImage?
+    @Environment(\.dismiss) private var dismiss
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.delegate = context.coordinator
+        picker.allowsEditing = false
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: ImagePicker
+
+        init(_ parent: ImagePicker) {
+            self.parent = parent
+        }
+
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            if let image = info[.originalImage] as? UIImage {
+                parent.image = image
+            }
+            parent.dismiss()
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.dismiss()
+        }
     }
 }

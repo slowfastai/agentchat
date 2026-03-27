@@ -183,6 +183,8 @@ struct DaemonAgentSummary: Codable, Identifiable, Hashable {
     let status: String
     let defaultWorkingDir: String?
     let capabilities: [String]
+    var customDisplayName: String?
+    var avatarImageData: Data?
 
     enum CodingKeys: String, CodingKey {
         case agentID = "agent_id"
@@ -191,6 +193,8 @@ struct DaemonAgentSummary: Codable, Identifiable, Hashable {
         case status
         case defaultWorkingDir = "default_working_dir"
         case capabilities
+        case customDisplayName = "custom_display_name"
+        case avatarImageData = "avatar_image_data"
     }
 
     var id: String { agentID }
@@ -201,6 +205,9 @@ struct DaemonAgentSummary: Codable, Identifiable, Hashable {
     var tintName: String { family.tintName }
     var kindTitle: String { family.title }
     var displayName: String {
+        if let customName = customDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines), !customName.isEmpty {
+            return customName
+        }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
             return trimmed
@@ -224,8 +231,22 @@ struct DaemonAgentSummary: Codable, Identifiable, Hashable {
             kind: kind,
             status: status,
             defaultWorkingDir: defaultWorkingDir,
-            capabilities: capabilities
+            capabilities: capabilities,
+            customDisplayName: customDisplayName,
+            avatarImageData: avatarImageData
         )
+    }
+
+    func withCustomDisplayName(_ customName: String?) -> Self {
+        var copy = self
+        copy.customDisplayName = customName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true ? nil : customName
+        return copy
+    }
+
+    func withAvatarImageData(_ data: Data?) -> Self {
+        var copy = self
+        copy.avatarImageData = data
+        return copy
     }
 }
 
