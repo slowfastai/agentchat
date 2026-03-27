@@ -736,7 +736,8 @@ struct ContentView: View {
                     ForEach(snapshot.participants, id: \.participantID) { participant in
                         ThreadParticipantChip(
                             participant: participant,
-                            color: chipColor(for: participant)
+                            color: chipColor(for: participant),
+                            avatarData: avatarData(for: participant)
                         )
                     }
                 }
@@ -858,6 +859,11 @@ struct ContentView: View {
         color(named: participant.isAgent ? store.tintName(for: participant.agentID) : participant.tintName)
     }
 
+    private func avatarData(for participant: DaemonThreadParticipant) -> Data? {
+        guard let agentID = participant.agentID else { return nil }
+        return store.agents.first { $0.agentID == agentID }?.avatarImageData
+    }
+
     private func color(named tintName: String) -> Color {
         switch tintName {
         case "purple": return .purple
@@ -928,6 +934,7 @@ private struct HeaderInfoPill: View {
 private struct ThreadParticipantChip: View {
     let participant: DaemonThreadParticipant
     let color: Color
+    let avatarData: Data?
     @Environment(\.colorScheme) private var colorScheme
 
     private var theme: Theme {
@@ -936,14 +943,8 @@ private struct ThreadParticipantChip: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(color.opacity(0.11))
-                Text(initials)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(color)
-            }
-            .frame(width: 30, height: 30)
+            avatarView
+                .frame(width: 30, height: 30)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(participant.displayName)
@@ -962,6 +963,24 @@ private struct ThreadParticipantChip: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(theme.stroke, lineWidth: 1)
         )
+    }
+
+    @ViewBuilder
+    private var avatarView: some View {
+        if let data = avatarData, let uiImage = UIImage(data: data) {
+            Image(uiImage: uiImage)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .clipShape(Circle())
+        } else {
+            ZStack {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(color.opacity(0.11))
+                Text(initials)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(color)
+            }
+        }
     }
 
     private var initials: String {
