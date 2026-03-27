@@ -896,7 +896,8 @@ enum AgentRoster {
         var mergedByID = Dictionary(uniqueKeysWithValues: knownAgents.map { ($0.agentID, $0.withStatus("offline")) })
 
         for agent in incomingAgents {
-            mergedByID[agent.agentID] = agent
+            let existing = mergedByID[agent.agentID]
+            mergedByID[agent.agentID] = agent.applyingLocalCustomizations(from: existing)
         }
 
         return sorted(Array(mergedByID.values))

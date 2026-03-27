@@ -237,16 +237,31 @@ struct DaemonAgentSummary: Codable, Identifiable, Hashable {
         )
     }
 
-    func withCustomDisplayName(_ customName: String?) -> Self {
+    nonisolated func withCustomDisplayName(_ customName: String?) -> Self {
         var copy = self
         copy.customDisplayName = customName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true ? nil : customName
         return copy
     }
 
-    func withAvatarImageData(_ data: Data?) -> Self {
+    nonisolated func withAvatarImageData(_ data: Data?) -> Self {
         var copy = self
         copy.avatarImageData = data
         return copy
+    }
+
+    nonisolated func applyingLocalCustomizations(from existing: Self?) -> Self {
+        guard let existing else { return self }
+
+        return Self(
+            agentID: agentID,
+            name: name,
+            kind: kind,
+            status: status,
+            defaultWorkingDir: defaultWorkingDir,
+            capabilities: capabilities,
+            customDisplayName: existing.customDisplayName,
+            avatarImageData: existing.avatarImageData
+        )
     }
 }
 

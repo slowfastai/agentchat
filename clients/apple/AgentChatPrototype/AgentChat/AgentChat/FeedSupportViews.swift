@@ -1,0 +1,260 @@
+import SwiftUI
+
+struct ChatScreenBackground: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: Theme {
+        Theme(colorScheme: colorScheme)
+    }
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [theme.canvasTop, theme.canvasBottom],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            Circle()
+                .fill(theme.accentWarm.opacity(0.10))
+                .frame(width: 300, height: 300)
+                .blur(radius: 90)
+                .offset(x: -160, y: -280)
+
+            Circle()
+                .fill(Color.white.opacity(colorScheme == .dark ? 0.05 : 0.38))
+                .frame(width: 220, height: 220)
+                .blur(radius: 40)
+                .offset(x: 170, y: -180)
+        }
+        .ignoresSafeArea()
+    }
+}
+
+struct HeaderInfoPill: View {
+    let icon: String
+    let text: String
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: Theme {
+        Theme(colorScheme: colorScheme)
+    }
+
+    var body: some View {
+        Label(text, systemImage: icon)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(theme.mutedInk)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(theme.chip, in: Capsule())
+    }
+}
+
+struct TimelineHeroStrip: View {
+    let eventCount: Int
+    let connectionStatus: String
+    let participantCount: Int
+
+    var body: some View {
+        HStack(spacing: 10) {
+            SmallInfoPill(icon: "bubble.left.and.bubble.right", text: "\(eventCount) messages")
+            SmallInfoPill(icon: "person.2", text: "\(participantCount) agents")
+            Spacer(minLength: 0)
+            SmallInfoPill(icon: "sparkles", text: connectionStatus)
+        }
+    }
+}
+
+struct SmallInfoPill: View {
+    let icon: String
+    let text: String
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: Theme {
+        Theme(colorScheme: colorScheme)
+    }
+
+    var body: some View {
+        Label(text, systemImage: icon)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(theme.mutedInk)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(theme.paper.opacity(0.95), in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(theme.stroke, lineWidth: 1)
+            )
+    }
+}
+
+struct EmptyThreadState: View {
+    let snapshot: DaemonThreadSnapshot
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: Theme {
+        Theme(colorScheme: colorScheme)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Begin a calm, focused thread")
+                .font(.headline)
+                .foregroundStyle(theme.ink)
+
+            Text("Ask for a summary, a code change, or route work to one or more agents. Responses will unfold here with more room to read.")
+                .font(.subheadline)
+                .foregroundStyle(theme.mutedInk)
+
+            Text(snapshot.participants.map(\.displayName).joined(separator: " · "))
+                .font(.caption)
+                .foregroundStyle(theme.subtleInk)
+        }
+        .padding(22)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(theme.panel)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(theme.stroke, lineWidth: 1)
+        )
+    }
+}
+
+struct TargetSelectionChip: View {
+    let participant: DaemonThreadParticipant
+    let color: Color
+    let isSelected: Bool
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: Theme {
+        Theme(colorScheme: colorScheme)
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(isSelected ? theme.accentWarm : theme.subtleInk)
+
+            Text(participant.displayName)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(theme.ink)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .fill(isSelected ? theme.toolPanel : theme.paper)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .stroke(isSelected ? theme.accentWarm.opacity(0.25) : theme.stroke, lineWidth: 1)
+        )
+    }
+}
+
+struct ThreadFeedRow: View {
+    let thread: DaemonThreadSummary
+    let isActive: Bool
+    let isPinned: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.accentColor.opacity(0.22), Color.accentColor.opacity(0.10)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 56, height: 56)
+
+                Image(systemName: thread.participantCount > 1 ? "person.2.fill" : "message.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(thread.title ?? thread.threadID)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    if isPinned {
+                        Image(systemName: "pin.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                Text(thread.workingDir)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                HStack(spacing: 8) {
+                    SmallInfoPill(icon: "person.2.fill", text: "\(thread.participantCount)")
+                    SmallInfoPill(icon: "number", text: "Seq \(thread.lastThreadSeq)")
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            VStack(alignment: .trailing, spacing: 8) {
+                if isActive {
+                    Image(systemName: "bubble.left.and.bubble.right.fill")
+                        .foregroundStyle(Color.accentColor)
+                }
+
+                Text(thread.state.replacingOccurrences(of: "_", with: " ").capitalized)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemBackground).opacity(0.96))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(isActive ? Color.accentColor.opacity(0.35) : Color.black.opacity(0.06), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(isActive ? 0.08 : 0.03), radius: 16, y: 8)
+        .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+}
+
+struct UnavailableStateView: View {
+    let title: String
+    let systemImage: String
+    let message: String
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: systemImage)
+                .font(.system(size: 42, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.title3.weight(.semibold))
+            Text(message)
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
+    }
+}
