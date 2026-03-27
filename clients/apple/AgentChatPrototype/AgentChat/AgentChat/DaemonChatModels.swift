@@ -205,6 +205,7 @@ private func mentionHandleValue(_ value: String) -> String {
 struct DaemonAgentSummary: Codable, Identifiable, Hashable {
     let agentID: String
     let name: String
+    let mentionHandleOverride: String? = nil
     let kind: String
     let status: String
     let defaultWorkingDir: String?
@@ -213,6 +214,7 @@ struct DaemonAgentSummary: Codable, Identifiable, Hashable {
     enum CodingKeys: String, CodingKey {
         case agentID = "agent_id"
         case name
+        case mentionHandleOverride = "mention_handle"
         case kind
         case status
         case defaultWorkingDir = "default_working_dir"
@@ -220,6 +222,13 @@ struct DaemonAgentSummary: Codable, Identifiable, Hashable {
     }
 
     var id: String { agentID }
+    var mentionHandle: String {
+        if let mentionHandleOverride,
+           !mentionHandleOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return mentionHandleOverride
+        }
+        return mentionHandleValue(agentID)
+    }
     var isOnline: Bool { status == "online" }
     var isOffline: Bool { status == "offline" }
     var family: DaemonAgentFamily { DaemonAgentFamily(agentID: agentID, kind: kind, name: name) }
@@ -282,6 +291,7 @@ struct DaemonThreadParticipant: Codable, Identifiable, Hashable {
     let kind: String
     let displayName: String
     let agentID: String?
+    let mentionHandleOverride: String? = nil
     let sessionID: String?
     let state: String
 
@@ -290,6 +300,7 @@ struct DaemonThreadParticipant: Codable, Identifiable, Hashable {
         case kind
         case displayName = "display_name"
         case agentID = "agent_id"
+        case mentionHandleOverride = "mention_handle"
         case sessionID = "session_id"
         case state
     }
@@ -300,6 +311,10 @@ struct DaemonThreadParticipant: Codable, Identifiable, Hashable {
     var tintName: String { family.tintName }
     var kindTitle: String { isAgent ? family.title : humanizeAgentIdentifier(kind) }
     var mentionHandle: String {
+        if let mentionHandleOverride,
+           !mentionHandleOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return mentionHandleOverride
+        }
         if let agentID, !agentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return mentionHandleValue(agentID)
         }

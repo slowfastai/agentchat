@@ -76,8 +76,7 @@ impl SkillStore {
     }
 
     pub async fn list_shared_skills(&self) -> Result<Vec<SkillInfo>, String> {
-        self.list_skills_matching(|name| is_shared_skill_name(name))
-            .await
+        self.list_skills_matching(is_shared_skill_name).await
     }
 
     pub async fn list_agent_skills(&self, agent_id: &str) -> Result<Vec<SkillInfo>, String> {

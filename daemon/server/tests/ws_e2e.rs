@@ -249,8 +249,10 @@ async fn websocket_lists_agents_and_creates_sessions_for_requested_agent() {
                 ResponseEvent::AgentList { agents } => {
                     assert_eq!(agents.len(), 2);
                     assert_eq!(agents[0].agent_id, "alpha");
+                    assert_eq!(agents[0].mention_handle.as_deref(), Some("alpha"));
                     assert_eq!(agents[0].status, AgentStatus::Online);
                     assert_eq!(agents[1].agent_id, "beta");
+                    assert_eq!(agents[1].mention_handle.as_deref(), Some("beta"));
                     assert_eq!(agents[1].status, AgentStatus::Online);
                 }
                 event => panic!("unexpected event while listing agents: {event:?}"),
@@ -651,6 +653,7 @@ async fn websocket_thread_message_mentions_route_only_selected_agents() {
                 } => {
                     assert_eq!(tid, thread_id);
                     assert_eq!(participant.agent_id.as_deref(), Some("opencode"));
+                    assert_eq!(participant.mention_handle.as_deref(), Some("opencode"));
                     (
                         participant.participant_id,
                         participant
@@ -677,6 +680,7 @@ async fn websocket_thread_message_mentions_route_only_selected_agents() {
                 } => {
                     assert_eq!(tid, thread_id);
                     assert_eq!(participant.agent_id.as_deref(), Some("codex"));
+                    assert_eq!(participant.mention_handle.as_deref(), Some("codex"));
                     participant.participant_id
                 }
                 event => panic!("unexpected event while adding codex participant: {event:?}"),
@@ -727,7 +731,7 @@ async fn websocket_thread_message_mentions_route_only_selected_agents() {
                         assert_eq!(participant_id, opencode_participant_id);
                         assert_ne!(participant_id, codex_participant_id);
                         assert_eq!(session_id, opencode_session_id);
-                        if response == "echo: how are you" {
+                        if response == "echo: @opencode how are you" {
                             saw_opencode_text = true;
                         }
                         if state == AssistantMessageState::Completed {
@@ -763,15 +767,15 @@ async fn websocket_thread_message_mentions_route_only_selected_agents() {
             }
 
             assert!(saw_opencode_text && saw_opencode_end && saw_opencode_thread_turn_end);
-            wait_for_file_line(
+            wait_for_file_contains(&opencode_events_path, "[Original User Message]").await;
+            assert!(file_contains(
                 &opencode_events_path,
-                "prompt:opencode-session-1:how are you",
-            )
-            .await;
+                "@opencode how are you",
+            ));
             sleep(Duration::from_millis(100)).await;
-            assert!(!file_contains_line(
+            assert!(!file_contains(
                 &codex_events_path,
-                "prompt:codex-session-1:how are you"
+                "[Original User Message]",
             ));
 
             ws.send(Message::Close(None)).await.unwrap();
@@ -905,7 +909,7 @@ async fn websocket_thread_mentions_intersect_with_explicit_target_selection() {
                         assert_eq!(participant_id, codex_participant_id);
                         assert_ne!(participant_id, opencode_participant_id);
                         assert_eq!(session_id, codex_session_id);
-                        if response == "echo: what date is today?" {
+                        if response == "echo: @opencode @codex what date is today?" {
                             saw_codex_text = true;
                         }
                         if state == AssistantMessageState::Completed {
@@ -941,16 +945,180 @@ async fn websocket_thread_mentions_intersect_with_explicit_target_selection() {
             }
 
             assert!(saw_codex_text && saw_codex_end && saw_codex_thread_turn_end);
-            wait_for_file_line(
+            wait_for_file_contains(&codex_events_path, "[Original User Message]").await;
+            assert!(file_contains(
                 &codex_events_path,
-                "prompt:codex-session-1:what date is today?",
+                "@codex what date is today?",
+            ));
+            sleep(Duration::from_millis(100)).await;
+            assert!(!file_contains(
+                &opencode_events_path,
+                "[Original User Message]",
+            ));
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn websocket_thread_mentions_with_empty_intersection_return_error() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_multi_agent_harness(&[
+                ("opencode", FakeAgentMode::Normal),
+                ("codex", FakeAgentMode::Normal),
+            ])
+            .await;
+            let mut ws = connect_ws(harness.port).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateThread {
+                    title: Some("Mention Empty Intersection".into()),
+                    working_dir: ".".into(),
+                },
             )
             .await;
-            sleep(Duration::from_millis(100)).await;
-            assert!(!file_contains_line(
-                &opencode_events_path,
-                "prompt:opencode-session-1:what date is today?"
-            ));
+            let thread_id = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadCreated { thread_id, .. } => thread_id,
+                event => panic!("unexpected event while creating thread: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AddThreadParticipant {
+                    thread_id: thread_id.clone(),
+                    agent_id: "opencode".into(),
+                },
+            )
+            .await;
+            let opencode_participant_id = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadParticipantAdded { participant, .. } => {
+                    participant.participant_id
+                }
+                event => panic!("unexpected event while adding opencode participant: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AddThreadParticipant {
+                    thread_id: thread_id.clone(),
+                    agent_id: "codex".into(),
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::ThreadParticipantAdded { .. } => {}
+                event => panic!("unexpected event while adding codex participant: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::SendThreadMessage {
+                    thread_id: thread_id.clone(),
+                    content: "@codex please help".into(),
+                    target_participant_ids: Some(vec![opencode_participant_id]),
+                },
+            )
+            .await;
+
+            match receive_event(&mut ws).await {
+                ResponseEvent::Error {
+                    session_id: None,
+                    event_seq: None,
+                    code,
+                    message,
+                } => {
+                    assert_eq!(code, "thread_no_matching_targets");
+                    assert_eq!(message, "no checked participants match the @mentions");
+                }
+                event => panic!("unexpected event for empty mention intersection: {event:?}"),
+            }
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn websocket_thread_invalid_explicit_target_is_rejected_before_mention_intersection() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_multi_agent_harness(&[
+                ("opencode", FakeAgentMode::Normal),
+                ("codex", FakeAgentMode::Normal),
+            ])
+            .await;
+            let mut ws = connect_ws(harness.port).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateThread {
+                    title: Some("Invalid Explicit Target".into()),
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+            let thread_id = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadCreated { thread_id, .. } => thread_id,
+                event => panic!("unexpected event while creating thread: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AddThreadParticipant {
+                    thread_id: thread_id.clone(),
+                    agent_id: "opencode".into(),
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::ThreadParticipantAdded { .. } => {}
+                event => panic!("unexpected event while adding opencode participant: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AddThreadParticipant {
+                    thread_id: thread_id.clone(),
+                    agent_id: "codex".into(),
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::ThreadParticipantAdded { .. } => {}
+                event => panic!("unexpected event while adding codex participant: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::SendThreadMessage {
+                    thread_id: thread_id.clone(),
+                    content: "@codex please help".into(),
+                    target_participant_ids: Some(vec!["participant-missing".into()]),
+                },
+            )
+            .await;
+
+            match receive_event(&mut ws).await {
+                ResponseEvent::Error {
+                    session_id: None,
+                    event_seq: None,
+                    code,
+                    message,
+                } => {
+                    assert_eq!(code, "thread_participant_not_found");
+                    assert_eq!(message, "no participant with this id in the thread");
+                }
+                event => panic!("unexpected event for invalid explicit target: {event:?}"),
+            }
 
             ws.send(Message::Close(None)).await.unwrap();
             drop(ws);
@@ -1281,16 +1449,14 @@ async fn websocket_thread_attach_without_cursor_replays_full_history() {
                 ResponseEvent::ThreadSnapshot { snapshot } => {
                     assert_eq!(snapshot.thread_id, thread_id);
                     assert!(snapshot.last_thread_seq > 0);
-                    assert!(snapshot
-                        .participants
-                        .iter()
-                        .any(|participant| participant.session_id.as_deref()
-                            == Some(alpha_session_id.as_str())));
-                    assert!(snapshot
-                        .participants
-                        .iter()
-                        .any(|participant| participant.session_id.as_deref()
-                            == Some(beta_session_id.as_str())));
+                    assert!(snapshot.participants.iter().any(|participant| {
+                        participant.session_id.as_deref() == Some(alpha_session_id.as_str())
+                            && participant.mention_handle.as_deref() == Some("alpha")
+                    }));
+                    assert!(snapshot.participants.iter().any(|participant| {
+                        participant.session_id.as_deref() == Some(beta_session_id.as_str())
+                            && participant.mention_handle.as_deref() == Some("beta")
+                    }));
                     snapshot.last_thread_seq
                 }
                 event => panic!("unexpected thread snapshot event: {event:?}"),
@@ -1472,6 +1638,10 @@ async fn websocket_attach_thread_replays_events_after_cursor() {
                 ResponseEvent::ThreadSnapshot { snapshot } => {
                     assert_eq!(snapshot.thread_id, thread_id);
                     assert_eq!(snapshot.last_thread_seq, expected_tail);
+                    assert!(snapshot.participants.iter().any(|participant| {
+                        participant.agent_id.as_deref() == Some("alpha")
+                            && participant.mention_handle.as_deref() == Some("alpha")
+                    }));
                 }
                 event => panic!("unexpected thread snapshot event: {event:?}"),
             }
@@ -3166,6 +3336,16 @@ fn file_contains_line(path: &Path, expected_line: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn file_contains(path: &Path, expected_substring: &str) -> bool {
+    std::fs::read_to_string(path)
+        .map(|content| content.contains(expected_substring))
+        .unwrap_or(false)
+}
+
 async fn wait_for_file_line(path: &Path, expected_line: &str) {
     wait_for(|| file_contains_line(path, expected_line)).await;
+}
+
+async fn wait_for_file_contains(path: &Path, expected_substring: &str) {
+    wait_for(|| file_contains(path, expected_substring)).await;
 }

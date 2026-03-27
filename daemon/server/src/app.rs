@@ -16,12 +16,13 @@ use agentchat_core::skills::SkillStore;
 use agentchat_core::thread_event_log::ThreadEventLog;
 use agentchat_core::thread_store::{
     participant_to_protocol, thread_to_snapshot, thread_to_summary, ThreadParticipantRecord,
-    ThreadStore,
+    ThreadRecord, ThreadStore,
 };
 use agentchat_protocol::{
-    AgentSummary, AssistantMessageState, ClientMessage, DeltaType, ParticipantKind,
-    ParticipantState, ResponseEvent, SessionEvent, SessionSnapshot, SessionState, SessionSummary,
-    SessionTranscript, SkillInfo, ThreadParticipant, ThreadSender, ThreadSnapshot, ThreadState,
+    canonical_mention_handle, AgentSummary, AssistantMessageState, ClientMessage, DeltaType,
+    ParticipantKind, ParticipantState, ResponseEvent, SessionEvent, SessionSnapshot, SessionState,
+    SessionSummary, SessionTranscript, SkillInfo, ThreadParticipant, ThreadSender, ThreadSnapshot,
+    ThreadState,
 };
 
 pub struct AppProtocolSession {
@@ -68,113 +69,111 @@ fn ensure_active_assistant_message<'a>(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ThreadMessageMentionResolution {
-    prompt_content: String,
-    target_participant_ids: Vec<String>,
+enum ThreadMessageMentionError {
+    ThreadNotFound,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ThreadMessageMentionError {
+enum ThreadMessageTargetError {
     ThreadNotFound,
-    UnknownAgentMention(String),
-    EmptyPrompt,
+    ParticipantNotFound,
 }
 
 fn resolve_thread_message_mentions(
     thread_store: &ThreadStore,
     thread_id: &str,
     content: &str,
-) -> Result<Option<ThreadMessageMentionResolution>, ThreadMessageMentionError> {
-    let Some((mentions, prompt_content)) = parse_leading_agent_mentions(content) else {
-        return Ok(None);
-    };
-
-    if prompt_content.is_empty() {
-        return Err(ThreadMessageMentionError::EmptyPrompt);
-    }
-
+) -> Result<Vec<String>, ThreadMessageMentionError> {
     let thread = thread_store
         .get_thread(thread_id)
         .ok_or(ThreadMessageMentionError::ThreadNotFound)?;
     let mut target_participant_ids = Vec::new();
     let mut seen_participant_ids = HashSet::new();
 
-    for mention in mentions {
-        let matching_participants = thread
+    for mention in parse_agent_mentions(content) {
+        for participant in thread
             .participants
             .iter()
             .filter(|participant| participant_matches_agent_mention(participant, &mention))
-            .collect::<Vec<_>>();
-
-        if matching_participants.is_empty() {
-            return Err(ThreadMessageMentionError::UnknownAgentMention(mention));
-        }
-
-        for participant in matching_participants {
+        {
             if seen_participant_ids.insert(participant.participant_id.clone()) {
                 target_participant_ids.push(participant.participant_id.clone());
             }
         }
     }
 
-    Ok(Some(ThreadMessageMentionResolution {
-        prompt_content,
-        target_participant_ids,
-    }))
+    Ok(target_participant_ids)
 }
 
-fn parse_leading_agent_mentions(content: &str) -> Option<(Vec<String>, String)> {
-    let trimmed = content.trim();
-    let mut rest = trimmed;
+fn parse_agent_mentions(content: &str) -> Vec<String> {
+    let indexed_chars = content.char_indices().collect::<Vec<_>>();
     let mut mentions = Vec::new();
 
-    while let Some((mention, next_rest)) = split_leading_agent_mention(rest) {
-        mentions.push(mention);
-        rest = next_rest;
-    }
-
-    if mentions.is_empty() {
-        return None;
-    }
-
-    Some((mentions, rest.trim().to_string()))
-}
-
-fn split_leading_agent_mention(input: &str) -> Option<(String, &str)> {
-    let trimmed = input.trim_start();
-    let remainder = trimmed.strip_prefix('@')?;
-    let mention_end = remainder
-        .char_indices()
-        .find(|(_, ch)| !is_agent_mention_char(*ch))
-        .map(|(index, _)| index)
-        .unwrap_or_else(|| remainder.len());
-
-    if mention_end == 0 {
-        return None;
-    }
-
-    let mention = remainder[..mention_end].to_string();
-    let mut rest = &remainder[mention_end..];
-
-    if let Some(stripped) = rest
-        .strip_prefix(',')
-        .or_else(|| rest.strip_prefix(':'))
-        .or_else(|| rest.strip_prefix(';'))
-    {
-        rest = stripped;
-    }
-
-    if let Some(next_char) = rest.chars().next() {
-        if !next_char.is_whitespace() {
-            return None;
+    for (position, (byte_index, ch)) in indexed_chars.iter().enumerate() {
+        if *ch != '@' {
+            continue;
         }
+
+        let previous_char = position
+            .checked_sub(1)
+            .and_then(|previous| indexed_chars.get(previous))
+            .map(|(_, previous)| *previous);
+        if !is_agent_mention_leading_boundary(previous_char) {
+            continue;
+        }
+
+        let mention_start = byte_index + ch.len_utf8();
+        let mut mention_end = mention_start;
+        let mut next_position = position + 1;
+        while let Some((next_byte_index, next_char)) = indexed_chars.get(next_position) {
+            if !is_agent_mention_char(*next_char) {
+                break;
+            }
+            mention_end = next_byte_index + next_char.len_utf8();
+            next_position += 1;
+        }
+
+        if mention_end == mention_start {
+            continue;
+        }
+
+        let next_char = indexed_chars
+            .get(next_position)
+            .map(|(_, next_char)| *next_char);
+        if !is_agent_mention_trailing_boundary(next_char) {
+            continue;
+        }
+
+        mentions.push(content[mention_start..mention_end].to_string());
     }
 
-    Some((mention, rest))
+    mentions
 }
 
 fn is_agent_mention_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.')
+}
+
+fn is_agent_mention_leading_boundary(ch: Option<char>) -> bool {
+    ch.map(|value| {
+        value.is_whitespace()
+            || matches!(
+                value,
+                '(' | '[' | '{' | '"' | '\'' | '，' | '。' | ',' | ':' | ';'
+            )
+    })
+    .unwrap_or(true)
+}
+
+fn is_agent_mention_trailing_boundary(ch: Option<char>) -> bool {
+    ch.map(|value| {
+        value.is_whitespace()
+            || matches!(
+                value,
+                ')' | ']' | '}' | '"' | '\'' | '，' | '。' | ',' | ':' | ';' | '!' | '?'
+            )
+    })
+    .unwrap_or(true)
 }
 
 fn participant_matches_agent_mention(participant: &ThreadParticipantRecord, mention: &str) -> bool {
@@ -182,33 +181,115 @@ fn participant_matches_agent_mention(participant: &ThreadParticipantRecord, ment
         return false;
     }
 
-    let normalized_mention = normalize_agent_mention_value(mention);
-    if normalized_mention.is_empty() {
-        return false;
+    participant_mention_handle(participant)
+        .map(|handle| handle.eq_ignore_ascii_case(mention))
+        .unwrap_or(false)
+}
+
+fn participant_mention_handle(participant: &ThreadParticipantRecord) -> Option<String> {
+    if participant.kind != ParticipantKind::Agent {
+        return None;
     }
 
     participant
         .agent_id
         .as_deref()
-        .map(|agent_id| {
-            agent_id.eq_ignore_ascii_case(mention)
-                || normalize_agent_mention_value(agent_id) == normalized_mention
-        })
-        .unwrap_or(false)
-        || {
-            let display_name = participant.display_name.trim();
-            !display_name.is_empty()
-                && (display_name.eq_ignore_ascii_case(mention)
-                    || normalize_agent_mention_value(display_name) == normalized_mention)
-        }
+        .map(canonical_mention_handle)
+        .or_else(|| Some(canonical_mention_handle(&participant.display_name)))
 }
 
-fn normalize_agent_mention_value(value: &str) -> String {
-    value
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .map(|ch| ch.to_ascii_lowercase())
-        .collect()
+fn build_group_chat_routing_context(
+    thread: &ThreadRecord,
+    recipient: &ThreadParticipantRecord,
+    recipients_this_turn: &[ThreadParticipantRecord],
+) -> String {
+    let recipient_agent_id = recipient
+        .agent_id
+        .clone()
+        .unwrap_or_else(|| recipient.display_name.clone());
+    let recipient_mention_handle = participant_mention_handle(recipient)
+        .map(|handle| format!("@{handle}"))
+        .unwrap_or_else(|| "@agent".into());
+    let thread_participants = thread
+        .participants
+        .iter()
+        .map(|participant| match participant.kind {
+            ParticipantKind::Human => format!("- human: {}", participant.display_name),
+            ParticipantKind::Agent => {
+                let mention_handle = participant_mention_handle(participant)
+                    .map(|handle| format!(" (@{handle})"))
+                    .unwrap_or_default();
+                format!("- agent: {}{}", participant.display_name, mention_handle)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let recipient_handles = recipients_this_turn
+        .iter()
+        .filter_map(participant_mention_handle)
+        .map(|handle| format!("@{handle}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let multiple_recipients = if recipients_this_turn.len() > 1 {
+        "true"
+    } else {
+        "false"
+    };
+
+    format!(
+        concat!(
+            "[Group Chat Routing Context]\n",
+            "You are participating in a group chat thread.\n\n",
+            "Thread:\n",
+            "- thread_id: {thread_id}\n\n",
+            "Your identity:\n",
+            "- agent_id: {recipient_agent_id}\n",
+            "- display_name: {recipient_display_name}\n",
+            "- mention_handle: {recipient_mention_handle}\n\n",
+            "Current thread participants:\n",
+            "{thread_participants}\n\n",
+            "Routing for this turn:\n",
+            "- routed_to_you: true\n",
+            "- recipients_this_turn: {recipient_handles}\n",
+            "- multiple_recipients: {multiple_recipients}\n",
+            "- the user message below is the original unmodified message from the thread\n",
+            "- mentions in the message may describe who should handle which part\n",
+            "- respond only as yourself, not on behalf of other agents"
+        ),
+        thread_id = thread.thread_id,
+        recipient_agent_id = recipient_agent_id,
+        recipient_display_name = recipient.display_name,
+        recipient_mention_handle = recipient_mention_handle,
+        thread_participants = thread_participants,
+        recipient_handles = recipient_handles,
+        multiple_recipients = multiple_recipients,
+    )
+}
+
+fn validate_thread_message_explicit_targets(
+    thread_store: &ThreadStore,
+    thread_id: &str,
+    explicit_target_participant_ids: Option<&[String]>,
+) -> Result<(), ThreadMessageTargetError> {
+    let Some(explicit_target_participant_ids) = explicit_target_participant_ids else {
+        return Ok(());
+    };
+
+    let thread = thread_store
+        .get_thread(thread_id)
+        .ok_or(ThreadMessageTargetError::ThreadNotFound)?;
+
+    for participant_id in explicit_target_participant_ids {
+        if !thread
+            .participants
+            .iter()
+            .any(|participant| participant.participant_id == *participant_id)
+        {
+            return Err(ThreadMessageTargetError::ParticipantNotFound);
+        }
+    }
+
+    Ok(())
 }
 
 fn merge_thread_message_targets(
@@ -235,6 +316,7 @@ fn merge_thread_message_targets(
 }
 
 impl AppProtocolSession {
+    #[allow(clippy::result_large_err)]
     pub fn new(
         manager: Rc<RefCell<AgentManager>>,
         session_store: Rc<RefCell<SessionStore>>,
@@ -491,7 +573,7 @@ impl AppProtocolSession {
                 session_id,
                 content,
             } => {
-                self.handle_prompt(session_id, content).await;
+                self.handle_prompt(session_id, content, None).await;
             }
             ClientMessage::Cancel { session_id } => {
                 self.handle_cancel(session_id).await;
@@ -944,12 +1026,15 @@ impl AppProtocolSession {
         content: String,
         target_participant_ids: Option<Vec<String>>,
     ) {
-        // Leading @mentions act as an inline routing override for group chats.
-        let mention_resolution = {
+        let (thread, participants) = {
             let thread_store = self.thread_store.borrow();
-            match resolve_thread_message_mentions(&thread_store, &thread_id, &content) {
-                Ok(resolution) => resolution,
-                Err(ThreadMessageMentionError::ThreadNotFound) => {
+            match validate_thread_message_explicit_targets(
+                &thread_store,
+                &thread_id,
+                target_participant_ids.as_deref(),
+            ) {
+                Ok(()) => {}
+                Err(ThreadMessageTargetError::ThreadNotFound) => {
                     let _ = self.response_tx.send(ResponseEvent::Error {
                         session_id: None,
                         event_seq: None,
@@ -958,52 +1043,67 @@ impl AppProtocolSession {
                     });
                     return;
                 }
-                Err(ThreadMessageMentionError::UnknownAgentMention(mention)) => {
+                Err(ThreadMessageTargetError::ParticipantNotFound) => {
                     let _ = self.response_tx.send(ResponseEvent::Error {
                         session_id: None,
                         event_seq: None,
-                        code: "thread_agent_mention_not_found".into(),
-                        message: format!("no agent matching @{mention} in this thread"),
-                    });
-                    return;
-                }
-                Err(ThreadMessageMentionError::EmptyPrompt) => {
-                    let _ = self.response_tx.send(ResponseEvent::Error {
-                        session_id: None,
-                        event_seq: None,
-                        code: "thread_message_empty".into(),
-                        message: "message must include prompt text after agent mentions".into(),
+                        code: "thread_participant_not_found".into(),
+                        message: "no participant with this id in the thread".into(),
                     });
                     return;
                 }
             }
-        };
+            let mention_targets =
+                match resolve_thread_message_mentions(&thread_store, &thread_id, &content) {
+                    Ok(targets) => targets,
+                    Err(ThreadMessageMentionError::ThreadNotFound) => {
+                        let _ = self.response_tx.send(ResponseEvent::Error {
+                            session_id: None,
+                            event_seq: None,
+                            code: "thread_not_found".into(),
+                            message: "no live thread with this id".into(),
+                        });
+                        return;
+                    }
+                };
+            let target_participant_ids = merge_thread_message_targets(
+                target_participant_ids,
+                (!mention_targets.is_empty()).then_some(mention_targets),
+            );
+            if matches!(target_participant_ids.as_ref(), Some(targets) if targets.is_empty()) {
+                let _ = self.response_tx.send(ResponseEvent::Error {
+                    session_id: None,
+                    event_seq: None,
+                    code: "thread_no_matching_targets".into(),
+                    message: "no checked participants match the @mentions".into(),
+                });
+                return;
+            }
 
-        let prompt_content = mention_resolution
-            .as_ref()
-            .map(|resolution| resolution.prompt_content.clone())
-            .unwrap_or_else(|| content.clone());
-        let target_participant_ids = merge_thread_message_targets(
-            target_participant_ids,
-            mention_resolution.map(|resolution| resolution.target_participant_ids),
-        );
-        if matches!(target_participant_ids.as_ref(), Some(targets) if targets.is_empty()) {
-            let _ = self.response_tx.send(ResponseEvent::Error {
-                session_id: None,
-                event_seq: None,
-                code: "thread_no_matching_targets".into(),
-                message: "no checked participants match the @mentions".into(),
-            });
-            return;
-        }
-
-        let participants = match self
-            .thread_store
-            .borrow()
-            .target_agent_participants(&thread_id, target_participant_ids.as_deref())
-        {
-            Ok(participants) => participants,
-            Err(err) if err == "thread not found" => {
+            let participants = match thread_store
+                .target_agent_participants(&thread_id, target_participant_ids.as_deref())
+            {
+                Ok(participants) => participants,
+                Err(err) if err == "thread not found" => {
+                    let _ = self.response_tx.send(ResponseEvent::Error {
+                        session_id: None,
+                        event_seq: None,
+                        code: "thread_not_found".into(),
+                        message: "no live thread with this id".into(),
+                    });
+                    return;
+                }
+                Err(_) => {
+                    let _ = self.response_tx.send(ResponseEvent::Error {
+                        session_id: None,
+                        event_seq: None,
+                        code: "thread_participant_not_found".into(),
+                        message: "no participant with this id in the thread".into(),
+                    });
+                    return;
+                }
+            };
+            let Some(thread) = thread_store.get_thread(&thread_id).cloned() else {
                 let _ = self.response_tx.send(ResponseEvent::Error {
                     session_id: None,
                     event_seq: None,
@@ -1011,17 +1111,19 @@ impl AppProtocolSession {
                     message: "no live thread with this id".into(),
                 });
                 return;
-            }
-            Err(_) => {
-                let _ = self.response_tx.send(ResponseEvent::Error {
-                    session_id: None,
-                    event_seq: None,
-                    code: "thread_participant_not_found".into(),
-                    message: "no participant with this id in the thread".into(),
-                });
-                return;
-            }
+            };
+            (thread, participants)
         };
+
+        if participants.is_empty() {
+            let _ = self.response_tx.send(ResponseEvent::Error {
+                session_id: None,
+                event_seq: None,
+                code: "thread_no_matching_targets".into(),
+                message: "no agent participants were selected for this message".into(),
+            });
+            return;
+        }
 
         let targets = participants
             .iter()
@@ -1045,9 +1147,12 @@ impl AppProtocolSession {
             },
         );
 
-        for participant in participants {
-            if let Some(session_id) = participant.session_id {
-                self.handle_prompt(session_id, prompt_content.clone()).await;
+        for participant in &participants {
+            if let Some(session_id) = participant.session_id.clone() {
+                let group_chat_context =
+                    build_group_chat_routing_context(&thread, participant, &participants);
+                self.handle_prompt(session_id, content.clone(), Some(group_chat_context))
+                    .await;
             }
         }
     }
@@ -1182,7 +1287,12 @@ impl AppProtocolSession {
             .retain(|created| created != &session_id);
     }
 
-    async fn handle_prompt(&mut self, session_id: String, content: String) {
+    async fn handle_prompt(
+        &mut self,
+        session_id: String,
+        content: String,
+        group_chat_context: Option<String>,
+    ) {
         if self.active_prompt_sessions.borrow().contains(&session_id) {
             let event_seq = Some(self.session_event_log.borrow_mut().next_seq(&session_id));
             let error = ResponseEvent::Error {
@@ -1228,9 +1338,13 @@ impl AppProtocolSession {
                 self.active_assistant_messages
                     .borrow_mut()
                     .remove(&session_id);
-                let prompt_content =
-                    maybe_inject_skill_context(self.skill_store.as_ref(), Some(&agent_id), content)
-                        .await;
+                let prompt_content = build_prompt_content(
+                    self.skill_store.as_ref(),
+                    Some(&agent_id),
+                    content,
+                    group_chat_context.as_deref(),
+                )
+                .await;
 
                 self.active_prompt_sessions
                     .borrow_mut()
@@ -1577,6 +1691,7 @@ fn maybe_broadcast_thread_event_for_session_event(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finalize_active_assistant_message(
     thread_store: &Rc<RefCell<ThreadStore>>,
     thread_event_log: &Rc<RefCell<ThreadEventLog>>,
@@ -1771,6 +1886,7 @@ pub fn serialize_event(event: &ResponseEvent) -> Option<String> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_prompt_completion(
     response_tx: broadcast::Sender<ResponseEvent>,
     session_store: Rc<RefCell<SessionStore>>,
@@ -1840,16 +1956,15 @@ async fn handle_prompt_completion(
     }
 }
 
-async fn maybe_inject_skill_context(
+async fn maybe_build_skill_context(
     skill_store: &SkillStore,
     agent_id: Option<&str>,
-    content: String,
-) -> String {
+) -> Option<String> {
     let shared_skills = match skill_store.list_shared_skills().await {
         Ok(skills) => skills,
         Err(err) => {
             warn!("failed to load shared skills for prompt injection: {err}");
-            return content;
+            return None;
         }
     };
 
@@ -1865,7 +1980,7 @@ async fn maybe_inject_skill_context(
     };
 
     if shared_skills.is_empty() && agent_skills.is_empty() {
-        return content;
+        return None;
     }
 
     let mut sections = Vec::new();
@@ -1885,7 +2000,31 @@ async fn maybe_inject_skill_context(
     }
     sections.push("Read relevant skills with read_text_file.".into());
 
-    format!("[{}]\n\n{}", sections.join("\n"), content)
+    Some(format!("[{}]", sections.join("\n")))
+}
+
+async fn build_prompt_content(
+    skill_store: &SkillStore,
+    agent_id: Option<&str>,
+    content: String,
+    group_chat_context: Option<&str>,
+) -> String {
+    let skill_context = maybe_build_skill_context(skill_store, agent_id).await;
+
+    match group_chat_context {
+        Some(group_chat_context) => {
+            let mut sections = vec![group_chat_context.to_string()];
+            if let Some(skill_context) = skill_context {
+                sections.push(skill_context);
+            }
+            sections.push(format!("[Original User Message]\n{content}"));
+            sections.join("\n\n")
+        }
+        None => match skill_context {
+            Some(skill_context) => format!("{skill_context}\n\n{content}"),
+            None => content,
+        },
+    }
 }
 
 fn render_skill_listing(skills: &[SkillInfo]) -> String {
@@ -2206,22 +2345,33 @@ mod tests {
     }
 
     #[test]
-    fn parse_leading_agent_mentions_extracts_multiple_targets_and_prompt() {
+    fn parse_agent_mentions_extracts_mentions_anywhere_in_the_message() {
         assert_eq!(
-            parse_leading_agent_mentions("  @opencode @codex what date is today?  "),
-            Some((
-                vec!["opencode".into(), "codex".into()],
-                "what date is today?".into(),
-            ))
+            parse_agent_mentions("  @opencode @codex what date is today?  "),
+            vec!["opencode".to_string(), "codex".to_string()]
         );
         assert_eq!(
-            parse_leading_agent_mentions("@opencode, how are you"),
-            Some((vec!["opencode".into()], "how are you".into(),))
+            parse_agent_mentions("Hi good evening, @opencode how's going?"),
+            vec!["opencode".to_string()]
+        );
+        assert_eq!(
+            parse_agent_mentions("@opencode check backend, @codex check iOS"),
+            vec!["opencode".to_string(), "codex".to_string()]
         );
     }
 
     #[test]
-    fn resolve_thread_message_mentions_targets_matching_agents_and_strips_prompt() {
+    fn parse_agent_mentions_ignores_email_like_text() {
+        assert!(parse_agent_mentions("email me at foo@bar.com").is_empty());
+    }
+
+    #[test]
+    fn parse_agent_mentions_ignores_package_version_like_text() {
+        assert!(parse_agent_mentions("please inspect pkg@1.2.3 before release").is_empty());
+    }
+
+    #[test]
+    fn resolve_thread_message_mentions_targets_matching_agents_without_rewriting_content() {
         let mut store = ThreadStore::new();
         let thread = store.create_thread(Some("Targeted".into()), ".".into());
         let opencode = store
@@ -2241,26 +2391,24 @@ mod tests {
             )
             .unwrap();
 
-        let resolution = resolve_thread_message_mentions(
+        let resolved_targets = resolve_thread_message_mentions(
             &store,
             &thread.thread_id,
-            "@opencode @codex what date is today?",
+            "@opencode check backend, @codex check iOS",
         )
-        .unwrap()
-        .expect("expected mention routing");
+        .unwrap();
 
-        assert_eq!(resolution.prompt_content, "what date is today?");
         assert_eq!(
-            resolution.target_participant_ids,
+            resolved_targets,
             vec![opencode.participant_id, codex.participant_id]
         );
     }
 
     #[test]
-    fn resolve_thread_message_mentions_rejects_unknown_agents_and_empty_prompts() {
+    fn resolve_thread_message_mentions_ignores_unknown_mentions() {
         let mut store = ThreadStore::new();
         let thread = store.create_thread(Some("Targeted".into()), ".".into());
-        store
+        let opencode = store
             .add_agent_participant(
                 &thread.thread_id,
                 "opencode".into(),
@@ -2270,14 +2418,61 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            resolve_thread_message_mentions(&store, &thread.thread_id, "@missing hello"),
-            Err(ThreadMessageMentionError::UnknownAgentMention(
-                "missing".into()
-            ))
+            resolve_thread_message_mentions(
+                &store,
+                &thread.thread_id,
+                "hello @missing and @opencode",
+            )
+            .unwrap(),
+            vec![opencode.participant_id]
         );
+    }
+
+    #[test]
+    fn resolve_thread_message_mentions_deduplicates_repeated_mentions() {
+        let mut store = ThreadStore::new();
+        let thread = store.create_thread(Some("Targeted".into()), ".".into());
+        let opencode = store
+            .add_agent_participant(
+                &thread.thread_id,
+                "opencode".into(),
+                "OpenCode".into(),
+                "session-opencode".into(),
+            )
+            .unwrap();
+
         assert_eq!(
-            resolve_thread_message_mentions(&store, &thread.thread_id, "@opencode"),
-            Err(ThreadMessageMentionError::EmptyPrompt)
+            resolve_thread_message_mentions(
+                &store,
+                &thread.thread_id,
+                "@opencode please check this. Also @opencode focus on tests.",
+            )
+            .unwrap(),
+            vec![opencode.participant_id]
+        );
+    }
+
+    #[test]
+    fn resolve_thread_message_mentions_matches_canonical_agent_handle_only() {
+        let mut store = ThreadStore::new();
+        let thread = store.create_thread(Some("Targeted".into()), ".".into());
+        let opencode = store
+            .add_agent_participant(
+                &thread.thread_id,
+                "opencode".into(),
+                "Open Code".into(),
+                "session-opencode".into(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            resolve_thread_message_mentions(&store, &thread.thread_id, "hello @opencode").unwrap(),
+            vec![opencode.participant_id.clone()]
+        );
+        assert!(
+            resolve_thread_message_mentions(&store, &thread.thread_id, "hello @Open-Code",)
+                .unwrap()
+                .is_empty()
         );
     }
 
@@ -2306,5 +2501,20 @@ mod tests {
             Some(vec!["participant-codex".into()])
         );
         assert_eq!(merge_thread_message_targets(None, None), None);
+    }
+
+    #[test]
+    fn validate_thread_message_explicit_targets_rejects_unknown_participants() {
+        let mut store = ThreadStore::new();
+        let thread = store.create_thread(Some("Targeted".into()), ".".into());
+
+        assert_eq!(
+            validate_thread_message_explicit_targets(
+                &store,
+                &thread.thread_id,
+                Some(&["participant-missing".into()]),
+            ),
+            Err(ThreadMessageTargetError::ParticipantNotFound)
+        );
     }
 }

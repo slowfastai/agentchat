@@ -39,6 +39,28 @@ fn default_agent_backend() -> String {
     "acp".to_string()
 }
 
+pub fn canonical_mention_handle(value: &str) -> String {
+    let mut result = String::new();
+    let mut previous_was_separator = false;
+
+    for ch in value.trim().chars().map(|ch| ch.to_ascii_lowercase()) {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            result.push(ch);
+            previous_was_separator = false;
+        } else if !previous_was_separator {
+            result.push('-');
+            previous_was_separator = true;
+        }
+    }
+
+    let cleaned = result.trim_matches(|ch| matches!(ch, '-' | '_' | '.'));
+    if cleaned.is_empty() {
+        "agent".into()
+    } else {
+        cleaned.to_string()
+    }
+}
+
 /// Timestamp helper in milliseconds since the UNIX epoch.
 pub fn now_millis() -> u64 {
     std::time::SystemTime::now()
@@ -98,6 +120,8 @@ pub enum AgentStatus {
 pub struct AgentSummary {
     pub agent_id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mention_handle: Option<String>,
     pub kind: String,
     pub status: AgentStatus,
     pub default_working_dir: Option<String>,
@@ -182,6 +206,8 @@ pub struct ThreadParticipant {
     pub kind: ParticipantKind,
     pub display_name: String,
     pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mention_handle: Option<String>,
     pub session_id: Option<String>,
     pub state: ParticipantState,
 }
@@ -727,6 +753,7 @@ mod tests {
                 agents: vec![AgentSummary {
                     agent_id: "agent-1".into(),
                     name: "Agent 1".into(),
+                    mention_handle: Some("agent-1".into()),
                     kind: "test".into(),
                     status: AgentStatus::Online,
                     default_working_dir: Some("/tmp/project".into()),
@@ -763,6 +790,7 @@ mod tests {
                         kind: ParticipantKind::Agent,
                         display_name: "Agent 1".into(),
                         agent_id: Some("agent-1".into()),
+                        mention_handle: Some("agent-1".into()),
                         session_id: Some("session-1".into()),
                         state: ParticipantState::Idle,
                     }],
@@ -783,6 +811,7 @@ mod tests {
                     kind: ParticipantKind::Agent,
                     display_name: "Agent 1".into(),
                     agent_id: Some("agent-1".into()),
+                    mention_handle: Some("agent-1".into()),
                     session_id: Some("session-1".into()),
                     state: ParticipantState::Idle,
                 },
@@ -1003,6 +1032,7 @@ mod tests {
         let agent = AgentSummary {
             agent_id: "agent-1".into(),
             name: "Agent 1".into(),
+            mention_handle: Some("agent-1".into()),
             kind: "test".into(),
             status: AgentStatus::Online,
             default_working_dir: Some("/tmp/project".into()),
@@ -1010,6 +1040,15 @@ mod tests {
         };
 
         assert_round_trip(&agent);
+    }
+
+    #[test]
+    fn canonical_mention_handle_normalizes_expected_values() {
+        assert_eq!(canonical_mention_handle("Open Code"), "open-code");
+        assert_eq!(canonical_mention_handle("__Agent__"), "agent");
+        assert_eq!(canonical_mention_handle("   "), "agent");
+        assert_eq!(canonical_mention_handle("foo.bar"), "foo.bar");
+        assert_eq!(canonical_mention_handle("Agent---Name"), "agent---name");
     }
 
     #[test]
