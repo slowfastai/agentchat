@@ -3,9 +3,6 @@ import PhotosUI
 #if canImport(UIKit)
 import UIKit
 #endif
-#if canImport(AppKit)
-import AppKit
-#endif
 
 enum AppColors {
     static var onlineStatus: Color {
@@ -18,13 +15,13 @@ enum AppColors {
 }
 
 struct AgentListView: View {
-    @EnvironmentObject private var store: DaemonChatStore
+    @EnvironmentObject private var store: DemoStore
     @State private var searchText = ""
-    @State private var selectedAgentID: String?
+    @State private var selectedAgentID: UUID?
     @State private var showEditSheet = false
     @State private var showDeleteAlert = false
-    @State private var agentToDelete: DaemonAgentSummary?
-    @State private var editingAgent: DaemonAgentSummary?
+    @State private var agentToDelete: AgentProfile?
+    @State private var editingAgent: AgentProfile?
 
     private var shortcutItems: [AgentShortcutItem] {
         [
@@ -35,37 +32,37 @@ struct AgentListView: View {
         ]
     }
 
-    private var filteredAgents: [DaemonAgentSummary] {
+    private var filteredAgents: [AgentProfile] {
         guard !searchText.isEmpty else {
-            return store.agents.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+            return store.agents.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         }
 
         return store.agents
             .filter { agent in
-                let displayName = store.customName(for: agent.agentID) ?? agent.displayName
+                let displayName = store.customName(for: agent.id.uuidString) ?? agent.name
                 let searchable = [
                     displayName,
-                    agent.capabilitySummary,
-                    agent.kindTitle
+                    agent.shortDescription,
+                    agent.capabilityTags.joined(separator: " ")
                 ]
                 .joined(separator: " ")
                 .lowercased()
 
                 return searchable.contains(searchText.lowercased())
             }
-            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     private var groupedAgents: [AgentSection] {
         let grouped = Dictionary(grouping: filteredAgents) { agent in
-            let displayName = store.customName(for: agent.agentID) ?? agent.displayName
+            let displayName = store.customName(for: agent.id.uuidString) ?? agent.name
             return String(displayName.prefix(1)).uppercased()
         }
 
         return grouped.keys.sorted().map { key in
             AgentSection(
                 title: key,
-                agents: grouped[key]?.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending } ?? []
+                agents: grouped[key]?.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending } ?? []
             )
         }
     }
@@ -83,31 +80,40 @@ struct AgentListView: View {
                 ForEach(groupedAgents) { section in
                     Section(section.title) {
                         ForEach(section.agents) { agent in
+                            let agentID = agent.id.uuidString
                             AgentFriendRow(
                                 agent: agent,
-                                customName: store.customName(for: agent.agentID),
-                                avatarData: store.avatarData(for: agent.agentID),
-                                isConnecting: store.isConnecting(agentID: agent.agentID)
+                                customName: store.customName(for: agentID),
+                                avatarData: store.avatarData(for: agentID),
+                                isConnecting: store.isConnecting(agentID: agentID),
+                                isSelected: selectedAgentID == agent.id
                             )
                             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                            .onTapGesture {
-                                handleAgentTap(agent)
-                            }
-                            .contextMenu {
-                                Button {
-                                    editingAgent = agent
-                                    showEditSheet = true
-                                } label: {
-                                    Label("Edit Agent", systemImage: "pencil")
-                                }
-
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 Button(role: .destructive) {
                                     agentToDelete = agent
                                     showDeleteAlert = true
                                 } label: {
-                                    Label("Delete Agent", systemImage: "trash")
+                                    Label("Delete", systemImage: "trash")
                                 }
+
+                                Button {
+                                    editingAgent = agent
+                                    showEditSheet = true
+                                } label: {
+                                    Label("Edit", systemImage: "pencil")
+                                }
+                                .tint(.blue)
                             }
+                            .onTapGesture {
+                                handleAgentTap(agent)
+                            }
+                            .simultaneousGesture(
+                                LongPressGesture(minimumDuration: 0.5)
+                                    .onEnded { _ in
+                                        selectedAgentID = agent.id
+                                    }
+                            )
                         }
                     }
                 }
@@ -122,6 +128,34 @@ struct AgentListView: View {
                     Button {
                     } label: {
                         Image(systemName: "person.badge.plus")
+                    }
+                }
+                
+                if selectedAgentID != nil {
+                    ToolbarItem(placement: .secondaryAction) {
+                        Menu {
+                            Button {
+                                if let agentID = selectedAgentID,
+                                   let agent = store.agents.first(where: { $0.id == agentID }) {
+                                    editingAgent = agent
+                                    showEditSheet = true
+                                }
+                            } label: {
+                                Label("Edit Agent", systemImage: "pencil")
+                            }
+                            
+                            Button(role: .destructive) {
+                                if let agentID = selectedAgentID,
+                                   let agent = store.agents.first(where: { $0.id == agentID }) {
+                                    agentToDelete = agent
+                                    showDeleteAlert = true
+                                }
+                            } label: {
+                                Label("Delete Agent", systemImage: "trash")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
                     }
                 }
             }
@@ -142,13 +176,13 @@ struct AgentListView: View {
             }
             Button("Delete", role: .destructive) {
                 if let agent = agentToDelete {
-                    store.removeAgent(id: agent.agentID)
+                    store.removeAgent(id: agent.id.uuidString)
                 }
                 agentToDelete = nil
             }
         } message: {
             if let agent = agentToDelete {
-                let displayName = store.customName(for: agent.agentID) ?? agent.displayName
+                let displayName = store.customName(for: agent.id.uuidString) ?? agent.name
                 Text("Are you sure you want to delete \(displayName)? This action cannot be undone.")
             }
         }
@@ -157,14 +191,12 @@ struct AgentListView: View {
         #endif
     }
 
-    private func handleAgentTap(_ agent: DaemonAgentSummary) {
-        if store.isConnecting(agentID: agent.agentID) {
+    private func handleAgentTap(_ agent: AgentProfile) {
+        let agentID = agent.id.uuidString
+        if store.isConnecting(agentID: agentID) {
             return
         }
-
-        if store.hasConfiguredDaemonURL {
-            store.connectToAgent(id: agent.agentID)
-        }
+        store.connectToAgent(id: agentID)
     }
 }
 
@@ -177,7 +209,7 @@ private struct AgentShortcutItem: Identifiable {
 
 private struct AgentSection: Identifiable {
     let title: String
-    let agents: [DaemonAgentSummary]
+    let agents: [AgentProfile]
 
     var id: String { title }
 }
@@ -200,26 +232,31 @@ private struct AgentShortcutRow: View {
 }
 
 private struct AgentFriendRow: View {
-    let agent: DaemonAgentSummary
+    let agent: AgentProfile
     let customName: String?
     let avatarData: Data?
     let isConnecting: Bool
+    let isSelected: Bool
 
     var body: some View {
         HStack(spacing: 14) {
             ContactIconTile(
-                title: customName ?? agent.displayName,
-                accent: ColorToken(rawValue: agent.tintName) ?? .blue,
-                systemImage: agent.symbolName,
+                title: customName ?? agent.name,
+                accent: agent.accent,
+                systemImage: systemImage(for: agent.kind),
                 avatarData: avatarData
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(isSelected ? Color.blue : Color.clear, lineWidth: 2)
             )
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(customName ?? agent.displayName)
+                Text(customName ?? agent.name)
                     .font(.body)
                     .foregroundStyle(.primary)
 
-                Text(agent.capabilitySummary)
+                Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -248,6 +285,28 @@ private struct AgentFriendRow: View {
             }
         }
         .contentShape(Rectangle())
+    }
+
+    private var subtitle: String {
+        if !agent.capabilityTags.isEmpty {
+            return agent.capabilityTags.prefix(3).joined(separator: " · ")
+        }
+        return agent.shortDescription
+    }
+
+    private func systemImage(for kind: AgentKind) -> String {
+        switch kind {
+        case .claude:
+            return "brain.head.profile"
+        case .codex:
+            return "curlybraces.square.fill"
+        case .pi:
+            return "sparkles"
+        case .opencode:
+            return "terminal.fill"
+        case .human:
+            return "person.fill"
+        }
     }
 }
 
@@ -300,10 +359,10 @@ private struct AgentSectionIndexOverlay: View {
 }
 
 struct EditAgentSheet: View {
-    @EnvironmentObject private var store: DaemonChatStore
+    @EnvironmentObject private var store: DemoStore
     @Environment(\.dismiss) private var dismiss
 
-    let agent: DaemonAgentSummary
+    let agent: AgentProfile
 
     @State private var editedName: String = ""
     @State private var selectedPhotoItem: PhotosPickerItem?
@@ -341,7 +400,7 @@ struct EditAgentSheet: View {
                         }
                     }
 
-                    if selectedImageData != nil || store.avatarData(for: agent.agentID) != nil {
+                    if selectedImageData != nil || store.avatarData(for: agent.id.uuidString) != nil {
                         Button(role: .destructive) {
                             selectedImageData = nil
                             selectedPhotoItem = nil
@@ -367,8 +426,8 @@ struct EditAgentSheet: View {
                 }
             }
             .onAppear {
-                editedName = store.customName(for: agent.agentID) ?? agent.displayName
-                selectedImageData = store.avatarData(for: agent.agentID)
+                editedName = store.customName(for: agent.id.uuidString) ?? agent.name
+                selectedImageData = store.avatarData(for: agent.id.uuidString)
             }
             .alert("Error", isPresented: $showError) {
                 Button("OK", role: .cancel) {}
@@ -398,7 +457,7 @@ struct EditAgentSheet: View {
         let nameToSave = trimmedName.isEmpty ? nil : trimmedName
 
         store.updateAgent(
-            id: agent.agentID,
+            id: agent.id.uuidString,
             name: nameToSave,
             avatarData: selectedImageData
         )
