@@ -9,6 +9,8 @@ final class DaemonChatStore: ObservableObject {
     private static let knownAgentsKey = "agentchat_known_agents"
     private static let selectedAgentsKey = "agentchat_selected_agent_ids"
     private static let relayAppInstallationIDKey = "agentchat_relay_app_installation_id"
+    private static let agentCustomNamesKey = "agentchat_agent_custom_names"
+    private static let agentAvatarDataKey = "agentchat_agent_avatar_data"
 
     @Published var connectionStatus = "Not configured"
     @Published var agents: [DaemonAgentSummary] = []
@@ -19,6 +21,9 @@ final class DaemonChatStore: ObservableObject {
     @Published var selectedAgentIDs: Set<String> = []
     @Published var selectedParticipantIDs: Set<String> = []
     @Published var errorMessage: String?
+    @Published var agentCustomNames: [String: String] = [:]
+    @Published var agentAvatarData: [String: Data] = [:]
+    @Published var connectingAgentIDs: Set<String> = []
 
     @AppStorage("agentchat_daemon_ws_url") private var daemonURLString = ""
 
@@ -52,6 +57,8 @@ final class DaemonChatStore: ObservableObject {
         self.hiddenThreadIDs = Set(defaults.stringArray(forKey: Self.hiddenThreadsKey) ?? [])
         self.agents = Self.loadKnownAgents(from: defaults)
         self.selectedAgentIDs = Set(defaults.stringArray(forKey: Self.selectedAgentsKey) ?? [])
+        self.agentCustomNames = Self.loadAgentCustomNames(from: defaults)
+        self.agentAvatarData = Self.loadAgentAvatarData(from: defaults)
         refreshIdleConnectionStatus()
     }
 
@@ -331,6 +338,7 @@ final class DaemonChatStore: ObservableObject {
                     await self?.receiveLoop()
                 }
                 connectionStatus = "Connected via relay"
+                connectingAgentIDs.removeAll()
                 await refreshDaemonState()
             }
         } catch {
@@ -346,6 +354,7 @@ final class DaemonChatStore: ObservableObject {
             await self?.receiveLoop()
         }
         connectionStatus = "Connected"
+        connectingAgentIDs.removeAll()
         await refreshDaemonState()
     }
 
@@ -380,6 +389,7 @@ final class DaemonChatStore: ObservableObject {
                 receiveTask = nil
                 markAgentsOffline()
                 connectionStatus = "Disconnected"
+                connectingAgentIDs.removeAll()
                 break
             }
         }
@@ -814,6 +824,7 @@ final class DaemonChatStore: ObservableObject {
         socketTask = nil
         markAgentsOffline()
         connectionStatus = "Disconnected"
+        connectingAgentIDs.removeAll()
     }
 
     private var hasActiveConnection: Bool {
@@ -854,6 +865,80 @@ final class DaemonChatStore: ObservableObject {
 
         // Persist the roster across launches, but never trust the last saved liveness.
         return AgentRoster.markOffline(agents)
+    }
+
+    private static func loadAgentCustomNames(from defaults: UserDefaults) -> [String: String] {
+        guard let data = defaults.data(forKey: Self.agentCustomNamesKey),
+              let names = try? JSONDecoder().decode([String: String].self, from: data)
+        else {
+            return [:]
+        }
+        return names
+    }
+
+    private static func loadAgentAvatarData(from defaults: UserDefaults) -> [String: Data] {
+        guard let data = defaults.data(forKey: Self.agentAvatarDataKey),
+              let avatars = try? JSONDecoder().decode([String: Data].self, from: data)
+        else {
+            return [:]
+        }
+        return avatars
+    }
+
+    private func persistAgentCustomNames() {
+        guard let data = try? JSONEncoder().encode(agentCustomNames) else { return }
+        defaults.set(data, forKey: Self.agentCustomNamesKey)
+    }
+
+    private func persistAgentAvatarData() {
+        guard let data = try? JSONEncoder().encode(agentAvatarData) else { return }
+        defaults.set(data, forKey: Self.agentAvatarDataKey)
+    }
+
+    func updateAgent(id agentID: String, name: String?, avatarData: Data?) {
+        if let name = name {
+            agentCustomNames[agentID] = name
+        } else {
+            agentCustomNames.removeValue(forKey: agentID)
+        }
+        persistAgentCustomNames()
+
+        if let avatarData = avatarData {
+            agentAvatarData[agentID] = avatarData
+        } else {
+            agentAvatarData.removeValue(forKey: agentID)
+        }
+        persistAgentAvatarData()
+    }
+
+    func removeAgent(id agentID: String) {
+        agentCustomNames.removeValue(forKey: agentID)
+        agentAvatarData.removeValue(forKey: agentID)
+        persistAgentCustomNames()
+        persistAgentAvatarData()
+
+        agents.removeAll { $0.agentID == agentID }
+        selectedAgentIDs.remove(agentID)
+        persistKnownAgents()
+        persistSelectedAgents()
+    }
+
+    func connectToAgent(id agentID: String) {
+        guard !connectingAgentIDs.contains(agentID) else { return }
+        connectingAgentIDs.insert(agentID)
+        reconnectNow()
+    }
+
+    func customName(for agentID: String) -> String? {
+        agentCustomNames[agentID]
+    }
+
+    func avatarData(for agentID: String) -> Data? {
+        agentAvatarData[agentID]
+    }
+
+    func isConnecting(agentID: String) -> Bool {
+        connectingAgentIDs.contains(agentID)
     }
 
     private func send<Request: Encodable>(_ request: Request) async {
