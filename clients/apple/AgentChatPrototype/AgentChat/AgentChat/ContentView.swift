@@ -1191,7 +1191,12 @@ private struct TimelineBubble: View {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .stroke(borderColor, lineWidth: 1)
+                    .stroke(borderColor, lineWidth: attentionSummary == nil ? 1 : 1.4)
+            )
+            .shadow(
+                color: attentionHighlightColor.opacity(colorScheme == .dark ? 0.22 : 0.12),
+                radius: attentionSummary == nil ? 0 : 18,
+                y: attentionSummary == nil ? 0 : 8
             )
 
             Spacer(minLength: 0)
@@ -1228,6 +1233,10 @@ private struct TimelineBubble: View {
                 )
             } else if entry.kind == .assistantTurn {
                 VStack(alignment: .leading, spacing: 14) {
+                    if let summary = attentionSummary {
+                        executionSummaryButton(summary)
+                    }
+
                     if !entry.body.isEmpty {
                         AgentMarkdownText(content: entry.body)
                             .font(.body)
@@ -1241,9 +1250,11 @@ private struct TimelineBubble: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
-                    if let summary = entry.executionSummary {
+                    if let summary = regularSummary {
                         executionSummaryButton(summary)
-                    } else if let status = entry.status, entry.normalizedStatusToken != "completed" {
+                    } else if entry.executionSummary == nil,
+                              let status = entry.status,
+                              entry.normalizedStatusToken != "completed" {
                         assistantStatusStrip(
                             title: entry.normalizedStatusToken == "streaming"
                                 ? "Working..."
@@ -1401,6 +1412,27 @@ private struct TimelineBubble: View {
         }
     }
 
+    private var attentionSummary: AssistantExecutionSummary? {
+        guard let summary = entry.executionSummary, summary.requiresAttention else {
+            return nil
+        }
+        return summary
+    }
+
+    private var regularSummary: AssistantExecutionSummary? {
+        guard let summary = entry.executionSummary, !summary.requiresAttention else {
+            return nil
+        }
+        return summary
+    }
+
+    private var attentionHighlightColor: Color {
+        guard let summary = attentionSummary else {
+            return .clear
+        }
+        return executionToneColor(summary.tone)
+    }
+
     private var centeredEvent: some View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
@@ -1476,12 +1508,18 @@ private struct TimelineBubble: View {
 
     private var typeColor: Color {
         switch entry.kind {
-        case .assistantTurn: return theme.mutedInk
-        case .tool: return theme.accentWarm
-        case .plan: return theme.planColor
-        case .user: return .white
-        case .turnEnd: return theme.mutedInk
-        case .system: return theme.mutedInk
+        case .assistantTurn:
+            return attentionSummary.map { executionToneColor($0.tone) } ?? theme.mutedInk
+        case .tool:
+            return theme.accentWarm
+        case .plan:
+            return theme.planColor
+        case .user:
+            return .white
+        case .turnEnd:
+            return theme.mutedInk
+        case .system:
+            return theme.mutedInk
         }
     }
 
@@ -1504,7 +1542,11 @@ private struct TimelineBubble: View {
             return theme.accentWarm.opacity(0.22)
         case .plan:
             return theme.planColor.opacity(0.16)
-        case .assistantTurn, .user, .turnEnd, .system:
+        case .assistantTurn:
+            return attentionSummary == nil
+                ? theme.stroke
+                : attentionHighlightColor.opacity(0.28)
+        case .user, .turnEnd, .system:
             return theme.stroke
         }
     }

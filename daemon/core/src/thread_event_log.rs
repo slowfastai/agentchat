@@ -114,6 +114,7 @@ mod tests {
         log.append(ResponseEvent::ThreadAgentDelta {
             thread_id: "thread-1".into(),
             thread_seq: 2,
+            turn_id: "turn-1".into(),
             participant_id: "participant-1".into(),
             agent_id: "agent-1".into(),
             session_id: "session-1".into(),

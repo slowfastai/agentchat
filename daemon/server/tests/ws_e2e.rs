@@ -546,7 +546,7 @@ async fn websocket_thread_group_chat_fans_out_to_multiple_agents() {
             let mut saw_beta_text = false;
             let mut saw_alpha_end = false;
             let mut saw_beta_end = false;
-            for _ in 0..16 {
+            for _ in 0..24 {
                 match receive_event(&mut ws).await {
                     ResponseEvent::ThreadAssistantMessage {
                         thread_id: tid,
@@ -579,6 +579,7 @@ async fn websocket_thread_group_chat_fans_out_to_multiple_agents() {
                         }
                     }
                     ResponseEvent::ThreadAgentToolUpdate { .. }
+                    | ResponseEvent::ThreadAgentTurnEnd { .. }
                     | ResponseEvent::Delta { .. }
                     | ResponseEvent::ToolUpdate { .. }
                     | ResponseEvent::TurnEnd { .. } => {}
@@ -670,6 +671,7 @@ async fn websocket_thread_tool_updates_share_turn_id_with_assistant_snapshots() 
             let mut snapshot_turn_id: Option<String> = None;
             let mut tool_turn_id: Option<String> = None;
             let mut completed_turn_id: Option<String> = None;
+            let mut turn_end_turn_id: Option<String> = None;
 
             for _ in 0..12 {
                 match receive_event(&mut ws).await {
@@ -707,6 +709,21 @@ async fn websocket_thread_tool_updates_share_turn_id_with_assistant_snapshots() 
                         }
                         tool_turn_id = Some(turn_id);
                     }
+                    ResponseEvent::ThreadAgentTurnEnd {
+                        thread_id: tid,
+                        participant_id: pid,
+                        session_id: sid,
+                        turn_id,
+                        ..
+                    } => {
+                        assert_eq!(tid, thread_id);
+                        assert_eq!(pid, participant_id);
+                        assert_eq!(sid, session_id);
+                        if let Some(existing_snapshot_turn_id) = &snapshot_turn_id {
+                            assert_eq!(existing_snapshot_turn_id, &turn_id);
+                        }
+                        turn_end_turn_id = Some(turn_id);
+                    }
                     ResponseEvent::Delta { .. }
                     | ResponseEvent::ToolUpdate { .. }
                     | ResponseEvent::TurnEnd { .. } => {}
@@ -716,6 +733,7 @@ async fn websocket_thread_tool_updates_share_turn_id_with_assistant_snapshots() 
                 if snapshot_turn_id.is_some()
                     && tool_turn_id.is_some()
                     && completed_turn_id.is_some()
+                    && turn_end_turn_id.is_some()
                 {
                     break;
                 }
@@ -724,8 +742,10 @@ async fn websocket_thread_tool_updates_share_turn_id_with_assistant_snapshots() 
             let snapshot_turn_id = snapshot_turn_id.expect("missing assistant turn id");
             let tool_turn_id = tool_turn_id.expect("missing tool turn id");
             let completed_turn_id = completed_turn_id.expect("missing completed turn id");
+            let turn_end_turn_id = turn_end_turn_id.expect("missing thread turn end id");
             assert_eq!(snapshot_turn_id, tool_turn_id);
             assert_eq!(snapshot_turn_id, completed_turn_id);
+            assert_eq!(snapshot_turn_id, turn_end_turn_id);
 
             ws.send(Message::Close(None)).await.unwrap();
             drop(ws);
@@ -842,7 +862,8 @@ async fn websocket_thread_attach_without_cursor_replays_full_history() {
 
             let mut saw_beta_text = false;
             let mut saw_beta_end = false;
-            for _ in 0..10 {
+            let mut saw_beta_thread_turn_end = false;
+            for _ in 0..12 {
                 let event = receive_event(&mut ws).await;
                 match &event {
                     ResponseEvent::ThreadAssistantMessage {
@@ -868,12 +889,17 @@ async fn websocket_thread_attach_without_cursor_replays_full_history() {
                         assert_ne!(participant_id, &alpha_participant_id);
                         expected_history.push(event.clone());
                     }
+                    ResponseEvent::ThreadAgentTurnEnd { participant_id, .. } => {
+                        assert_eq!(participant_id, &beta_participant_id);
+                        saw_beta_thread_turn_end = true;
+                        expected_history.push(event.clone());
+                    }
                     ResponseEvent::Delta { .. }
                     | ResponseEvent::ToolUpdate { .. }
                     | ResponseEvent::TurnEnd { .. } => {}
                     other => panic!("unexpected targeted thread event: {other:?}"),
                 }
-                if saw_beta_text && saw_beta_end {
+                if saw_beta_text && saw_beta_end && saw_beta_thread_turn_end {
                     break;
                 }
             }
@@ -1002,7 +1028,9 @@ async fn websocket_attach_thread_replays_events_after_cursor() {
             let mut thread_events = Vec::new();
             let mut saw_alpha_end = false;
             let mut saw_beta_end = false;
-            for _ in 0..24 {
+            let mut saw_alpha_thread_turn_end = false;
+            let mut saw_beta_thread_turn_end = false;
+            for _ in 0..28 {
                 let event = receive_event(&mut ws).await;
                 match &event {
                     ResponseEvent::ThreadMessage { .. }
@@ -1010,7 +1038,8 @@ async fn websocket_attach_thread_replays_events_after_cursor() {
                     | ResponseEvent::ThreadParticipantRemoved { .. }
                     | ResponseEvent::ThreadAssistantMessage { .. }
                     | ResponseEvent::ThreadAgentPlanUpdate { .. }
-                    | ResponseEvent::ThreadAgentToolUpdate { .. } => {
+                    | ResponseEvent::ThreadAgentToolUpdate { .. }
+                    | ResponseEvent::ThreadAgentTurnEnd { .. } => {
                         thread_events.push(event.clone());
                     }
                     _ => {}
@@ -1030,7 +1059,18 @@ async fn websocket_attach_thread_replays_events_after_cursor() {
                         }
                     }
                 }
-                if saw_alpha_end && saw_beta_end {
+                if let ResponseEvent::ThreadAgentTurnEnd { participant_id, .. } = &event {
+                    if participant_id == &alpha_participant_id {
+                        saw_alpha_thread_turn_end = true;
+                    } else if participant_id == &beta_participant_id {
+                        saw_beta_thread_turn_end = true;
+                    }
+                }
+                if saw_alpha_end
+                    && saw_beta_end
+                    && saw_alpha_thread_turn_end
+                    && saw_beta_thread_turn_end
+                {
                     break;
                 }
             }

@@ -1379,25 +1379,52 @@ fn finalize_active_assistant_message(
         return;
     };
 
-    let thread_seq = thread_event_log.borrow_mut().next_seq(&binding.thread_id);
+    let ActiveAssistantMessage {
+        message_id,
+        turn_id,
+        thinking,
+        response,
+    } = message;
+
+    let assistant_thread_seq = thread_event_log.borrow_mut().next_seq(&binding.thread_id);
     journal_and_broadcast_thread_event(
         thread_event_log,
         response_tx,
         ResponseEvent::ThreadAssistantMessage {
-            thread_id: binding.thread_id,
-            thread_seq,
-            message_id: message.message_id,
-            turn_id: message.turn_id,
-            participant_id: binding.participant_id,
-            agent_id: binding.agent_id,
+            thread_id: binding.thread_id.clone(),
+            thread_seq: assistant_thread_seq,
+            message_id,
+            turn_id: turn_id.clone(),
+            participant_id: binding.participant_id.clone(),
+            agent_id: binding.agent_id.clone(),
             session_id: session_id.to_string(),
             session_event_seq,
-            thinking: message.thinking,
-            response: message.response,
-            state,
-            stop_reason,
+            thinking,
+            response,
+            state: state.clone(),
+            stop_reason: stop_reason.clone(),
         },
     );
+
+    if state == AssistantMessageState::Completed {
+        if let Some(stop_reason) = stop_reason {
+            let turn_end_thread_seq = thread_event_log.borrow_mut().next_seq(&binding.thread_id);
+            journal_and_broadcast_thread_event(
+                thread_event_log,
+                response_tx,
+                ResponseEvent::ThreadAgentTurnEnd {
+                    thread_id: binding.thread_id,
+                    thread_seq: turn_end_thread_seq,
+                    turn_id,
+                    participant_id: binding.participant_id,
+                    agent_id: binding.agent_id,
+                    session_id: session_id.to_string(),
+                    session_event_seq,
+                    stop_reason,
+                },
+            );
+        }
+    }
 }
 
 fn journal_and_broadcast_event(

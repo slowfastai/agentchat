@@ -482,6 +482,20 @@ Then the daemon emits thread-scoped assistant message snapshots such as:
 }
 ```
 
+```json
+{
+  "type": "thread_agent_turn_end",
+  "thread_id": "thread-1",
+  "thread_seq": 6,
+  "turn_id": "turn-1",
+  "participant_id": "participant-1",
+  "agent_id": "pi",
+  "session_id": "session-1",
+  "session_event_seq": 7,
+  "stop_reason": "EndTurn"
+}
+```
+
 Notes:
 - The daemon still emits session-scoped events for the backing sessions.
 - Thread events are the recommended stream for group chat UI.

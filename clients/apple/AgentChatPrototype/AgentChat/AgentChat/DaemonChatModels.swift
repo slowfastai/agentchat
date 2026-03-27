@@ -618,6 +618,10 @@ struct AssistantExecutionSummary: Hashable {
     let detailLine: String?
     let tone: Tone
     let showsProgress: Bool
+
+    var requiresAttention: Bool {
+        tone == .warning || tone == .failure
+    }
 }
 
 private func normalizedExecutionStatusToken(_ value: String) -> String {
