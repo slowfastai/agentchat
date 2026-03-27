@@ -99,7 +99,7 @@ lines prefixed with `<` are representative daemon responses.
 ```text
 $ websocat ws://127.0.0.1:9390
 > {"type":"list_agents"}
-< {"type":"agent_list","agents":[{"agent_id":"opencode","name":"OpenCode (ACP)","kind":"opencode","status":"online","default_working_dir":null,"capabilities":["session","prompt","cancel","distill"]}]}
+< {"type":"agent_list","agents":[{"agent_id":"opencode","name":"OpenCode (ACP)","mention_handle":"opencode","kind":"opencode","status":"online","default_working_dir":null,"capabilities":["session","prompt","cancel","distill"]}]}
 
 > {"type":"create_session","agent_id":"opencode","working_dir":"."}
 < {"type":"session_created","session_id":"session-1","agent_id":"opencode","event_seq":1}
@@ -138,7 +138,7 @@ This example shows the same flow using its usual output format.
 $ wscat -c ws://127.0.0.1:9390
 Connected (press CTRL+C to quit)
 > {"type":"list_agents"}
-< {"type":"agent_list","agents":[{"agent_id":"opencode","name":"OpenCode (ACP)","kind":"opencode","status":"online","default_working_dir":null,"capabilities":["session","prompt","cancel","distill"]}]}
+< {"type":"agent_list","agents":[{"agent_id":"opencode","name":"OpenCode (ACP)","mention_handle":"opencode","kind":"opencode","status":"online","default_working_dir":null,"capabilities":["session","prompt","cancel","distill"]}]}
 
 > {"type":"create_session","agent_id":"opencode","working_dir":"."}
 < {"type":"session_created","session_id":"session-1","agent_id":"opencode","event_seq":1}
@@ -176,6 +176,7 @@ Success response:
     {
       "agent_id": "opencode",
       "name": "OpenCode (ACP)",
+      "mention_handle": "opencode",
       "kind": "opencode",
       "status": "online",
       "default_working_dir": null,
@@ -320,6 +321,7 @@ Success responses:
         "kind": "agent",
         "display_name": "Pi",
         "agent_id": "pi",
+        "mention_handle": "pi",
         "session_id": "session-1",
         "state": "idle"
       }
@@ -373,6 +375,7 @@ Success response:
     "kind": "agent",
     "display_name": "Pi",
     "agent_id": "pi",
+    "mention_handle": "pi",
     "session_id": "session-1",
     "state": "idle"
   }

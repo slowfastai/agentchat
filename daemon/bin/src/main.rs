@@ -403,6 +403,7 @@ fn validate_mobile_ws_url(ws_url: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use std::sync::Mutex;
@@ -1207,11 +1208,10 @@ async fn main() {
                             );
                             return 1;
                         }
-                        return {
-                            manager.borrow().shutdown_all().await;
-                            error!("websocket server failed: {err}");
-                            1
-                        };
+                        let shutdown = { manager.borrow().shutdown_all() };
+                        shutdown.await;
+                        error!("websocket server failed: {err}");
+                        return 1;
                     }
                 };
 

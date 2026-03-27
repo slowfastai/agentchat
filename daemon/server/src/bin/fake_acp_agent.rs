@@ -92,6 +92,13 @@ impl FakeAgent {
         prompt_text
             .contains("You are analyzing a completed coding session to extract reusable knowledge.")
     }
+
+    fn visible_user_message<'a>(&self, prompt_text: &'a str) -> &'a str {
+        prompt_text
+            .split_once("[Original User Message]\n")
+            .map(|(_, message)| message)
+            .unwrap_or(prompt_text)
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -145,6 +152,7 @@ impl acp::Agent for FakeAgent {
         let session_id = args.session_id.clone();
         let session_id_text = session_id.to_string();
         let prompt_text = self.prompt_text(&args.prompt);
+        let visible_user_message = self.visible_user_message(&prompt_text);
         self.record_event(&format!("prompt:{}:{}", session_id_text, prompt_text));
 
         if self.is_distillation_prompt(&prompt_text) {
@@ -184,7 +192,7 @@ impl acp::Agent for FakeAgent {
                 self.send_update(
                     &session_id,
                     acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
-                        acp::ContentBlock::from(format!("echo: {prompt_text}")),
+                        acp::ContentBlock::from(format!("echo: {visible_user_message}")),
                     )),
                 )?;
                 Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))

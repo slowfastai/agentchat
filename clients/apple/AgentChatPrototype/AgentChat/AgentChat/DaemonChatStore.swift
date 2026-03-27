@@ -44,6 +44,7 @@ final class DaemonChatStore: ObservableObject {
     private var timelineByThread: [String: [DaemonTimelineEntry]] = [:]
     private var cursorByThread: [String: UInt64] = [:]
     private var assistantTurns = AssistantTurnReducer()
+    private var participantSelectionWasCustomized = false
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -140,6 +141,7 @@ final class DaemonChatStore: ObservableObject {
         activeThreadID = threadID
         activeThreadSnapshot = snapshotsByThread[threadID]
         timeline = timelineByThread[threadID] ?? []
+        participantSelectionWasCustomized = false
         selectedParticipantIDs = Set(
             activeThreadSnapshot?.participants.filter(\.isAgent).map(\.participantID) ?? []
         )
@@ -154,14 +156,20 @@ final class DaemonChatStore: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let threadID = activeThreadID else { return }
         let agentParticipants = activeThreadSnapshot?.participants.filter(\.isAgent) ?? []
-        let allAgentIDs = Set(agentParticipants.map(\.participantID))
-        let targets = Set(selectedParticipantIDs)
-        let targetList: [String]?
-        if targets.isEmpty || targets == allAgentIDs {
-            targetList = nil
-        } else {
-            targetList = targets.sorted()
+        guard !agentParticipants.isEmpty else {
+            errorMessage = "Add at least one agent to this thread before sending a message."
+            return
         }
+
+        let allAgentIDs = Set(agentParticipants.map(\.participantID))
+        let targets = Set(selectedParticipantIDs).intersection(allAgentIDs)
+        guard !targets.isEmpty else {
+            errorMessage = "Select at least one checked agent to receive this message."
+            return
+        }
+
+        let targetList: [String]? = targets == allAgentIDs ? nil : targets.sorted()
+        errorMessage = nil
 
         Task {
             await send(
@@ -184,6 +192,7 @@ final class DaemonChatStore: ObservableObject {
     }
 
     func toggleParticipantSelection(_ participantID: String) {
+        participantSelectionWasCustomized = true
         if selectedParticipantIDs.contains(participantID) {
             selectedParticipantIDs.remove(participantID)
         } else {
@@ -451,10 +460,7 @@ final class DaemonChatStore: ObservableObject {
                 if activeThreadID == snapshot.threadID {
                     activeThreadSnapshot = snapshot
                     timeline = timelineByThread[snapshot.threadID] ?? []
-                    let allParticipants = Set(snapshot.participants.filter(\.isAgent).map(\.participantID))
-                    if selectedParticipantIDs.isEmpty || !selectedParticipantIDs.isSubset(of: allParticipants) {
-                        selectedParticipantIDs = allParticipants
-                    }
+                    syncSelectedParticipants(with: snapshot)
                 }
             case "thread_closed":
                 let event = try decoder.decode(ThreadClosedEvent.self, from: data)
@@ -643,10 +649,7 @@ final class DaemonChatStore: ObservableObject {
         snapshotsByThread[threadID] = snapshot
         if activeThreadID == threadID {
             activeThreadSnapshot = snapshot
-            let allParticipants = Set(snapshot.participants.filter(\.isAgent).map(\.participantID))
-            if selectedParticipantIDs.isEmpty {
-                selectedParticipantIDs = allParticipants
-            }
+            syncSelectedParticipants(with: snapshot)
         }
     }
 
@@ -663,7 +666,16 @@ final class DaemonChatStore: ObservableObject {
         snapshotsByThread[threadID] = updated
         if activeThreadID == threadID {
             activeThreadSnapshot = updated
-            selectedParticipantIDs.remove(participantID)
+            syncSelectedParticipants(with: updated)
+        }
+    }
+
+    private func syncSelectedParticipants(with snapshot: DaemonThreadSnapshot) {
+        let allParticipants = Set(snapshot.participants.filter(\.isAgent).map(\.participantID))
+        if participantSelectionWasCustomized {
+            selectedParticipantIDs = selectedParticipantIDs.intersection(allParticipants)
+        } else {
+            selectedParticipantIDs = allParticipants
         }
     }
 
@@ -700,6 +712,7 @@ final class DaemonChatStore: ObservableObject {
             activeThreadSnapshot = nil
             timeline = []
             selectedParticipantIDs = []
+            participantSelectionWasCustomized = false
         }
 
         applyThreadPresentation()

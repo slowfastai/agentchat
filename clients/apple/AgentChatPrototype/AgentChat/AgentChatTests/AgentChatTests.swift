@@ -104,6 +104,18 @@ struct AgentChatTests {
         #expect(openCode.displayName == "OpenCode")
     }
 
+    @Test func daemonModelsDecodeExplicitMentionHandles() async throws {
+        let agentJSON = #"{"agent_id":"open-code","name":"OpenCode","mention_handle":"opencode","kind":"opencode","status":"online","default_working_dir":null,"capabilities":["session"]}"#
+        let participantJSON = #"{"participant_id":"participant-1","kind":"agent","display_name":"OpenCode","agent_id":"open-code","mention_handle":"opencode","session_id":"session-1","state":"idle"}"#
+
+        let decoder = JSONDecoder()
+        let agent = try decoder.decode(DaemonAgentSummary.self, from: Data(agentJSON.utf8))
+        let participant = try decoder.decode(DaemonThreadParticipant.self, from: Data(participantJSON.utf8))
+
+        #expect(agent.mentionHandle == "opencode")
+        #expect(participant.mentionHandle == "opencode")
+    }
+
     @Test @MainActor func daemonChatStoreRestoresPersistedAgentsAsOfflineOnColdStart() async throws {
         let suiteName = "AgentChatTests.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
