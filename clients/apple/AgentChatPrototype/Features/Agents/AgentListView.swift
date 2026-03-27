@@ -1,4 +1,11 @@
 import SwiftUI
+import PhotosUI
+#if canImport(UIKit)
+import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 
 enum AppColors {
     static var onlineStatus: Color {
@@ -11,8 +18,13 @@ enum AppColors {
 }
 
 struct AgentListView: View {
-    @EnvironmentObject private var store: DemoStore
+    @EnvironmentObject private var store: DaemonChatStore
     @State private var searchText = ""
+    @State private var selectedAgentID: String?
+    @State private var showEditSheet = false
+    @State private var showDeleteAlert = false
+    @State private var agentToDelete: DaemonAgentSummary?
+    @State private var editingAgent: DaemonAgentSummary?
 
     private var shortcutItems: [AgentShortcutItem] {
         [
@@ -23,35 +35,37 @@ struct AgentListView: View {
         ]
     }
 
-    private var filteredAgents: [AgentProfile] {
+    private var filteredAgents: [DaemonAgentSummary] {
         guard !searchText.isEmpty else {
-            return store.agents.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            return store.agents.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
         }
 
         return store.agents
             .filter { agent in
+                let displayName = store.customName(for: agent.agentID) ?? agent.displayName
                 let searchable = [
-                    agent.name,
-                    agent.shortDescription,
-                    agent.capabilityTags.joined(separator: " ")
+                    displayName,
+                    agent.capabilitySummary,
+                    agent.kindTitle
                 ]
                 .joined(separator: " ")
                 .lowercased()
 
                 return searchable.contains(searchText.lowercased())
             }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
 
     private var groupedAgents: [AgentSection] {
         let grouped = Dictionary(grouping: filteredAgents) { agent in
-            String(agent.name.prefix(1)).uppercased()
+            let displayName = store.customName(for: agent.agentID) ?? agent.displayName
+            return String(displayName.prefix(1)).uppercased()
         }
 
         return grouped.keys.sorted().map { key in
             AgentSection(
                 title: key,
-                agents: grouped[key]?.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending } ?? []
+                agents: grouped[key]?.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending } ?? []
             )
         }
     }
@@ -69,8 +83,31 @@ struct AgentListView: View {
                 ForEach(groupedAgents) { section in
                     Section(section.title) {
                         ForEach(section.agents) { agent in
-                            AgentFriendRow(agent: agent)
-                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                            AgentFriendRow(
+                                agent: agent,
+                                customName: store.customName(for: agent.agentID),
+                                avatarData: store.avatarData(for: agent.agentID),
+                                isConnecting: store.isConnecting(agentID: agent.agentID)
+                            )
+                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                            .onTapGesture {
+                                handleAgentTap(agent)
+                            }
+                            .contextMenu {
+                                Button {
+                                    editingAgent = agent
+                                    showEditSheet = true
+                                } label: {
+                                    Label("Edit Agent", systemImage: "pencil")
+                                }
+
+                                Button(role: .destructive) {
+                                    agentToDelete = agent
+                                    showDeleteAlert = true
+                                } label: {
+                                    Label("Delete Agent", systemImage: "trash")
+                                }
+                            }
                         }
                     }
                 }
@@ -94,9 +131,40 @@ struct AgentListView: View {
                     .padding(.trailing, 6)
             }
         }
+        .sheet(isPresented: $showEditSheet) {
+            if let agent = editingAgent {
+                EditAgentSheet(agent: agent)
+            }
+        }
+        .alert("Delete Agent", isPresented: $showDeleteAlert) {
+            Button("Cancel", role: .cancel) {
+                agentToDelete = nil
+            }
+            Button("Delete", role: .destructive) {
+                if let agent = agentToDelete {
+                    store.removeAgent(id: agent.agentID)
+                }
+                agentToDelete = nil
+            }
+        } message: {
+            if let agent = agentToDelete {
+                let displayName = store.customName(for: agent.agentID) ?? agent.displayName
+                Text("Are you sure you want to delete \(displayName)? This action cannot be undone.")
+            }
+        }
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+    }
+
+    private func handleAgentTap(_ agent: DaemonAgentSummary) {
+        if store.isConnecting(agentID: agent.agentID) {
+            return
+        }
+
+        if store.hasConfiguredDaemonURL {
+            store.connectToAgent(id: agent.agentID)
+        }
     }
 }
 
@@ -109,7 +177,7 @@ private struct AgentShortcutItem: Identifiable {
 
 private struct AgentSection: Identifiable {
     let title: String
-    let agents: [AgentProfile]
+    let agents: [DaemonAgentSummary]
 
     var id: String { title }
 }
@@ -132,22 +200,26 @@ private struct AgentShortcutRow: View {
 }
 
 private struct AgentFriendRow: View {
-    let agent: AgentProfile
+    let agent: DaemonAgentSummary
+    let customName: String?
+    let avatarData: Data?
+    let isConnecting: Bool
 
     var body: some View {
         HStack(spacing: 14) {
             ContactIconTile(
-                title: agent.name,
-                accent: agent.accent,
-                systemImage: systemImage(for: agent.kind)
+                title: customName ?? agent.displayName,
+                accent: ColorToken(rawValue: agent.tintName) ?? .blue,
+                systemImage: agent.symbolName,
+                avatarData: avatarData
             )
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(agent.name)
+                Text(customName ?? agent.displayName)
                     .font(.body)
                     .foregroundStyle(.primary)
 
-                Text(subtitle)
+                Text(agent.capabilitySummary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -155,7 +227,16 @@ private struct AgentFriendRow: View {
 
             Spacer()
 
-            if agent.isOnline {
+            if isConnecting {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Color.orange)
+                        .frame(width: 8, height: 8)
+                    Text("Connecting...")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+            } else if agent.isOnline {
                 HStack(spacing: 6) {
                     Circle()
                         .fill(AppColors.onlineStatus)
@@ -168,44 +249,31 @@ private struct AgentFriendRow: View {
         }
         .contentShape(Rectangle())
     }
-
-    private var subtitle: String {
-        if !agent.capabilityTags.isEmpty {
-            return agent.capabilityTags.prefix(3).joined(separator: " · ")
-        }
-        return agent.shortDescription
-    }
-
-    private func systemImage(for kind: AgentKind) -> String {
-        switch kind {
-        case .claude:
-            return "brain.head.profile"
-        case .codex:
-            return "curlybraces.square.fill"
-        case .pi:
-            return "sparkles"
-        case .opencode:
-            return "terminal.fill"
-        case .human:
-            return "person.fill"
-        }
-    }
 }
 
 private struct ContactIconTile: View {
     let title: String
     let accent: ColorToken
     let systemImage: String
+    var avatarData: Data?
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(accent.color)
-            .frame(width: 42, height: 42)
-            .overlay {
-                Image(systemName: systemImage)
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
+        if let data = avatarData, let uiImage = UIImage(data: data) {
+            Image(uiImage: uiImage)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 42, height: 42)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        } else {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(accent.color)
+                .frame(width: 42, height: 42)
+                .overlay {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+        }
     }
 }
 
@@ -228,5 +296,112 @@ private struct AgentSectionIndexOverlay: View {
         .padding(.vertical, 8)
         .frame(width: 18)
         .background(Color.clear)
+    }
+}
+
+struct EditAgentSheet: View {
+    @EnvironmentObject private var store: DaemonChatStore
+    @Environment(\.dismiss) private var dismiss
+
+    let agent: DaemonAgentSummary
+
+    @State private var editedName: String = ""
+    @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var selectedImageData: Data?
+    @State private var showError = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Agent Info") {
+                    TextField("Name", text: $editedName)
+
+                    if let data = selectedImageData, let uiImage = UIImage(data: data) {
+                        HStack {
+                            Spacer()
+                            Image(uiImage: uiImage)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 80, height: 80)
+                                .clipShape(RoundedRectangle(cornerRadius: 16))
+                            Spacer()
+                        }
+                    }
+                }
+
+                Section("Avatar") {
+                    PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                        Label("Choose Photo", systemImage: "photo")
+                    }
+                    .onChange(of: selectedPhotoItem) { _, newValue in
+                        Task {
+                            if let data = try? await newValue?.loadTransferable(type: Data.self) {
+                                selectedImageData = processImage(data)
+                            }
+                        }
+                    }
+
+                    if selectedImageData != nil || store.avatarData(for: agent.agentID) != nil {
+                        Button(role: .destructive) {
+                            selectedImageData = nil
+                            selectedPhotoItem = nil
+                        } label: {
+                            Label("Remove Photo", systemImage: "trash")
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Edit Agent")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saveChanges()
+                    }
+                    .disabled(editedName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && selectedImageData == nil)
+                }
+            }
+            .onAppear {
+                editedName = store.customName(for: agent.agentID) ?? agent.displayName
+                selectedImageData = store.avatarData(for: agent.agentID)
+            }
+            .alert("Error", isPresented: $showError) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Failed to save changes. Please try again.")
+            }
+        }
+    }
+
+    private func processImage(_ data: Data) -> Data? {
+        guard let uiImage = UIImage(data: data) else { return nil }
+
+        let maxSize: CGFloat = 200
+        let scale = min(maxSize / uiImage.size.width, maxSize / uiImage.size.height)
+        let newSize = CGSize(width: uiImage.size.width * scale, height: uiImage.size.height * scale)
+
+        UIGraphicsBeginImageContextWithOptions(newSize, false, 1.0)
+        uiImage.draw(in: CGRect(origin: .zero, size: newSize))
+        let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+
+        return resizedImage?.jpegData(compressionQuality: 0.8)
+    }
+
+    private func saveChanges() {
+        let trimmedName = editedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nameToSave = trimmedName.isEmpty ? nil : trimmedName
+
+        store.updateAgent(
+            id: agent.agentID,
+            name: nameToSave,
+            avatarData: selectedImageData
+        )
+        dismiss()
     }
 }
