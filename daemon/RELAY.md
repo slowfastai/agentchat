@@ -81,6 +81,48 @@ Notes:
 - the current Apple build still uses `relay_crypto=dev`; custom per-device production relay identities are not implemented yet
 - unlike direct LAN mode, the phone and Mac do **not** need to share the same Wi-Fi once both can reach the relay
 
+## Public relay helper for iPhone testing
+
+If you have already deployed the relay Worker to a public URL and want the daemon to:
+
+1. bootstrap a daemon relay token
+2. connect to the public relay
+3. print a QR code for the iPhone app
+
+without hand-writing a `curl` request, use:
+
+```bash
+cd /path/to/agentchat
+AGENTCHAT_AGENT_ID=opencode \
+AGENTCHAT_AGENT_NAME="OpenCode (ACP)" \
+AGENTCHAT_AGENT_COMMAND=opencode \
+AGENTCHAT_AGENT_ARGS="acp" \
+bash daemon/scripts/run_public_relay_mobile.sh \
+  --relay-http https://agentchat-relay.example.workers.dev
+```
+
+The helper script:
+
+1. calls `POST /v1/dev/bootstrap` on the deployed relay Worker
+2. exports `AGENTCHAT_RELAY_WS_URL` and `AGENTCHAT_RELAY_TOKEN` from the JSON response
+3. forces `AGENTCHAT_RELAY_DEV_CRYPTO=true`
+4. sends a browser-like `User-Agent` to avoid Cloudflare browser-signature blocks on non-browser clients
+5. prefetches `POST /v1/pairing/open` itself when launching in mobile mode
+6. starts `agentchat-daemon --mobile`
+
+Useful flags:
+
+- `--device-id <id>` to control the daemon device id stored in the relay
+- `--device-name <name>` to label the daemon more clearly in relay state
+- `--no-mobile -- ...` if you want relay bootstrapping without automatically appending `--mobile`
+- `AGENTCHAT_RELAY_USER_AGENT=...` if you need to override the default browser-like `User-Agent`
+
+Important:
+
+- this helper still relies on the relay **dev** bootstrap endpoint, so the deployed Worker must keep `POST /v1/dev/bootstrap` enabled
+- if you disable `RELAY_DEV_MODE` for the deployed Worker, this helper will fail and you will need another daemon-token provisioning path
+- the current iPhone relay QR flow still requires a development relay-crypto app build
+
 ## Recommended local end-to-end flow
 
 Start the local relay Worker first:

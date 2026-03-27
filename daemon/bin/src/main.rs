@@ -9,13 +9,16 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 use agentchat_core::agent_manager::AgentManager;
 use agentchat_core::distiller::Distiller;
-use agentchat_core::relay_client::{RelayClientConfig, RelayClientCryptoConfig};
+use agentchat_core::relay_client::{
+    RelayClientConfig, RelayClientCryptoConfig, DEFAULT_RELAY_USER_AGENT,
+};
 use agentchat_core::session_store::SessionStore;
 use agentchat_core::skills::SkillStore;
 use agentchat_protocol::relay_crypto::{
@@ -45,6 +48,10 @@ enum InteractiveCommand {
     ShowMobile {
         reply: std_mpsc::Sender<Vec<AgentSummary>>,
     },
+    RenderMobileQr {
+        selected_agent_ids: Vec<String>,
+        reply: std_mpsc::Sender<Result<String, String>>,
+    },
     Shutdown,
 }
 
@@ -55,6 +62,44 @@ struct SharedFileWriter {
 
 struct SharedFileWriterGuard<'a> {
     guard: std::sync::MutexGuard<'a, File>,
+}
+
+#[derive(Clone, Default)]
+struct MobileQrAvailability {
+    relay_connected: Option<Arc<AtomicBool>>,
+}
+
+impl MobileQrAvailability {
+    fn local() -> Self {
+        Self::default()
+    }
+
+    fn relay() -> Self {
+        Self {
+            relay_connected: Some(Arc::new(AtomicBool::new(false))),
+        }
+    }
+
+    fn require_ready(&self) -> Result<(), String> {
+        let Some(relay_connected) = &self.relay_connected else {
+            return Ok(());
+        };
+
+        if relay_connected.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        Err(
+            "relay transport is not connected yet; wait for `relay transport connected; waiting for secure channel` before printing a mobile QR code"
+                .into(),
+        )
+    }
+
+    fn set_relay_connected(&self, connected: bool) {
+        if let Some(relay_connected) = &self.relay_connected {
+            relay_connected.store(connected, Ordering::SeqCst);
+        }
+    }
 }
 
 fn env_or_default(key: &str, default: &str) -> String {
@@ -272,10 +317,16 @@ fn load_relay_client_config() -> Result<Option<RelayClientConfig>, String> {
         }
         (Some(ws_url), Some(relay_token)) => {
             let mut config = RelayClientConfig::new(ws_url, relay_token);
+            config.user_agent = relay_http_user_agent();
             config.crypto = Some(load_relay_crypto_config()?);
             Ok(Some(config))
         }
     }
+}
+
+fn relay_http_user_agent() -> String {
+    optional_env("AGENTCHAT_RELAY_USER_AGENT")
+        .unwrap_or_else(|| DEFAULT_RELAY_USER_AGENT.to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -587,12 +638,13 @@ fn relay_pairing_open_url_from_ws_url(relay_ws_url: &str) -> Result<String, Stri
     Ok(url.to_string())
 }
 
-fn open_pairing_ticket_for_relay(
+async fn open_pairing_ticket_for_relay(
     relay_ws_url: &str,
     relay_token: &str,
 ) -> Result<RelayPairingOpenResponse, String> {
     let pairing_open_url = relay_pairing_open_url_from_ws_url(relay_ws_url)?;
-    let client = reqwest::blocking::Client::builder()
+    let client = reqwest::Client::builder()
+        .user_agent(relay_http_user_agent())
         .build()
         .map_err(|err| format!("failed to build relay pairing http client: {err}"))?;
     let response = client
@@ -601,10 +653,12 @@ fn open_pairing_ticket_for_relay(
         .header("content-type", "application/json")
         .body("{}")
         .send()
+        .await
         .map_err(|err| format!("failed to open relay pairing session: {err}"))?;
     let status = response.status();
     let body = response
         .text()
+        .await
         .map_err(|err| format!("failed reading relay pairing response body: {err}"))?;
 
     if !status.is_success() {
@@ -628,7 +682,7 @@ fn open_pairing_ticket_for_relay(
     Ok(pairing)
 }
 
-fn build_relay_mobile_qr_payload(
+async fn build_relay_mobile_qr_payload(
     selected_agent_ids: &[String],
 ) -> Result<Option<(String, String)>, String> {
     let Some(configured_relay_ws_url) = optional_env("AGENTCHAT_RELAY_WS_URL") else {
@@ -645,9 +699,18 @@ fn build_relay_mobile_qr_payload(
         );
     }
 
+    if let Some(pairing_ticket) = optional_env("AGENTCHAT_RELAY_PAIRING_TICKET") {
+        let payload = relay_mobile_qr_payload_for_pairing_ticket(
+            &relay_ws_url,
+            &pairing_ticket,
+            selected_agent_ids,
+        );
+        return Ok(Some((relay_ws_url, payload)));
+    }
+
     let relay_token = optional_env("AGENTCHAT_RELAY_TOKEN")
         .ok_or("relay mobile QR requires AGENTCHAT_RELAY_TOKEN to be set")?;
-    let pairing = open_pairing_ticket_for_relay(&relay_ws_url, &relay_token)?;
+    let pairing = open_pairing_ticket_for_relay(&relay_ws_url, &relay_token).await?;
     let payload = relay_mobile_qr_payload_for_pairing_ticket(
         &pairing.ws_url,
         &pairing.pairing_ticket,
@@ -656,11 +719,11 @@ fn build_relay_mobile_qr_payload(
     Ok(Some((pairing.ws_url, payload)))
 }
 
-fn build_mobile_qr_payload(
+async fn build_mobile_qr_payload(
     port: u16,
     selected_agent_ids: &[String],
 ) -> Result<(String, String, bool), String> {
-    if let Some((ws_url, payload)) = build_relay_mobile_qr_payload(selected_agent_ids)? {
+    if let Some((ws_url, payload)) = build_relay_mobile_qr_payload(selected_agent_ids).await? {
         return Ok((ws_url, payload, true));
     }
 
@@ -669,39 +732,57 @@ fn build_mobile_qr_payload(
     Ok((ws_url, payload, false))
 }
 
-fn print_mobile_qr(port: u16, selected_agent_ids: &[String]) -> Result<(), String> {
-    let (ws_url, payload, is_relay) = build_mobile_qr_payload(port, selected_agent_ids)?;
+fn render_mobile_qr_output(
+    ws_url: &str,
+    payload: &str,
+    is_relay: bool,
+    selected_agent_ids: &[String],
+) -> Result<String, String> {
     let qr = QrCode::new(payload.as_bytes())
         .map_err(|err| format!("failed to generate mobile QR code: {err}"))?
         .render::<unicode::Dense1x2>()
         .quiet_zone(true)
         .build();
 
-    println!();
-    println!("════════════════════════════════════════════════════════════");
-    println!(" AgentChat mobile login");
-    println!(" Scan this QR from the iPhone app: Connection → Scan QR");
+    let mut output = String::new();
+    output.push('\n');
+    output.push_str("════════════════════════════════════════════════════════════\n");
+    output.push_str(" AgentChat mobile login\n");
+    output.push_str(" Scan this QR from the iPhone app: Connection → Scan QR\n");
     if is_relay {
-        println!(" Relay URL: {ws_url}");
+        output.push_str(&format!(" Relay URL: {ws_url}\n"));
     } else {
-        println!(" WebSocket URL: {ws_url}");
+        output.push_str(&format!(" WebSocket URL: {ws_url}\n"));
     }
     if !selected_agent_ids.is_empty() {
-        println!(" Preselected agents: {}", selected_agent_ids.join(", "));
+        output.push_str(&format!(
+            " Preselected agents: {}\n",
+            selected_agent_ids.join(", ")
+        ));
     }
     if is_relay {
-        println!(
-            " Tip: phone and Mac can be on different networks once both connect through the relay"
+        output.push_str(
+            " Tip: phone and Mac can be on different networks once both connect through the relay\n",
         );
     } else {
-        println!(" Tip: phone and Mac must be on the same Wi-Fi / LAN");
+        output.push_str(" Tip: phone and Mac must be on the same Wi-Fi / LAN\n");
     }
-    println!("════════════════════════════════════════════════════════════");
-    println!("{qr}");
-    println!("{payload}");
-    println!();
+    output.push_str("════════════════════════════════════════════════════════════\n");
+    output.push_str(&qr);
+    output.push('\n');
+    output.push_str(payload);
+    output.push_str("\n\n");
 
-    Ok(())
+    Ok(output)
+}
+
+async fn render_mobile_qr(port: u16, selected_agent_ids: &[String]) -> Result<String, String> {
+    let (ws_url, payload, is_relay) = build_mobile_qr_payload(port, selected_agent_ids).await?;
+    render_mobile_qr_output(&ws_url, &payload, is_relay, selected_agent_ids)
+}
+
+fn print_mobile_qr_output(output: &str) {
+    print!("{output}");
 }
 
 fn print_interactive_help() {
@@ -768,8 +849,26 @@ fn start_interactive_console(command_tx: mpsc::UnboundedSender<InteractiveComman
 
                     match prompt_mobile_agent_selection(&agents) {
                         Ok(Some(selected_agent_ids)) => {
-                            if let Err(err) = print_mobile_qr(DEFAULT_PORT, &selected_agent_ids) {
-                                eprintln!("failed to prepare mobile QR output: {err}");
+                            let (reply_tx, reply_rx) = std_mpsc::channel();
+                            if command_tx
+                                .send(InteractiveCommand::RenderMobileQr {
+                                    selected_agent_ids,
+                                    reply: reply_tx,
+                                })
+                                .is_err()
+                            {
+                                eprintln!("failed to request mobile QR rendering from daemon");
+                                continue;
+                            }
+
+                            match reply_rx.recv() {
+                                Ok(Ok(output)) => print_mobile_qr_output(&output),
+                                Ok(Err(err)) => {
+                                    eprintln!("failed to prepare mobile QR output: {err}")
+                                }
+                                Err(_) => {
+                                    eprintln!("failed to receive mobile QR output from daemon")
+                                }
                             }
                         }
                         Ok(None) => println!("mobile QR selection cancelled"),
@@ -1049,6 +1148,11 @@ async fn main() {
             let session_store = Rc::new(RefCell::new(SessionStore::new(&project_root)));
             let skill_store = Rc::new(SkillStore::new(&project_root));
             let distiller = Rc::new(Distiller::new(skill_store.clone()));
+            let mobile_qr_availability = if relay_config.is_some() {
+                MobileQrAvailability::relay()
+            } else {
+                MobileQrAvailability::local()
+            };
             let (_shutdown_tx, shutdown_rx) = watch::channel(false);
             let signal_tx = _shutdown_tx.clone();
             let (command_tx, mut command_rx) = mpsc::unbounded_channel::<InteractiveCommand>();
@@ -1062,12 +1166,23 @@ async fn main() {
 
             start_interactive_console(command_tx);
             let manager_for_commands = manager.clone();
+            let mobile_qr_availability_for_commands = mobile_qr_availability.clone();
             let signal_tx = _shutdown_tx.clone();
             tokio::task::spawn_local(async move {
                 while let Some(command) = command_rx.recv().await {
                     match command {
                         InteractiveCommand::ShowMobile { reply } => {
                             let _ = reply.send(manager_for_commands.borrow().list_agents());
+                        }
+                        InteractiveCommand::RenderMobileQr {
+                            selected_agent_ids,
+                            reply,
+                        } => {
+                            let result = match mobile_qr_availability_for_commands.require_ready() {
+                                Ok(()) => render_mobile_qr(DEFAULT_PORT, &selected_agent_ids).await,
+                                Err(err) => Err(err),
+                            };
+                            let _ = reply.send(result);
                         }
                         InteractiveCommand::Shutdown => {
                             let _ = signal_tx.send(true);
@@ -1077,26 +1192,66 @@ async fn main() {
                 }
             });
 
-            if cli_options.mobile_qr {
-                if let Err(err) = print_mobile_qr(DEFAULT_PORT, &[]) {
-                    error!("failed to prepare mobile QR output: {err}");
-                    eprintln!("failed to prepare mobile QR output: {err}");
-                    return 1;
-                }
-            }
-
             let run_result = if let Some(relay_config) = relay_config.clone() {
                 info!("agent initialized, starting relay transport");
-                RelayTransportServer::new(relay_config)
-                    .run(
+                let relay_server = RelayTransportServer::new(relay_config);
+                let relay_client = match relay_server.connect_client().await {
+                    Ok(client) => client,
+                    Err(err) => {
+                        if cli_options.mobile_qr {
+                            error!(
+                                "failed to connect relay transport before mobile QR output: {err}"
+                            );
+                            eprintln!(
+                                "failed to connect relay transport before mobile QR output: {err}"
+                            );
+                            return 1;
+                        }
+                        return {
+                            manager.borrow().shutdown_all().await;
+                            error!("websocket server failed: {err}");
+                            1
+                        };
+                    }
+                };
+
+                mobile_qr_availability.set_relay_connected(true);
+
+                if cli_options.mobile_qr {
+                    match render_mobile_qr(DEFAULT_PORT, &[]).await {
+                        Ok(output) => print_mobile_qr_output(&output),
+                        Err(err) => {
+                            error!("failed to prepare mobile QR output: {err}");
+                            eprintln!("failed to prepare mobile QR output: {err}");
+                            return 1;
+                        }
+                    }
+                }
+
+                let result = relay_server
+                    .run_with_client(
+                        relay_client,
                         manager.clone(),
                         shutdown_rx,
                         session_store,
                         skill_store,
                         distiller,
                     )
-                    .await
+                    .await;
+                mobile_qr_availability.set_relay_connected(false);
+                result
             } else {
+                if cli_options.mobile_qr {
+                    match render_mobile_qr(DEFAULT_PORT, &[]).await {
+                        Ok(output) => print_mobile_qr_output(&output),
+                        Err(err) => {
+                            error!("failed to prepare mobile QR output: {err}");
+                            eprintln!("failed to prepare mobile QR output: {err}");
+                            return 1;
+                        }
+                    }
+                }
+
                 info!("agent initialized, starting WebSocket server");
                 WebSocketServer::new(DEFAULT_PORT)
                     .run(

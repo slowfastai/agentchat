@@ -22,15 +22,8 @@ impl RelayTransportServer {
         Self { client_config }
     }
 
-    pub async fn run(
-        self,
-        manager: Rc<RefCell<AgentManager>>,
-        mut shutdown_rx: watch::Receiver<bool>,
-        session_store: Rc<RefCell<SessionStore>>,
-        skill_store: Rc<SkillStore>,
-        distiller: Rc<Distiller>,
-    ) -> Result<(), String> {
-        let mut relay_client = RelayClient::connect(self.client_config)
+    pub async fn connect_client(&self) -> Result<RelayClient, String> {
+        let relay_client = RelayClient::connect(self.client_config.clone())
             .await
             .map_err(|err| format!("failed to connect relay transport: {err}"))?;
 
@@ -40,6 +33,18 @@ impl RelayTransportServer {
             "relay transport connected; waiting for secure channel"
         );
 
+        Ok(relay_client)
+    }
+
+    pub async fn run_with_client(
+        self,
+        mut relay_client: RelayClient,
+        manager: Rc<RefCell<AgentManager>>,
+        mut shutdown_rx: watch::Receiver<bool>,
+        session_store: Rc<RefCell<SessionStore>>,
+        skill_store: Rc<SkillStore>,
+        distiller: Rc<Distiller>,
+    ) -> Result<(), String> {
         let handshake = tokio::select! {
             result = relay_client.accept_next_hello() => result,
             _ = shutdown_rx.changed() => {
@@ -149,6 +154,26 @@ impl RelayTransportServer {
 
         session.shutdown().await;
         Ok(())
+    }
+
+    pub async fn run(
+        self,
+        manager: Rc<RefCell<AgentManager>>,
+        shutdown_rx: watch::Receiver<bool>,
+        session_store: Rc<RefCell<SessionStore>>,
+        skill_store: Rc<SkillStore>,
+        distiller: Rc<Distiller>,
+    ) -> Result<(), String> {
+        let relay_client = self.connect_client().await?;
+        self.run_with_client(
+            relay_client,
+            manager,
+            shutdown_rx,
+            session_store,
+            skill_store,
+            distiller,
+        )
+        .await
     }
 }
 
