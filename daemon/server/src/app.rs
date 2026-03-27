@@ -15,7 +15,8 @@ use agentchat_core::session_store::SessionStore;
 use agentchat_core::skills::SkillStore;
 use agentchat_core::thread_event_log::ThreadEventLog;
 use agentchat_core::thread_store::{
-    participant_to_protocol, thread_to_snapshot, thread_to_summary, ThreadStore,
+    participant_to_protocol, thread_to_snapshot, thread_to_summary, ThreadParticipantRecord,
+    ThreadStore,
 };
 use agentchat_protocol::{
     AgentSummary, AssistantMessageState, ClientMessage, DeltaType, ParticipantKind,
@@ -64,6 +65,173 @@ fn ensure_active_assistant_message<'a>(
     active_messages
         .entry(session_id.to_string())
         .or_insert_with(ActiveAssistantMessage::new)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ThreadMessageMentionResolution {
+    prompt_content: String,
+    target_participant_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ThreadMessageMentionError {
+    ThreadNotFound,
+    UnknownAgentMention(String),
+    EmptyPrompt,
+}
+
+fn resolve_thread_message_mentions(
+    thread_store: &ThreadStore,
+    thread_id: &str,
+    content: &str,
+) -> Result<Option<ThreadMessageMentionResolution>, ThreadMessageMentionError> {
+    let Some((mentions, prompt_content)) = parse_leading_agent_mentions(content) else {
+        return Ok(None);
+    };
+
+    if prompt_content.is_empty() {
+        return Err(ThreadMessageMentionError::EmptyPrompt);
+    }
+
+    let thread = thread_store
+        .get_thread(thread_id)
+        .ok_or(ThreadMessageMentionError::ThreadNotFound)?;
+    let mut target_participant_ids = Vec::new();
+    let mut seen_participant_ids = HashSet::new();
+
+    for mention in mentions {
+        let matching_participants = thread
+            .participants
+            .iter()
+            .filter(|participant| participant_matches_agent_mention(participant, &mention))
+            .collect::<Vec<_>>();
+
+        if matching_participants.is_empty() {
+            return Err(ThreadMessageMentionError::UnknownAgentMention(mention));
+        }
+
+        for participant in matching_participants {
+            if seen_participant_ids.insert(participant.participant_id.clone()) {
+                target_participant_ids.push(participant.participant_id.clone());
+            }
+        }
+    }
+
+    Ok(Some(ThreadMessageMentionResolution {
+        prompt_content,
+        target_participant_ids,
+    }))
+}
+
+fn parse_leading_agent_mentions(content: &str) -> Option<(Vec<String>, String)> {
+    let trimmed = content.trim();
+    let mut rest = trimmed;
+    let mut mentions = Vec::new();
+
+    while let Some((mention, next_rest)) = split_leading_agent_mention(rest) {
+        mentions.push(mention);
+        rest = next_rest;
+    }
+
+    if mentions.is_empty() {
+        return None;
+    }
+
+    Some((mentions, rest.trim().to_string()))
+}
+
+fn split_leading_agent_mention(input: &str) -> Option<(String, &str)> {
+    let trimmed = input.trim_start();
+    let remainder = trimmed.strip_prefix('@')?;
+    let mention_end = remainder
+        .char_indices()
+        .find(|(_, ch)| !is_agent_mention_char(*ch))
+        .map(|(index, _)| index)
+        .unwrap_or_else(|| remainder.len());
+
+    if mention_end == 0 {
+        return None;
+    }
+
+    let mention = remainder[..mention_end].to_string();
+    let mut rest = &remainder[mention_end..];
+
+    if let Some(stripped) = rest
+        .strip_prefix(',')
+        .or_else(|| rest.strip_prefix(':'))
+        .or_else(|| rest.strip_prefix(';'))
+    {
+        rest = stripped;
+    }
+
+    if let Some(next_char) = rest.chars().next() {
+        if !next_char.is_whitespace() {
+            return None;
+        }
+    }
+
+    Some((mention, rest))
+}
+
+fn is_agent_mention_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.')
+}
+
+fn participant_matches_agent_mention(participant: &ThreadParticipantRecord, mention: &str) -> bool {
+    if participant.kind != ParticipantKind::Agent {
+        return false;
+    }
+
+    let normalized_mention = normalize_agent_mention_value(mention);
+    if normalized_mention.is_empty() {
+        return false;
+    }
+
+    participant
+        .agent_id
+        .as_deref()
+        .map(|agent_id| {
+            agent_id.eq_ignore_ascii_case(mention)
+                || normalize_agent_mention_value(agent_id) == normalized_mention
+        })
+        .unwrap_or(false)
+        || {
+            let display_name = participant.display_name.trim();
+            !display_name.is_empty()
+                && (display_name.eq_ignore_ascii_case(mention)
+                    || normalize_agent_mention_value(display_name) == normalized_mention)
+        }
+}
+
+fn normalize_agent_mention_value(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect()
+}
+
+fn merge_thread_message_targets(
+    explicit_target_participant_ids: Option<Vec<String>>,
+    mention_target_participant_ids: Option<Vec<String>>,
+) -> Option<Vec<String>> {
+    match (
+        explicit_target_participant_ids,
+        mention_target_participant_ids,
+    ) {
+        (Some(explicit_targets), Some(mention_targets)) => {
+            let explicit_target_set = explicit_targets.into_iter().collect::<HashSet<_>>();
+            Some(
+                mention_targets
+                    .into_iter()
+                    .filter(|participant_id| explicit_target_set.contains(participant_id))
+                    .collect(),
+            )
+        }
+        (Some(explicit_targets), None) => Some(explicit_targets),
+        (None, Some(mention_targets)) => Some(mention_targets),
+        (None, None) => None,
+    }
 }
 
 impl AppProtocolSession {
@@ -776,6 +944,59 @@ impl AppProtocolSession {
         content: String,
         target_participant_ids: Option<Vec<String>>,
     ) {
+        // Leading @mentions act as an inline routing override for group chats.
+        let mention_resolution = {
+            let thread_store = self.thread_store.borrow();
+            match resolve_thread_message_mentions(&thread_store, &thread_id, &content) {
+                Ok(resolution) => resolution,
+                Err(ThreadMessageMentionError::ThreadNotFound) => {
+                    let _ = self.response_tx.send(ResponseEvent::Error {
+                        session_id: None,
+                        event_seq: None,
+                        code: "thread_not_found".into(),
+                        message: "no live thread with this id".into(),
+                    });
+                    return;
+                }
+                Err(ThreadMessageMentionError::UnknownAgentMention(mention)) => {
+                    let _ = self.response_tx.send(ResponseEvent::Error {
+                        session_id: None,
+                        event_seq: None,
+                        code: "thread_agent_mention_not_found".into(),
+                        message: format!("no agent matching @{mention} in this thread"),
+                    });
+                    return;
+                }
+                Err(ThreadMessageMentionError::EmptyPrompt) => {
+                    let _ = self.response_tx.send(ResponseEvent::Error {
+                        session_id: None,
+                        event_seq: None,
+                        code: "thread_message_empty".into(),
+                        message: "message must include prompt text after agent mentions".into(),
+                    });
+                    return;
+                }
+            }
+        };
+
+        let prompt_content = mention_resolution
+            .as_ref()
+            .map(|resolution| resolution.prompt_content.clone())
+            .unwrap_or_else(|| content.clone());
+        let target_participant_ids = merge_thread_message_targets(
+            target_participant_ids,
+            mention_resolution.map(|resolution| resolution.target_participant_ids),
+        );
+        if matches!(target_participant_ids.as_ref(), Some(targets) if targets.is_empty()) {
+            let _ = self.response_tx.send(ResponseEvent::Error {
+                session_id: None,
+                event_seq: None,
+                code: "thread_no_matching_targets".into(),
+                message: "no checked participants match the @mentions".into(),
+            });
+            return;
+        }
+
         let participants = match self
             .thread_store
             .borrow()
@@ -826,7 +1047,7 @@ impl AppProtocolSession {
 
         for participant in participants {
             if let Some(session_id) = participant.session_id {
-                self.handle_prompt(session_id, content.clone()).await;
+                self.handle_prompt(session_id, prompt_content.clone()).await;
             }
         }
     }
@@ -1982,5 +2203,108 @@ mod tests {
                 delta_type: DeltaType::Text,
             }
         );
+    }
+
+    #[test]
+    fn parse_leading_agent_mentions_extracts_multiple_targets_and_prompt() {
+        assert_eq!(
+            parse_leading_agent_mentions("  @opencode @codex what date is today?  "),
+            Some((
+                vec!["opencode".into(), "codex".into()],
+                "what date is today?".into(),
+            ))
+        );
+        assert_eq!(
+            parse_leading_agent_mentions("@opencode, how are you"),
+            Some((vec!["opencode".into()], "how are you".into(),))
+        );
+    }
+
+    #[test]
+    fn resolve_thread_message_mentions_targets_matching_agents_and_strips_prompt() {
+        let mut store = ThreadStore::new();
+        let thread = store.create_thread(Some("Targeted".into()), ".".into());
+        let opencode = store
+            .add_agent_participant(
+                &thread.thread_id,
+                "opencode".into(),
+                "OpenCode".into(),
+                "session-opencode".into(),
+            )
+            .unwrap();
+        let codex = store
+            .add_agent_participant(
+                &thread.thread_id,
+                "codex".into(),
+                "Codex".into(),
+                "session-codex".into(),
+            )
+            .unwrap();
+
+        let resolution = resolve_thread_message_mentions(
+            &store,
+            &thread.thread_id,
+            "@opencode @codex what date is today?",
+        )
+        .unwrap()
+        .expect("expected mention routing");
+
+        assert_eq!(resolution.prompt_content, "what date is today?");
+        assert_eq!(
+            resolution.target_participant_ids,
+            vec![opencode.participant_id, codex.participant_id]
+        );
+    }
+
+    #[test]
+    fn resolve_thread_message_mentions_rejects_unknown_agents_and_empty_prompts() {
+        let mut store = ThreadStore::new();
+        let thread = store.create_thread(Some("Targeted".into()), ".".into());
+        store
+            .add_agent_participant(
+                &thread.thread_id,
+                "opencode".into(),
+                "OpenCode".into(),
+                "session-opencode".into(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            resolve_thread_message_mentions(&store, &thread.thread_id, "@missing hello"),
+            Err(ThreadMessageMentionError::UnknownAgentMention(
+                "missing".into()
+            ))
+        );
+        assert_eq!(
+            resolve_thread_message_mentions(&store, &thread.thread_id, "@opencode"),
+            Err(ThreadMessageMentionError::EmptyPrompt)
+        );
+    }
+
+    #[test]
+    fn merge_thread_message_targets_intersects_mentions_with_explicit_targets() {
+        assert_eq!(
+            merge_thread_message_targets(
+                Some(vec![
+                    "participant-opencode".into(),
+                    "participant-codex".into()
+                ]),
+                Some(vec!["participant-codex".into(), "participant-pi".into()]),
+            ),
+            Some(vec!["participant-codex".into()])
+        );
+    }
+
+    #[test]
+    fn merge_thread_message_targets_keeps_existing_routing_when_only_one_source_exists() {
+        assert_eq!(
+            merge_thread_message_targets(Some(vec!["participant-opencode".into()]), None),
+            Some(vec!["participant-opencode".into()])
+        );
+        assert_eq!(
+            merge_thread_message_targets(None, Some(vec!["participant-codex".into()])),
+            Some(vec!["participant-codex".into()])
+        );
+        assert_eq!(merge_thread_message_targets(None, None), None);
     }
 }

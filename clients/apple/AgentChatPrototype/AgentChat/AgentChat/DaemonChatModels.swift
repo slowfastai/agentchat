@@ -176,6 +176,32 @@ func humanizeAgentIdentifier(_ value: String) -> String {
         .joined(separator: " ")
 }
 
+private func normalizedMentionSearchToken(_ value: String) -> String {
+    value
+        .lowercased()
+        .filter { $0.isLetter || $0.isNumber }
+}
+
+private func mentionHandleValue(_ value: String) -> String {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "agent" }
+
+    var result = ""
+    var previousWasSeparator = false
+    for character in trimmed.lowercased() {
+        if character.isLetter || character.isNumber || character == "-" || character == "_" || character == "." {
+            result.append(character)
+            previousWasSeparator = false
+        } else if !previousWasSeparator {
+            result.append("-")
+            previousWasSeparator = true
+        }
+    }
+
+    let cleaned = result.trimmingCharacters(in: CharacterSet(charactersIn: "-_."))
+    return cleaned.isEmpty ? "agent" : cleaned
+}
+
 struct DaemonAgentSummary: Codable, Identifiable, Hashable {
     let agentID: String
     let name: String
@@ -273,6 +299,23 @@ struct DaemonThreadParticipant: Codable, Identifiable, Hashable {
     var family: DaemonAgentFamily { DaemonAgentFamily(agentID: agentID, kind: kind, name: displayName) }
     var tintName: String { family.tintName }
     var kindTitle: String { isAgent ? family.title : humanizeAgentIdentifier(kind) }
+    var mentionHandle: String {
+        if let agentID, !agentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return mentionHandleValue(agentID)
+        }
+        return mentionHandleValue(displayName)
+    }
+
+    func matchesMentionQuery(_ query: String) -> Bool {
+        let normalizedQuery = normalizedMentionSearchToken(query)
+        if normalizedQuery.isEmpty {
+            return true
+        }
+
+        return normalizedMentionSearchToken(mentionHandle).hasPrefix(normalizedQuery)
+            || normalizedMentionSearchToken(displayName).contains(normalizedQuery)
+            || normalizedMentionSearchToken(kindTitle).contains(normalizedQuery)
+    }
 }
 
 struct DaemonThreadSnapshot: Codable, Hashable {

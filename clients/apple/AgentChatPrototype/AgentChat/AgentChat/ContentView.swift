@@ -591,10 +591,6 @@ struct ContentView: View {
         return "\(agent.kindTitle) · \(agent.capabilitySummary)"
     }
 
-    private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
     private var timelineScrollMarker: String {
         guard let lastEntry = store.timeline.last else {
             return "empty"
@@ -606,9 +602,14 @@ struct ContentView: View {
         store.updateDaemonURL(daemonURLDraft)
     }
 
-    private func sendDraft() {
+    private func canSend(in snapshot: DaemonThreadSnapshot) -> Bool {
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !selectedAgentParticipants(in: snapshot).isEmpty
+    }
+
+    private func sendDraft(in snapshot: DaemonThreadSnapshot) {
         let message = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !message.isEmpty else { return }
+        guard !message.isEmpty, canSend(in: snapshot) else { return }
         draft = ""
         store.sendCurrentMessage(message)
         isComposerFocused = false
@@ -619,6 +620,99 @@ struct ContentView: View {
         #if os(iOS)
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         #endif
+    }
+
+    private func selectedAgentParticipants(in snapshot: DaemonThreadSnapshot) -> [DaemonThreadParticipant] {
+        snapshot.participants.filter { participant in
+            participant.isAgent && store.isSelectedParticipant(participant.participantID)
+        }
+    }
+
+    private func participantSelectionSummary(for snapshot: DaemonThreadSnapshot) -> String {
+        let agentParticipants = snapshot.participants.filter(\.isAgent)
+        let selectedCount = selectedAgentParticipants(in: snapshot).count
+
+        guard !agentParticipants.isEmpty else {
+            return "Add an agent to this thread before sending prompts."
+        }
+
+        if selectedCount == 0 {
+            return "No agents are checked. Tap chips to choose who should receive the next prompt."
+        }
+        if selectedCount == agentParticipants.count {
+            return "All \(selectedCount) agents are checked. Start with @ to narrow replies."
+        }
+        return "\(selectedCount) of \(agentParticipants.count) agents are checked. @mentions intersect with the checked set."
+    }
+
+    private func mentionSuggestionParticipants(for snapshot: DaemonThreadSnapshot) -> [DaemonThreadParticipant] {
+        guard let mentionContext = activeLeadingMentionContext(in: draft) else {
+            return []
+        }
+
+        return selectedAgentParticipants(in: snapshot)
+            .filter { $0.matchesMentionQuery(mentionContext.query) }
+            .sorted { lhs, rhs in
+                let lhsHandle = lhs.mentionHandle.localizedCaseInsensitiveCompare(rhs.mentionHandle)
+                if lhsHandle != .orderedSame {
+                    return lhsHandle == .orderedAscending
+                }
+                return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+            }
+    }
+
+    private func applyMentionSuggestion(_ participant: DaemonThreadParticipant) {
+        guard let mentionContext = activeLeadingMentionContext(in: draft) else { return }
+        draft.replaceSubrange(
+            mentionContext.replacementRange,
+            with: "@\(participant.mentionHandle) "
+        )
+        isComposerFocused = true
+    }
+
+    @ViewBuilder
+    private func mentionSuggestions(snapshot: DaemonThreadSnapshot) -> some View {
+        if activeLeadingMentionContext(in: draft) != nil {
+            let suggestions = mentionSuggestionParticipants(for: snapshot)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Mention agent")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(theme.mutedInk)
+                    Spacer(minLength: 0)
+                    Text("Checked agents only")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(theme.subtleInk)
+                }
+
+                if suggestions.isEmpty {
+                    Text("No checked agents match this mention yet.")
+                        .font(.footnote)
+                        .foregroundStyle(theme.mutedInk)
+                } else {
+                    ForEach(Array(suggestions.prefix(5)), id: \.participantID) { participant in
+                        Button {
+                            applyMentionSuggestion(participant)
+                        } label: {
+                            MentionSuggestionRow(
+                                participant: participant,
+                                color: chipColor(for: participant)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(theme.paper)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(theme.stroke, lineWidth: 1)
+            )
+        }
     }
 
     private func header(snapshot: DaemonThreadSnapshot) -> some View {
@@ -650,14 +744,34 @@ struct ContentView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     ForEach(snapshot.participants, id: \.participantID) { participant in
-                        ThreadParticipantChip(
-                            participant: participant,
-                            color: chipColor(for: participant)
-                        )
+                        if participant.isAgent {
+                            Button {
+                                store.toggleParticipantSelection(participant.participantID)
+                            } label: {
+                                ThreadParticipantChip(
+                                    participant: participant,
+                                    color: chipColor(for: participant),
+                                    isSelected: store.isSelectedParticipant(participant.participantID),
+                                    isSelectable: true
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            ThreadParticipantChip(
+                                participant: participant,
+                                color: chipColor(for: participant),
+                                isSelected: true,
+                                isSelectable: false
+                            )
+                        }
                     }
                 }
                 .padding(.vertical, 1)
             }
+
+            Text(participantSelectionSummary(for: snapshot))
+                .font(.footnote)
+                .foregroundStyle(theme.mutedInk)
         }
         .frame(maxWidth: 760, alignment: .leading)
         .padding(.horizontal, 22)
@@ -677,9 +791,15 @@ struct ContentView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    ForEach(store.timeline, id: \.id) { entry in
-                        TimelineBubble(entry: entry)
-                            .id(entry.id)
+                    header(snapshot: snapshot)
+
+                    if store.timeline.isEmpty {
+                        EmptyThreadState(snapshot: snapshot)
+                    } else {
+                        ForEach(store.timeline, id: \.id) { entry in
+                            TimelineBubble(entry: entry)
+                                .id(entry.id)
+                        }
                     }
                 }
                 .frame(maxWidth: 760)
@@ -705,12 +825,16 @@ struct ContentView: View {
 
     private func composer(snapshot: DaemonThreadSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 14) {
+            mentionSuggestions(snapshot: snapshot)
+
             HStack(alignment: .bottom, spacing: 12) {
                 VStack(alignment: .leading, spacing: 10) {
-                    TextField("", text: $draft, axis: .vertical)
+                    TextField("Type a message or start with @agent-id ...", text: $draft, axis: .vertical)
                         .focused($isComposerFocused)
                         .textFieldStyle(.plain)
                         .lineLimit(1...6)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled(true)
                         .foregroundStyle(theme.ink)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -725,17 +849,19 @@ struct ContentView: View {
                         .stroke(theme.stroke, lineWidth: 1)
                 )
 
-                Button(action: sendDraft) {
+                Button {
+                    sendDraft(in: snapshot)
+                } label: {
                     Image(systemName: "arrow.up")
                         .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(canSend ? theme.paper : theme.subtleInk)
+                        .foregroundStyle(canSend(in: snapshot) ? theme.paper : theme.subtleInk)
                         .frame(width: 46, height: 46)
                         .background(
                             Circle()
-                                .fill(canSend ? theme.ink : theme.chip)
+                                .fill(canSend(in: snapshot) ? theme.ink : theme.chip)
                         )
                 }
-                .disabled(!canSend)
+                .disabled(!canSend(in: snapshot))
             }
         }
         .frame(maxWidth: 760)
@@ -785,6 +911,65 @@ struct ContentView: View {
         default: return .indigo
         }
     }
+}
+
+private struct ComposerMentionContext {
+    let replacementRange: Range<String.Index>
+    let query: String
+}
+
+private func activeLeadingMentionContext(in text: String) -> ComposerMentionContext? {
+    let end = text.endIndex
+    var index = text.startIndex
+
+    while index < end && text[index].isWhitespace {
+        index = text.index(after: index)
+    }
+
+    while index < end {
+        guard text[index] == "@" else { return nil }
+
+        let mentionStart = index
+        index = text.index(after: index)
+        let tokenStart = index
+
+        while index < end && isMentionCharacter(text[index]) {
+            index = text.index(after: index)
+        }
+
+        if tokenStart == index {
+            return ComposerMentionContext(replacementRange: mentionStart..<end, query: "")
+        }
+
+        if index == end {
+            return ComposerMentionContext(
+                replacementRange: mentionStart..<end,
+                query: String(text[tokenStart..<index])
+            )
+        }
+
+        if text[index] == "," || text[index] == ":" || text[index] == ";" {
+            index = text.index(after: index)
+            if index == end {
+                return nil
+            }
+        }
+
+        guard text[index].isWhitespace else { return nil }
+        while index < end && text[index].isWhitespace {
+            index = text.index(after: index)
+        }
+
+        if index == end {
+            return nil
+        }
+    }
+
+    return nil
+}
+
+private func isMentionCharacter(_ character: Character) -> Bool {
+    character.isLetter || character.isNumber || character == "-" || character == "_" || character == "."
 }
 
 private struct CompactPresentedThread: Identifiable {
@@ -844,6 +1029,8 @@ private struct HeaderInfoPill: View {
 private struct ThreadParticipantChip: View {
     let participant: DaemonThreadParticipant
     let color: Color
+    let isSelected: Bool
+    let isSelectable: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     private var theme: Theme {
@@ -854,7 +1041,7 @@ private struct ThreadParticipantChip: View {
         HStack(spacing: 10) {
             ZStack {
                 RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(color.opacity(0.11))
+                    .fill(color.opacity(isSelected ? 0.16 : 0.10))
                 Text(initials)
                     .font(.caption.weight(.bold))
                     .foregroundStyle(color)
@@ -866,24 +1053,84 @@ private struct ThreadParticipantChip: View {
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(theme.ink)
                     .lineLimit(1)
-                Text(participant.kindTitle)
+                Text(isSelectable ? "@\(participant.mentionHandle)" : participant.kindTitle)
                     .font(.caption)
                     .foregroundStyle(theme.mutedInk)
+                    .lineLimit(1)
+            }
+
+            if isSelectable {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(isSelected ? color : theme.subtleInk)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(theme.paper, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(
+            (isSelectable && isSelected ? color.opacity(0.09) : theme.paper),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(theme.stroke, lineWidth: 1)
+                .stroke(isSelectable && isSelected ? color.opacity(0.28) : theme.stroke, lineWidth: 1)
         )
+        .opacity(isSelectable && !isSelected ? 0.72 : 1)
     }
 
     private var initials: String {
         let parts = participant.displayName.split(separator: " ")
         let value = parts.prefix(2).compactMap { $0.first }.map(String.init).joined()
         return value.isEmpty ? "?" : value.uppercased()
+    }
+}
+
+private struct MentionSuggestionRow: View {
+    let participant: DaemonThreadParticipant
+    let color: Color
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: Theme {
+        Theme(colorScheme: colorScheme)
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(color.opacity(0.12))
+                Image(systemName: participant.family.symbolName)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(color)
+            }
+            .frame(width: 32, height: 32)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("@\(participant.mentionHandle)")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(theme.ink)
+                Text(participant.displayName)
+                    .font(.caption)
+                    .foregroundStyle(theme.mutedInk)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+
+            Text(participant.kindTitle)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(theme.subtleInk)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(theme.panel)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(theme.stroke, lineWidth: 1)
+        )
     }
 }
 
