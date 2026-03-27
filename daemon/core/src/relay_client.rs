@@ -4,7 +4,7 @@ use futures::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::net::TcpStream;
-use tokio_tungstenite::tungstenite::http::header::{HeaderValue, AUTHORIZATION};
+use tokio_tungstenite::tungstenite::http::header::{HeaderValue, AUTHORIZATION, USER_AGENT};
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Error as WsError, Message};
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tracing::info;
@@ -29,6 +29,8 @@ const PLACEHOLDER_ACCEPT_SIGNATURE: &str =
     "N5cQ2v0mG8hLs4m7qz0sH1vV7m3Pp8Lh1bQ4t6fA3eD2mR0pC7uL9g2wJ5nS8xY1qZ0hF4rB6dE7tK2mN8w1CA";
 const DEFAULT_HELLO_TTL_MS: u64 = 30_000;
 const DEFAULT_ACCEPT_TTL_MS: u64 = 30_000;
+pub const DEFAULT_RELAY_USER_AGENT: &str =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelayClientCryptoConfig {
@@ -48,6 +50,7 @@ pub type Result<T> = std::result::Result<T, RelayClientError>;
 pub struct RelayClientConfig {
     pub ws_url: String,
     pub relay_token: String,
+    pub user_agent: String,
     pub hello_ttl_ms: u64,
     pub hello_ephemeral_public_key: String,
     pub hello_signature: String,
@@ -62,6 +65,7 @@ impl RelayClientConfig {
         Self {
             ws_url: ws_url.into(),
             relay_token: relay_token.into(),
+            user_agent: DEFAULT_RELAY_USER_AGENT.into(),
             hello_ttl_ms: DEFAULT_HELLO_TTL_MS,
             hello_ephemeral_public_key: PLACEHOLDER_HELLO_EPHEMERAL_PUBLIC_KEY.into(),
             hello_signature: PLACEHOLDER_HELLO_SIGNATURE.into(),
@@ -126,6 +130,12 @@ impl RelayClient {
             AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {}", config.relay_token)).map_err(|err| {
                 RelayClientError::new(format!("invalid relay token header: {err}"))
+            })?,
+        );
+        request.headers_mut().insert(
+            USER_AGENT,
+            HeaderValue::from_str(&config.user_agent).map_err(|err| {
+                RelayClientError::new(format!("invalid relay user-agent header: {err}"))
             })?,
         );
 
