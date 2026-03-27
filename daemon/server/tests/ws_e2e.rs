@@ -599,7 +599,7 @@ async fn websocket_thread_group_chat_fans_out_to_multiple_agents() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn websocket_thread_targeted_send_and_attach_snapshot() {
+async fn websocket_thread_attach_without_cursor_replays_full_history() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -623,6 +623,8 @@ async fn websocket_thread_targeted_send_and_attach_snapshot() {
                 event => panic!("unexpected event while creating thread: {event:?}"),
             };
 
+            let mut expected_history = Vec::new();
+
             send_client_message(
                 &mut ws,
                 &ClientMessage::AddThreadParticipant {
@@ -631,13 +633,18 @@ async fn websocket_thread_targeted_send_and_attach_snapshot() {
                 },
             )
             .await;
-            let (alpha_participant_id, alpha_session_id) = match receive_event(&mut ws).await {
+            let alpha_added = receive_event(&mut ws).await;
+            let (alpha_participant_id, alpha_session_id) = match &alpha_added {
                 ResponseEvent::ThreadParticipantAdded { participant, .. } => (
-                    participant.participant_id,
-                    participant.session_id.expect("missing alpha session id"),
+                    participant.participant_id.clone(),
+                    participant
+                        .session_id
+                        .clone()
+                        .expect("missing alpha session id"),
                 ),
                 event => panic!("unexpected event while adding alpha participant: {event:?}"),
             };
+            expected_history.push(alpha_added);
 
             send_client_message(
                 &mut ws,
@@ -647,13 +654,18 @@ async fn websocket_thread_targeted_send_and_attach_snapshot() {
                 },
             )
             .await;
-            let (beta_participant_id, beta_session_id) = match receive_event(&mut ws).await {
+            let beta_added = receive_event(&mut ws).await;
+            let (beta_participant_id, beta_session_id) = match &beta_added {
                 ResponseEvent::ThreadParticipantAdded { participant, .. } => (
-                    participant.participant_id,
-                    participant.session_id.expect("missing beta session id"),
+                    participant.participant_id.clone(),
+                    participant
+                        .session_id
+                        .clone()
+                        .expect("missing beta session id"),
                 ),
                 event => panic!("unexpected event while adding beta participant: {event:?}"),
             };
+            expected_history.push(beta_added);
 
             send_client_message(&mut ws, &ClientMessage::ListThreads).await;
             match receive_event(&mut ws).await {
@@ -678,22 +690,25 @@ async fn websocket_thread_targeted_send_and_attach_snapshot() {
             )
             .await;
 
-            match receive_event(&mut ws).await {
+            let thread_message = receive_event(&mut ws).await;
+            match &thread_message {
                 ResponseEvent::ThreadMessage {
                     target_participant_ids,
                     content,
                     ..
                 } => {
                     assert_eq!(content, "only beta");
-                    assert_eq!(target_participant_ids, vec![beta_participant_id.clone()]);
+                    assert_eq!(target_participant_ids, &vec![beta_participant_id.clone()]);
                 }
                 event => panic!("unexpected targeted thread message event: {event:?}"),
             }
+            expected_history.push(thread_message);
 
             let mut saw_beta_text = false;
             let mut saw_beta_end = false;
             for _ in 0..10 {
-                match receive_event(&mut ws).await {
+                let event = receive_event(&mut ws).await;
+                match &event {
                     ResponseEvent::ThreadAssistantMessage {
                         participant_id,
                         session_id,
@@ -702,18 +717,20 @@ async fn websocket_thread_targeted_send_and_attach_snapshot() {
                         stop_reason,
                         ..
                     } => {
-                        assert_eq!(participant_id, beta_participant_id);
-                        assert_eq!(session_id, beta_session_id);
+                        assert_eq!(participant_id, &beta_participant_id);
+                        assert_eq!(session_id, &beta_session_id);
                         if response == "echo: only beta" {
                             saw_beta_text = true;
                         }
-                        if state == AssistantMessageState::Completed {
+                        if *state == AssistantMessageState::Completed {
                             assert_eq!(stop_reason.as_deref(), Some("EndTurn"));
                             saw_beta_end = true;
                         }
+                        expected_history.push(event.clone());
                     }
                     ResponseEvent::ThreadAgentToolUpdate { participant_id, .. } => {
-                        assert_ne!(participant_id, alpha_participant_id);
+                        assert_ne!(participant_id, &alpha_participant_id);
+                        expected_history.push(event.clone());
                     }
                     ResponseEvent::Delta { .. }
                     | ResponseEvent::ToolUpdate { .. }
@@ -756,6 +773,13 @@ async fn websocket_thread_targeted_send_and_attach_snapshot() {
                 }
                 event => panic!("unexpected thread snapshot event: {event:?}"),
             };
+
+            let mut replayed_history = Vec::new();
+            for _ in 0..expected_history.len() {
+                replayed_history.push(receive_event(&mut ws).await);
+            }
+            assert_eq!(replayed_history, expected_history);
+
             match receive_event(&mut ws).await {
                 ResponseEvent::ThreadReplayComplete {
                     thread_id: tid,

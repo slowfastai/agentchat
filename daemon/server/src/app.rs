@@ -524,7 +524,9 @@ impl AppProtocolSession {
         };
 
         let tail_seq = snapshot.last_thread_seq;
-        let replay_after = after_seq.unwrap_or(tail_seq);
+        // Thread snapshots only contain metadata + participant state, so attaching
+        // without a cursor should replay the full thread timeline by default.
+        let replay_after = after_seq.unwrap_or(0);
         if replay_after > tail_seq {
             let _ = self.response_tx.send(ResponseEvent::Error {
                 session_id: None,

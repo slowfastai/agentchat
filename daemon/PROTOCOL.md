@@ -279,7 +279,7 @@ Success response:
 
 Attach the current connection to an existing thread.
 
-Request without replay:
+Request without a cursor. This replays the full thread timeline so the client can rebuild the thread UI from daemon history:
 
 ```json
 {"type":"attach_thread","thread_id":"thread-1"}
@@ -327,6 +327,8 @@ Success responses:
   }
 }
 ```
+
+If `after_seq` is omitted, the daemon replays the full thread history (`thread_seq > 0`).
 
 If `after_seq` is provided and older than the current tail, the daemon replays all thread events
 with `thread_seq > after_seq`, then sends:
