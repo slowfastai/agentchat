@@ -69,11 +69,12 @@ struct AgentListView: View {
 
     var body: some View {
         ZStack(alignment: .trailing) {
-            List {
+            List(selection: $selectedAgentID) {
                 Section {
                     ForEach(shortcutItems) { item in
                         AgentShortcutRow(item: item)
                             .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                            .tag(nil as UUID?)
                     }
                 }
 
@@ -89,7 +90,7 @@ struct AgentListView: View {
                                 isSelected: selectedAgentID == agent.id
                             )
                             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                 Button(role: .destructive) {
                                     agentToDelete = agent
                                     showDeleteAlert = true
@@ -105,20 +106,16 @@ struct AgentListView: View {
                                 }
                                 .tint(.blue)
                             }
+                            .tag(agent.id)
                             .onTapGesture {
                                 handleAgentTap(agent)
                             }
-                            .simultaneousGesture(
-                                LongPressGesture(minimumDuration: 0.5)
-                                    .onEnded { _ in
-                                        selectedAgentID = agent.id
-                                    }
-                            )
                         }
                     }
                 }
             }
             .listStyle(.plain)
+            .environment(\.editMode, .constant(.active))
             .scrollContentBackground(.hidden)
             .background(Color.appCanvasBackground)
             .searchable(text: $searchText, prompt: "Search agents")
