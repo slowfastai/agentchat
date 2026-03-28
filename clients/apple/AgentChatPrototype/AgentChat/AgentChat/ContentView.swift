@@ -1,7 +1,4 @@
 import SwiftUI
-#if os(iOS)
-import UIKit
-#endif
 
 private enum AppTab: Hashable {
     case feed
@@ -149,6 +146,8 @@ struct ContentView: View {
     @State private var compactPresentedThreadID: String?
     @State private var pendingCloseThread: DaemonThreadSummary?
     @State private var selectedTab: AppTab = .feed
+    @State private var editingAgent: DaemonAgentSummary?
+    @State private var pendingDeleteAgent: DaemonAgentSummary?
 
     private var theme: Theme {
         Theme(colorScheme: colorScheme)
@@ -240,6 +239,40 @@ struct ContentView: View {
                 Text("\"\(thread.title ?? thread.threadID)\" will be closed in the daemon and removed for every client, not just hidden on this device.")
             }
         }
+        .confirmationDialog(
+            "Delete Agent?",
+            isPresented: Binding(
+                get: { pendingDeleteAgent != nil },
+                set: { newValue in
+                    if !newValue {
+                        pendingDeleteAgent = nil
+                    }
+                }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let agent = pendingDeleteAgent {
+                Button("Delete", role: .destructive) {
+                    store.removeAgent(agent.agentID)
+                    pendingDeleteAgent = nil
+                }
+            }
+
+            Button("Cancel", role: .cancel) {
+                pendingDeleteAgent = nil
+            }
+        } message: {
+            if let agent = pendingDeleteAgent {
+                Text("\"\(agent.displayName)\" will be removed from your agents list. You can rediscover it by reconnecting to the daemon.")
+            }
+        }
+        .sheet(item: $editingAgent) { agent in
+            AgentEditSheet(agent: agent) { updatedAgent in
+                store.updateAgentDisplayName(agent.agentID, displayName: updatedAgent.customDisplayName)
+                store.updateAgentAvatar(agent.agentID, imageData: updatedAgent.avatarImageData)
+                editingAgent = nil
+            }
+        }
     }
 
     @ViewBuilder
@@ -293,77 +326,17 @@ struct ContentView: View {
     }
 
     private var agentSelectionSection: some View {
-        Section("Agent Friends") {
-            if store.agents.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("No agents added yet")
-                        .foregroundStyle(.secondary)
-                    Text(store.hasConfiguredDaemonURL
-                        ? "Reconnect or scan another QR code to discover agents and keep them in this list."
-                        : "Scan a QR code or enter a daemon URL to discover agents and keep them in this list.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 4)
-            } else {
-                ForEach(store.agents, id: \.agentID) { agent in
-                    HStack(alignment: .top, spacing: 12) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(color(named: agent.tintName).opacity(0.14))
-
-                            Image(systemName: agent.symbolName)
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(color(named: agent.tintName))
-                        }
-                        .frame(width: 40, height: 40)
-
-                        Button {
-                            store.toggleAgentSelection(agent.agentID)
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: store.isSelectedAgent(agent.agentID) ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(store.isSelectedAgent(agent.agentID) ? Color.accentColor : Color.secondary)
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(agent.displayName)
-                                        .font(.body.weight(.medium))
-
-                                    Text(agentSubtitle(for: agent))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .buttonStyle(.plain)
-
-                        VStack(alignment: .trailing, spacing: 6) {
-                            Text(agent.status.replacingOccurrences(of: "_", with: " ").capitalized)
-                                .font(.caption)
-                                .foregroundStyle(agentStatusColor(for: agent))
-
-                            if agent.isOffline {
-                                Button {
-                                    store.reconnectNow()
-                                } label: {
-                                    Text("Reconnect")
-                                        .font(.caption2.weight(.semibold))
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .disabled(!store.hasConfiguredDaemonURL)
-                            }
-                        }
-                    }
-                }
-
-                Text("Agents stay in this list after first discovery. Selected agents are used by Feed → menu → Create Thread / Add Agent, and only online agents can join right now.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-        }
+        AgentListSection(
+            agents: store.agents,
+            hasConfiguredDaemonURL: store.hasConfiguredDaemonURL,
+            isSelectedAgent: store.isSelectedAgent,
+            subtitleForAgent: agentSubtitle,
+            statusColorForAgent: agentStatusColor,
+            onToggleSelection: store.toggleAgentSelection,
+            onReconnect: store.reconnectNow,
+            onEdit: { editingAgent = $0 },
+            onDelete: { pendingDeleteAgent = $0 }
+        )
     }
 
     private var threadsSection: some View {
@@ -696,7 +669,9 @@ struct ContentView: View {
                         } label: {
                             MentionSuggestionRow(
                                 participant: participant,
-                                color: chipColor(for: participant)
+                                color: chipColor(for: participant),
+                                avatarData: avatarData(for: participant),
+                                customName: customDisplayName(for: participant)
                             )
                         }
                         .buttonStyle(.plain)
@@ -751,6 +726,8 @@ struct ContentView: View {
                                 ThreadParticipantChip(
                                     participant: participant,
                                     color: chipColor(for: participant),
+                                    avatarData: avatarData(for: participant),
+                                    customName: customDisplayName(for: participant),
                                     isSelected: store.isSelectedParticipant(participant.participantID),
                                     isSelectable: true
                                 )
@@ -760,8 +737,8 @@ struct ContentView: View {
                             ThreadParticipantChip(
                                 participant: participant,
                                 color: chipColor(for: participant),
-                                isSelected: true,
-                                isSelectable: false
+                                avatarData: avatarData(for: participant),
+                                customName: customDisplayName(for: participant)
                             )
                         }
                     }
@@ -900,6 +877,16 @@ struct ContentView: View {
         color(named: participant.isAgent ? store.tintName(for: participant.agentID) : participant.tintName)
     }
 
+    private func avatarData(for participant: DaemonThreadParticipant) -> Data? {
+        guard let agentID = participant.agentID else { return nil }
+        return store.agents.first { $0.agentID == agentID }?.avatarImageData
+    }
+
+    private func customDisplayName(for participant: DaemonThreadParticipant) -> String? {
+        guard let agentID = participant.agentID else { return nil }
+        return store.agents.first { $0.agentID == agentID }?.customDisplayName
+    }
+
     private func color(named tintName: String) -> Color {
         switch tintName {
         case "purple": return .purple
@@ -974,369 +961,6 @@ private func isMentionCharacter(_ character: Character) -> Bool {
 
 private struct CompactPresentedThread: Identifiable {
     let id: String
-}
-
-private struct ChatScreenBackground: View {
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var theme: Theme {
-        Theme(colorScheme: colorScheme)
-    }
-
-    var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [theme.canvasTop, theme.canvasBottom],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-
-            Circle()
-                .fill(theme.accentWarm.opacity(0.10))
-                .frame(width: 300, height: 300)
-                .blur(radius: 90)
-                .offset(x: -160, y: -280)
-
-            Circle()
-                .fill(Color.white.opacity(colorScheme == .dark ? 0.05 : 0.38))
-                .frame(width: 220, height: 220)
-                .blur(radius: 40)
-                .offset(x: 170, y: -180)
-        }
-        .ignoresSafeArea()
-    }
-}
-
-private struct HeaderInfoPill: View {
-    let icon: String
-    let text: String
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var theme: Theme {
-        Theme(colorScheme: colorScheme)
-    }
-
-    var body: some View {
-        Label(text, systemImage: icon)
-            .font(.caption.weight(.medium))
-            .foregroundStyle(theme.mutedInk)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(theme.chip, in: Capsule())
-    }
-}
-
-private struct ThreadParticipantChip: View {
-    let participant: DaemonThreadParticipant
-    let color: Color
-    let isSelected: Bool
-    let isSelectable: Bool
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var theme: Theme {
-        Theme(colorScheme: colorScheme)
-    }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(color.opacity(isSelected ? 0.16 : 0.10))
-                Text(initials)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(color)
-            }
-            .frame(width: 30, height: 30)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(participant.displayName)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(theme.ink)
-                    .lineLimit(1)
-                Text(isSelectable ? "@\(participant.mentionHandle)" : participant.kindTitle)
-                    .font(.caption)
-                    .foregroundStyle(theme.mutedInk)
-                    .lineLimit(1)
-            }
-
-            if isSelectable {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(isSelected ? color : theme.subtleInk)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(
-            (isSelectable && isSelected ? color.opacity(0.09) : theme.paper),
-            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(isSelectable && isSelected ? color.opacity(0.28) : theme.stroke, lineWidth: 1)
-        )
-        .opacity(isSelectable && !isSelected ? 0.72 : 1)
-    }
-
-    private var initials: String {
-        let parts = participant.displayName.split(separator: " ")
-        let value = parts.prefix(2).compactMap { $0.first }.map(String.init).joined()
-        return value.isEmpty ? "?" : value.uppercased()
-    }
-}
-
-private struct MentionSuggestionRow: View {
-    let participant: DaemonThreadParticipant
-    let color: Color
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var theme: Theme {
-        Theme(colorScheme: colorScheme)
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(color.opacity(0.12))
-                Image(systemName: participant.family.symbolName)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(color)
-            }
-            .frame(width: 32, height: 32)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("@\(participant.mentionHandle)")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(theme.ink)
-                Text(participant.displayName)
-                    .font(.caption)
-                    .foregroundStyle(theme.mutedInk)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 0)
-
-            Text(participant.kindTitle)
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(theme.subtleInk)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(theme.panel)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(theme.stroke, lineWidth: 1)
-        )
-    }
-}
-
-private struct TimelineHeroStrip: View {
-    let eventCount: Int
-    let connectionStatus: String
-    let participantCount: Int
-
-    var body: some View {
-        HStack(spacing: 10) {
-            SmallInfoPill(icon: "bubble.left.and.bubble.right", text: "\(eventCount) messages")
-            SmallInfoPill(icon: "person.2", text: "\(participantCount) agents")
-            Spacer(minLength: 0)
-            SmallInfoPill(icon: "sparkles", text: connectionStatus)
-        }
-    }
-}
-
-private struct SmallInfoPill: View {
-    let icon: String
-    let text: String
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var theme: Theme {
-        Theme(colorScheme: colorScheme)
-    }
-
-    var body: some View {
-        Label(text, systemImage: icon)
-            .font(.caption.weight(.medium))
-            .foregroundStyle(theme.mutedInk)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(theme.paper.opacity(0.95), in: Capsule())
-            .overlay(
-                Capsule()
-                    .stroke(theme.stroke, lineWidth: 1)
-            )
-    }
-}
-
-private struct EmptyThreadState: View {
-    let snapshot: DaemonThreadSnapshot
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var theme: Theme {
-        Theme(colorScheme: colorScheme)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Begin a calm, focused thread")
-                .font(.headline)
-                .foregroundStyle(theme.ink)
-
-            Text("Ask for a summary, a code change, or route work to one or more agents. Responses will unfold here with more room to read.")
-                .font(.subheadline)
-                .foregroundStyle(theme.mutedInk)
-
-            Text(snapshot.participants.map(\.displayName).joined(separator: " · "))
-                .font(.caption)
-                .foregroundStyle(theme.subtleInk)
-        }
-        .padding(22)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(theme.panel)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(theme.stroke, lineWidth: 1)
-        )
-    }
-}
-
-private struct TargetSelectionChip: View {
-    let participant: DaemonThreadParticipant
-    let color: Color
-    let isSelected: Bool
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var theme: Theme {
-        Theme(colorScheme: colorScheme)
-    }
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(isSelected ? theme.accentWarm : theme.subtleInk)
-
-            Text(participant.displayName)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(theme.ink)
-                .lineLimit(1)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .fill(isSelected ? theme.toolPanel : theme.paper)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .stroke(isSelected ? theme.accentWarm.opacity(0.25) : theme.stroke, lineWidth: 1)
-        )
-    }
-}
-
-private struct ThreadFeedRow: View {
-    let thread: DaemonThreadSummary
-    let isActive: Bool
-    let isPinned: Bool
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.accentColor.opacity(0.22), Color.accentColor.opacity(0.10)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 56, height: 56)
-
-                Image(systemName: thread.participantCount > 1 ? "person.2.fill" : "message.fill")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(thread.title ?? thread.threadID)
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-
-                    if isPinned {
-                        Image(systemName: "pin.fill")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-                }
-
-                Text(thread.workingDir)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-
-                HStack(spacing: 8) {
-                    SmallInfoPill(icon: "person.2.fill", text: "\(thread.participantCount)")
-                    SmallInfoPill(icon: "number", text: "Seq \(thread.lastThreadSeq)")
-                }
-            }
-
-            Spacer(minLength: 0)
-
-            VStack(alignment: .trailing, spacing: 8) {
-                if isActive {
-                    Image(systemName: "bubble.left.and.bubble.right.fill")
-                        .foregroundStyle(Color.accentColor)
-                }
-
-                Text(thread.state.replacingOccurrences(of: "_", with: " ").capitalized)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(Color(uiColor: .secondarySystemBackground).opacity(0.96))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(isActive ? Color.accentColor.opacity(0.35) : Color.black.opacity(0.06), lineWidth: 1)
-        )
-        .shadow(color: Color.black.opacity(isActive ? 0.08 : 0.03), radius: 16, y: 8)
-        .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-    }
-}
-
-private struct UnavailableStateView: View {
-    let title: String
-    let systemImage: String
-    let message: String
-
-    var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: systemImage)
-                .font(.system(size: 42, weight: .semibold))
-                .foregroundStyle(.secondary)
-            Text(title)
-                .font(.title3.weight(.semibold))
-            Text(message)
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(24)
-    }
 }
 
 private struct TimelineBubble: View {
@@ -2169,3 +1793,4 @@ private struct AssistantExecutionBadge: View {
             )
     }
 }
+
