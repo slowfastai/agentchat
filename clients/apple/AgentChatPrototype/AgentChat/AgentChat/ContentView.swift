@@ -268,9 +268,7 @@ struct ContentView: View {
         }
         .sheet(item: $editingAgent) { agent in
             AgentEditSheet(agent: agent) { updatedAgent in
-                if let name = updatedAgent.customDisplayName {
-                    store.updateAgentDisplayName(agent.agentID, displayName: name)
-                }
+                store.updateAgentDisplayName(agent.agentID, displayName: updatedAgent.customDisplayName)
                 store.updateAgentAvatar(agent.agentID, imageData: updatedAgent.avatarImageData)
                 editingAgent = nil
             }
