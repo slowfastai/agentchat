@@ -240,6 +240,21 @@ pub enum AssistantMessageState {
     Failed,
 }
 
+/// Daemon lifecycle state visible to transport clients.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonLifecycleState {
+    Stopping,
+}
+
+/// Reason the daemon reported a transport-visible stop.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonStopReason {
+    UserShutdown,
+    Signal,
+}
+
 // ============================================================
 // Response events (daemon -> iOS app via WebSocket)
 // ============================================================
@@ -248,6 +263,15 @@ pub enum AssistantMessageState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseEvent {
+    /// Daemon lifecycle status visible to all connected clients.
+    DaemonStatus {
+        state: DaemonLifecycleState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<DaemonStopReason>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
+
     /// Session created successfully.
     SessionCreated {
         session_id: String,
@@ -469,7 +493,8 @@ impl ResponseEvent {
             | ResponseEvent::DistillationStatus { session_id, .. } => Some(session_id),
             ResponseEvent::SessionSnapshot { snapshot, .. } => Some(&snapshot.session_id),
             ResponseEvent::Error { session_id, .. } => session_id.as_deref(),
-            ResponseEvent::AgentList { .. }
+            ResponseEvent::DaemonStatus { .. }
+            | ResponseEvent::AgentList { .. }
             | ResponseEvent::ThreadCreated { .. }
             | ResponseEvent::ThreadList { .. }
             | ResponseEvent::ThreadAttached { .. }
@@ -505,7 +530,8 @@ impl ResponseEvent {
             | ResponseEvent::ThreadAgentToolUpdate { thread_id, .. }
             | ResponseEvent::ThreadAgentTurnEnd { thread_id, .. } => Some(thread_id),
             ResponseEvent::ThreadSnapshot { snapshot, .. } => Some(&snapshot.thread_id),
-            ResponseEvent::SessionCreated { .. }
+            ResponseEvent::DaemonStatus { .. }
+            | ResponseEvent::SessionCreated { .. }
             | ResponseEvent::AgentList { .. }
             | ResponseEvent::ThreadList { .. }
             | ResponseEvent::SessionList { .. }
@@ -533,7 +559,8 @@ impl ResponseEvent {
             | ResponseEvent::TurnEnd { event_seq, .. }
             | ResponseEvent::DistillationStatus { event_seq, .. } => Some(*event_seq),
             ResponseEvent::Error { event_seq, .. } => *event_seq,
-            ResponseEvent::SessionAttached { .. }
+            ResponseEvent::DaemonStatus { .. }
+            | ResponseEvent::SessionAttached { .. }
             | ResponseEvent::SessionSnapshot { .. }
             | ResponseEvent::SessionClosed { .. }
             | ResponseEvent::SessionReplayComplete { .. }
@@ -568,7 +595,8 @@ impl ResponseEvent {
             | ResponseEvent::ThreadAgentPlanUpdate { thread_seq, .. }
             | ResponseEvent::ThreadAgentToolUpdate { thread_seq, .. }
             | ResponseEvent::ThreadAgentTurnEnd { thread_seq, .. } => Some(*thread_seq),
-            ResponseEvent::SessionCreated { .. }
+            ResponseEvent::DaemonStatus { .. }
+            | ResponseEvent::SessionCreated { .. }
             | ResponseEvent::AgentList { .. }
             | ResponseEvent::ThreadCreated { .. }
             | ResponseEvent::ThreadList { .. }

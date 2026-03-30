@@ -27,6 +27,7 @@ use agentchat_protocol::relay_crypto::{
 use agentchat_protocol::{AgentConfig, AgentStatus, AgentSummary};
 use agentchat_server::relay::RelayTransportServer;
 use agentchat_server::ws::WebSocketServer;
+use agentchat_protocol::DaemonStopReason;
 use if_addrs::{get_if_addrs, IfAddr, Interface};
 use qrcode::{render::unicode, QrCode};
 use serde::Deserialize;
@@ -1154,7 +1155,7 @@ async fn main() {
             } else {
                 MobileQrAvailability::local()
             };
-            let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+            let (_shutdown_tx, shutdown_rx) = watch::channel::<Option<DaemonStopReason>>(None);
             let signal_tx = _shutdown_tx.clone();
             let (command_tx, mut command_rx) = mpsc::unbounded_channel::<InteractiveCommand>();
 
@@ -1162,7 +1163,7 @@ async fn main() {
                 if let Err(e) = wait_for_shutdown_signal().await {
                     error!("shutdown signal handler failed: {e}");
                 }
-                let _ = signal_tx.send(true);
+                let _ = signal_tx.send(Some(DaemonStopReason::Signal));
             });
 
             start_interactive_console(command_tx);
@@ -1186,7 +1187,7 @@ async fn main() {
                             let _ = reply.send(result);
                         }
                         InteractiveCommand::Shutdown => {
-                            let _ = signal_tx.send(true);
+                            let _ = signal_tx.send(Some(DaemonStopReason::UserShutdown));
                             break;
                         }
                     }

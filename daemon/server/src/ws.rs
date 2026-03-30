@@ -19,7 +19,7 @@ use agentchat_core::agent_manager::AgentManager;
 use agentchat_core::distiller::Distiller;
 use agentchat_core::session_store::SessionStore;
 use agentchat_core::skills::SkillStore;
-use agentchat_protocol::ClientMessage;
+use agentchat_protocol::{ClientMessage, DaemonLifecycleState, DaemonStopReason, ResponseEvent};
 
 use crate::app::{serialize_event, AppProtocolSession};
 
@@ -37,7 +37,7 @@ impl WebSocketServer {
     pub async fn run(
         self,
         manager: Rc<RefCell<AgentManager>>,
-        mut shutdown_rx: watch::Receiver<bool>,
+        mut shutdown_rx: watch::Receiver<Option<DaemonStopReason>>,
         session_store: Rc<RefCell<SessionStore>>,
         skill_store: Rc<SkillStore>,
         distiller: Rc<Distiller>,
@@ -129,63 +129,40 @@ impl WebSocketServer {
     async fn handle_connection(
         ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
         client_tx: mpsc::UnboundedSender<ClientMessage>,
-        event_tx: broadcast::Sender<agentchat_protocol::ResponseEvent>,
-        mut shutdown_rx: watch::Receiver<bool>,
+        event_tx: broadcast::Sender<ResponseEvent>,
+        mut shutdown_rx: watch::Receiver<Option<DaemonStopReason>>,
         mut replace_rx: oneshot::Receiver<()>,
     ) {
         let (mut ws_tx, mut ws_rx) = ws.split();
         let mut response_rx = event_tx.subscribe();
-
-        let (ping_tx, mut ping_rx) = tokio::sync::mpsc::channel::<Message>(1);
-        let ping_tx_clone = ping_tx.clone();
         let ping_interval = Duration::from_secs(10);
-        let ping_task = tokio::task::spawn_local(async move {
-            let mut ticker = interval(ping_interval);
-            loop {
-                tokio::select! {
-                    _ = ticker.tick() => {
-                        if ping_tx_clone.send(Message::Ping(vec![].into())).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-
-        let writer_task = tokio::task::spawn_local(async move {
-            loop {
-                tokio::select! {
-                    msg = response_rx.recv() => {
-                        let event = match msg {
-                            Ok(event) => event,
-                            Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                                warn!("websocket event subscriber lagged and skipped {skipped} events");
-                                continue;
-                            }
-                            Err(broadcast::error::RecvError::Closed) => break,
-                        };
-
-                        let Some(json) = serialize_event(&event) else {
-                            continue;
-                        };
-
-                        if ws_tx.send(Message::Text(json.into())).await.is_err() {
-                            break;
-                        }
-                    }
-                    ping = ping_rx.recv() => {
-                        if let Some(msg) = ping {
-                            if ws_tx.send(msg).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        });
+        let mut ping_ticker = interval(ping_interval);
 
         loop {
             tokio::select! {
+                msg = response_rx.recv() => {
+                    let event = match msg {
+                        Ok(event) => event,
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            warn!("websocket event subscriber lagged and skipped {skipped} events");
+                            continue;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    };
+
+                    let Some(json) = serialize_event(&event) else {
+                        continue;
+                    };
+
+                    if ws_tx.send(Message::Text(json.into())).await.is_err() {
+                        break;
+                    }
+                }
+                _ = ping_ticker.tick() => {
+                    if ws_tx.send(Message::Ping(vec![].into())).await.is_err() {
+                        break;
+                    }
+                }
                 msg = ws_rx.next() => {
                     let Some(msg) = msg else {
                         break;
@@ -216,6 +193,9 @@ impl WebSocketServer {
                 }
                 _ = shutdown_rx.changed() => {
                     info!("closing client connection for shutdown");
+                    if let Some(reason) = shutdown_rx.borrow().clone() {
+                        send_shutdown_notice(&mut ws_tx, reason).await;
+                    }
                     break;
                 }
                 _ = &mut replace_rx => {
@@ -225,11 +205,26 @@ impl WebSocketServer {
             }
         }
 
-        drop(ping_tx);
-        writer_task.abort();
-        ping_task.abort();
-        let _ = writer_task.await;
-        let _ = ping_task.await;
         info!("client disconnected");
     }
+}
+
+async fn send_shutdown_notice(
+    ws_tx: &mut futures::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        Message,
+    >,
+    reason: DaemonStopReason,
+) {
+    let event = ResponseEvent::DaemonStatus {
+        state: DaemonLifecycleState::Stopping,
+        reason: Some(reason),
+        message: Some("Daemon is stopping.".into()),
+    };
+
+    if let Some(json) = serialize_event(&event) {
+        let _ = ws_tx.send(Message::Text(json.into())).await;
+    }
+
+    let _ = ws_tx.send(Message::Close(None)).await;
 }

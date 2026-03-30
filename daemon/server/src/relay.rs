@@ -9,7 +9,7 @@ use agentchat_core::distiller::Distiller;
 use agentchat_core::relay_client::{RelayClient, RelayClientConfig, RelayClientFrame};
 use agentchat_core::session_store::SessionStore;
 use agentchat_core::skills::SkillStore;
-use agentchat_protocol::{ClientMessage, ResponseEvent};
+use agentchat_protocol::{ClientMessage, DaemonLifecycleState, DaemonStopReason, ResponseEvent};
 
 use crate::app::AppProtocolSession;
 
@@ -40,7 +40,7 @@ impl RelayTransportServer {
         self,
         mut relay_client: RelayClient,
         manager: Rc<RefCell<AgentManager>>,
-        mut shutdown_rx: watch::Receiver<bool>,
+        mut shutdown_rx: watch::Receiver<Option<DaemonStopReason>>,
         session_store: Rc<RefCell<SessionStore>>,
         skill_store: Rc<SkillStore>,
         distiller: Rc<Distiller>,
@@ -147,6 +147,9 @@ impl RelayTransportServer {
                 }
                 _ = shutdown_rx.changed() => {
                     info!("relay transport shutting down");
+                    if let Some(reason) = shutdown_rx.borrow().clone() {
+                        send_shutdown_notice_over_relay(&mut relay_client, reason).await;
+                    }
                     break;
                 }
             }
@@ -159,7 +162,7 @@ impl RelayTransportServer {
     pub async fn run(
         self,
         manager: Rc<RefCell<AgentManager>>,
-        shutdown_rx: watch::Receiver<bool>,
+        shutdown_rx: watch::Receiver<Option<DaemonStopReason>>,
         session_store: Rc<RefCell<SessionStore>>,
         skill_store: Rc<SkillStore>,
         distiller: Rc<Distiller>,
@@ -184,5 +187,24 @@ async fn send_startup_error_over_relay(relay_client: &mut RelayClient, event: &R
 
     if let Err(err) = relay_client.send_encrypted_json(event).await {
         error!("failed to send encrypted relay startup error: {err}");
+    }
+}
+
+async fn send_shutdown_notice_over_relay(
+    relay_client: &mut RelayClient,
+    reason: DaemonStopReason,
+) {
+    if !relay_client.has_active_channel() {
+        return;
+    }
+
+    let event = ResponseEvent::DaemonStatus {
+        state: DaemonLifecycleState::Stopping,
+        reason: Some(reason),
+        message: Some("Daemon is stopping.".into()),
+    };
+
+    if let Err(err) = relay_client.send_encrypted_json(&event).await {
+        error!("failed to send encrypted relay shutdown notice: {err}");
     }
 }

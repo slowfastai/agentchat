@@ -501,7 +501,7 @@ struct ContentView: View {
             }
             .disabled(!store.hasConfiguredDaemonURL)
 
-            Text("The app will not auto-connect on first launch. Connect by scanning a QR code, entering a URL, or tapping Reconnect. If connection is lost, the app will automatically attempt to reconnect.")
+            Text("The app will not auto-connect on first launch. Connect by scanning a QR code, entering a URL, or tapping Reconnect. If connection is lost, the app will retry a few times, then wait for manual reconnect. If the daemon says it is stopping, auto-reconnect stays off.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
@@ -721,13 +721,16 @@ struct ContentView: View {
     }
 
     private var connectionStatusColor: Color {
-        if store.connectionStatus.contains("Online") {
+        switch store.connectionState {
+        case .online, .attached:
             return .green
-        }
-        if store.connectionStatus.contains("Not configured") {
+        case .notConfigured:
             return .gray
+        case .unavailable, .badURL, .stoppedByServer:
+            return .red
+        default:
+            return .orange
         }
-        return .orange
     }
 
     private func agentStatusColor(for agent: DaemonAgentSummary) -> Color {
@@ -879,7 +882,7 @@ struct ContentView: View {
 
                 VStack(alignment: .trailing, spacing: 8) {
                     HeaderInfoPill(
-                        icon: store.connectionStatus.contains("Online") ? "bolt.fill" : "antenna.radiowaves.left.and.right",
+                        icon: store.connectionState.isOnline ? "bolt.fill" : "antenna.radiowaves.left.and.right",
                         text: store.connectionStatus
                     )
                 }
