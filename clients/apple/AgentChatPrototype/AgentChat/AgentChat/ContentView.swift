@@ -793,7 +793,7 @@ struct ContentView: View {
 
                 VStack(alignment: .trailing, spacing: 8) {
                     HeaderInfoPill(
-                        icon: store.connectionStatus.contains("Online") ? "bolt.fill" : "antenna.radiowaves.left.and.right",
+                        icon: store.connectionState.isOnline ? "bolt.fill" : "antenna.radiowaves.left.and.right",
                         text: store.connectionStatus
                     )
                 }

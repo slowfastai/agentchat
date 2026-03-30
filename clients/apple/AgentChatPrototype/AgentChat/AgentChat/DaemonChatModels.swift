@@ -454,8 +454,64 @@ struct DaemonThreadSender: Codable, Hashable {
     }
 }
 
+enum DaemonConnectionState: Equatable {
+    case notConfigured
+    case badURL
+    case connecting
+    case pairingRelay
+    case connectingRelay
+    case securingRelay
+    case online
+    case attached(threadID: String)
+    case reconnecting(attempt: Int)
+    case unavailable
+    case stoppedByServer(reason: String?)
+
+    var statusText: String {
+        switch self {
+        case .notConfigured:
+            return "Not configured"
+        case .badURL:
+            return "Bad URL"
+        case .connecting:
+            return "Connecting…"
+        case .pairingRelay:
+            return "Pairing with relay…"
+        case .connectingRelay:
+            return "Connecting to relay…"
+        case .securingRelay:
+            return "Securing relay channel…"
+        case .online:
+            return "Online"
+        case .attached(let threadID):
+            return "Attached to \(threadID)"
+        case .reconnecting(let attempt):
+            return attempt > 1 ? "Reconnecting (\(attempt))…" : "Reconnecting…"
+        case .unavailable:
+            return "Daemon unavailable"
+        case .stoppedByServer:
+            return "Daemon stopped"
+        }
+    }
+
+    var isOnline: Bool {
+        switch self {
+        case .online, .attached:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 struct DaemonEnvelope: Decodable {
     let type: String
+}
+
+struct DaemonStatusEvent: Decodable {
+    let state: String
+    let reason: String?
+    let message: String?
 }
 
 struct AgentListEvent: Decodable {

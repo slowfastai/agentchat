@@ -11,8 +11,8 @@ use agentchat_core::distiller::Distiller;
 use agentchat_core::session_store::SessionStore;
 use agentchat_core::skills::SkillStore;
 use agentchat_protocol::{
-    AgentConfig, AgentStatus, AssistantMessageState, ClientMessage, DeltaType, ResponseEvent,
-    SessionEvent, SessionState, SessionTranscript,
+    AgentConfig, AgentStatus, AssistantMessageState, ClientMessage, DaemonLifecycleState,
+    DaemonStopReason, DeltaType, ResponseEvent, SessionEvent, SessionState, SessionTranscript,
 };
 use agentchat_server::ws::WebSocketServer;
 use futures::{SinkExt, StreamExt};
@@ -49,7 +49,7 @@ impl FakeAgentMode {
 
 struct TestHarness {
     manager: Rc<RefCell<AgentManager>>,
-    shutdown_tx: watch::Sender<bool>,
+    shutdown_tx: watch::Sender<Option<DaemonStopReason>>,
     server_task: JoinHandle<Result<(), String>>,
     events_path: PathBuf,
     project_root: PathBuf,
@@ -59,7 +59,7 @@ struct TestHarness {
 
 impl TestHarness {
     async fn finish(self) {
-        let _ = self.shutdown_tx.send(true);
+        let _ = self.shutdown_tx.send(Some(DaemonStopReason::UserShutdown));
         let result = self.server_task.await.expect("server task panicked");
         assert!(result.is_ok(), "server returned error: {result:?}");
 
@@ -3054,7 +3054,9 @@ async fn websocket_shutdown_cancels_in_flight_prompt() {
                 .unwrap()
                 .to_string();
 
-            let _ = harness.shutdown_tx.send(true);
+            let _ = harness
+                .shutdown_tx
+                .send(Some(DaemonStopReason::UserShutdown));
             let server_result = harness.server_task.await.expect("server task panicked");
             assert!(
                 server_result.is_ok(),
@@ -3078,6 +3080,46 @@ async fn websocket_shutdown_cancels_in_flight_prompt() {
             let shutdown = { harness.manager.borrow().shutdown_all() };
             shutdown.await;
             drop(ws);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn websocket_shutdown_sends_daemon_status_before_close() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_harness(FakeAgentMode::Normal).await;
+            let mut ws = connect_ws(harness.port).await;
+
+            let _ = harness
+                .shutdown_tx
+                .send(Some(DaemonStopReason::UserShutdown));
+
+            match receive_event(&mut ws).await {
+                ResponseEvent::DaemonStatus {
+                    state,
+                    reason,
+                    message,
+                } => {
+                    assert_eq!(state, DaemonLifecycleState::Stopping);
+                    assert_eq!(reason, Some(DaemonStopReason::UserShutdown));
+                    assert_eq!(message.as_deref(), Some("Daemon is stopping."));
+                }
+                event => panic!("unexpected event before close: {event:?}"),
+            }
+
+            let close_frame = receive_close(&mut ws).await;
+            assert!(close_frame.is_none(), "expected default close frame");
+
+            let server_result = harness.server_task.await.expect("server task panicked");
+            assert!(
+                server_result.is_ok(),
+                "server returned error: {server_result:?}"
+            );
+
+            let shutdown = { harness.manager.borrow().shutdown_all() };
+            shutdown.await;
         })
         .await;
 }
@@ -3106,7 +3148,7 @@ async fn start_codex_harness(mode: FakeAgentMode) -> TestHarness {
     let skill_store = Rc::new(SkillStore::new(&project_root));
     let distiller = Rc::new(Distiller::new(skill_store.clone()));
     let port = reserve_port();
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (shutdown_tx, shutdown_rx) = watch::channel(None::<DaemonStopReason>);
     let server_task = tokio::task::spawn_local(WebSocketServer::new(port).run(
         manager.clone(),
         shutdown_rx,
@@ -3157,7 +3199,7 @@ async fn start_multi_agent_harness(agents: &[(&str, FakeAgentMode)]) -> TestHarn
     let skill_store = Rc::new(SkillStore::new(&project_root));
     let distiller = Rc::new(Distiller::new(skill_store.clone()));
     let port = reserve_port();
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (shutdown_tx, shutdown_rx) = watch::channel(None::<DaemonStopReason>);
     let server_task = tokio::task::spawn_local(WebSocketServer::new(port).run(
         manager.clone(),
         shutdown_rx,
@@ -3341,6 +3383,26 @@ async fn receive_event(ws: &mut TestWebSocket) -> ResponseEvent {
                 ws.send(Message::Pong(payload)).await.unwrap();
             }
             Message::Close(frame) => panic!("websocket closed unexpectedly: {frame:?}"),
+            _ => {}
+        }
+    }
+}
+
+async fn receive_close(
+    ws: &mut TestWebSocket,
+) -> Option<tokio_tungstenite::tungstenite::protocol::CloseFrame> {
+    loop {
+        let message = timeout(TEST_TIMEOUT, ws.next())
+            .await
+            .expect("timed out waiting for websocket close")
+            .expect("websocket stream ended before close")
+            .expect("websocket returned an error");
+
+        match message {
+            Message::Ping(payload) => {
+                ws.send(Message::Pong(payload)).await.unwrap();
+            }
+            Message::Close(frame) => return frame,
             _ => {}
         }
     }

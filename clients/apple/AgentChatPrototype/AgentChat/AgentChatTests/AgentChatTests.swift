@@ -162,6 +162,23 @@ struct AgentChatTests {
         #expect(store.errorMessage == nil)
     }
 
+    @Test func daemonConnectionStateExposesStoppedAndUnavailableStatusText() async throws {
+        #expect(DaemonConnectionState.unavailable.statusText == "Daemon unavailable")
+        #expect(DaemonConnectionState.stoppedByServer(reason: "user_shutdown").statusText == "Daemon stopped")
+        #expect(DaemonConnectionState.online.isOnline)
+        #expect(DaemonConnectionState.attached(threadID: "thread-1").isOnline)
+        #expect(!DaemonConnectionState.reconnecting(attempt: 1).isOnline)
+    }
+
+    @Test func daemonStatusEventDecodesShutdownReason() async throws {
+        let json = #"{"type":"daemon_status","state":"stopping","reason":"user_shutdown","message":"Daemon is stopping."}"#
+        let event = try JSONDecoder().decode(DaemonStatusEvent.self, from: Data(json.utf8))
+
+        #expect(event.state == "stopping")
+        #expect(event.reason == "user_shutdown")
+        #expect(event.message == "Daemon is stopping.")
+    }
+
     @Test func agentRosterKeepsKnownAgentsVisibleWhenLiveListShrinks() async throws {
         let claude = makeAgent(
             agentID: "claude",
