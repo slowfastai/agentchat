@@ -893,11 +893,6 @@ final class DaemonChatStore: ObservableObject {
     private func upsertAgents(_ incomingAgents: [DaemonAgentSummary]) {
         agents = AgentRoster.merge(knownAgents: agents, incomingAgents: incomingAgents)
         persistKnownAgents()
-
-        if selectedAgentIDs.isEmpty {
-            selectedAgentIDs = Set(agents.filter(\.isOnline).map(\.agentID))
-            persistSelectedAgents()
-        }
     }
 
     private func persistKnownAgents() {

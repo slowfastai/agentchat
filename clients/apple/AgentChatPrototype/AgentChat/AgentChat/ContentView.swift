@@ -34,6 +34,17 @@ private enum AgentPickerMode: Identifiable, Equatable {
     }
 }
 
+enum AgentPickerDraftSelection {
+    static func createThread(selectableIDs: Set<String>, rememberedIDs: Set<String>) -> Set<String> {
+        rememberedIDs.intersection(selectableIDs)
+    }
+
+    static func addAgent(selectableIDs: Set<String>, rememberedIDs: Set<String>) -> Set<String> {
+        let validRememberedIDs = rememberedIDs.intersection(selectableIDs)
+        return validRememberedIDs.isEmpty ? selectableIDs : validRememberedIDs
+    }
+}
+
 struct Theme {
     let colorScheme: ColorScheme
 
@@ -667,10 +678,18 @@ struct ContentView: View {
     private func defaultAgentSelection(for mode: AgentPickerMode) -> Set<String> {
         let selectableIDs = Set(selectableAgents(for: mode).map(\.agentID))
         let rememberedIDs = store.selectedAgentIDs.intersection(selectableIDs)
-        if !rememberedIDs.isEmpty {
-            return rememberedIDs
+        switch mode {
+        case .createThread:
+            return AgentPickerDraftSelection.createThread(
+                selectableIDs: selectableIDs,
+                rememberedIDs: rememberedIDs
+            )
+        case .addAgent:
+            return AgentPickerDraftSelection.addAgent(
+                selectableIDs: selectableIDs,
+                rememberedIDs: rememberedIDs
+            )
         }
-        return selectableIDs
     }
 
     private func toggleDraftAgentSelection(_ agentID: String) {

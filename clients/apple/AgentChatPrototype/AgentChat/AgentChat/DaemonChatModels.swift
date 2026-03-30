@@ -216,13 +216,35 @@ private func mentionHandleValue(_ value: String) -> String {
 struct DaemonAgentSummary: Codable, Identifiable, Hashable {
     let agentID: String
     let name: String
-    let mentionHandleOverride: String? = nil
+    let mentionHandleOverride: String?
     let kind: String
     let status: String
     let defaultWorkingDir: String?
     let capabilities: [String]
     var customDisplayName: String?
     var avatarImageData: Data?
+
+    nonisolated init(
+        agentID: String,
+        name: String,
+        mentionHandleOverride: String? = nil,
+        kind: String,
+        status: String,
+        defaultWorkingDir: String?,
+        capabilities: [String],
+        customDisplayName: String? = nil,
+        avatarImageData: Data? = nil
+    ) {
+        self.agentID = agentID
+        self.name = name
+        self.mentionHandleOverride = mentionHandleOverride
+        self.kind = kind
+        self.status = status
+        self.defaultWorkingDir = defaultWorkingDir
+        self.capabilities = capabilities
+        self.customDisplayName = customDisplayName
+        self.avatarImageData = avatarImageData
+    }
 
     enum CodingKeys: String, CodingKey {
         case agentID = "agent_id"
@@ -275,6 +297,7 @@ struct DaemonAgentSummary: Codable, Identifiable, Hashable {
         Self(
             agentID: agentID,
             name: name,
+            mentionHandleOverride: mentionHandleOverride,
             kind: kind,
             status: status,
             defaultWorkingDir: defaultWorkingDir,
@@ -302,6 +325,7 @@ struct DaemonAgentSummary: Codable, Identifiable, Hashable {
         return Self(
             agentID: agentID,
             name: name,
+            mentionHandleOverride: mentionHandleOverride,
             kind: kind,
             status: status,
             defaultWorkingDir: defaultWorkingDir,
@@ -339,9 +363,27 @@ struct DaemonThreadParticipant: Codable, Identifiable, Hashable {
     let kind: String
     let displayName: String
     let agentID: String?
-    let mentionHandleOverride: String? = nil
+    let mentionHandleOverride: String?
     let sessionID: String?
     let state: String
+
+    nonisolated init(
+        participantID: String,
+        kind: String,
+        displayName: String,
+        agentID: String?,
+        mentionHandleOverride: String? = nil,
+        sessionID: String?,
+        state: String
+    ) {
+        self.participantID = participantID
+        self.kind = kind
+        self.displayName = displayName
+        self.agentID = agentID
+        self.mentionHandleOverride = mentionHandleOverride
+        self.sessionID = sessionID
+        self.state = state
+    }
 
     enum CodingKeys: String, CodingKey {
         case participantID = "participant_id"
@@ -919,7 +961,8 @@ extension DaemonTimelineEntry {
         let hasResponse = !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let metadataLabels = executionMetadataLabels(
             hasThinking: hasThinkingBody,
-            hasPlan: hasPlanBody
+            hasPlan: hasPlanBody,
+            hasTools: !toolActivities.isEmpty
         )
         let toolCountLabel = toolActivities.isEmpty
             ? nil
@@ -978,18 +1021,26 @@ extension DaemonTimelineEntry {
         guard hasExecutionDetails else { return nil }
 
         let headline: String
+        let completedDetailLine: String?
         if !toolActivities.isEmpty {
             headline = "Used \(pluralizedExecutionLabel(toolActivities.count, singular: "tool"))"
+            completedDetailLine = detailLine
         } else if hasThinkingBody {
             headline = "Thought process"
+            completedDetailLine = detailLineText(labels: executionMetadataLabels(
+                hasThinking: false,
+                hasPlan: hasPlanBody,
+                hasTools: false
+            ))
         } else {
             headline = "Plan available"
+            completedDetailLine = detailLine
         }
 
         return AssistantExecutionSummary(
             headline: headline,
             footnote: nil,
-            detailLine: detailLine,
+            detailLine: completedDetailLine,
             tone: .neutral,
             showsProgress: false
         )
@@ -1011,9 +1062,9 @@ extension DaemonTimelineEntry {
         return 3
     }
 
-    private func executionMetadataLabels(hasThinking: Bool, hasPlan: Bool) -> [String] {
+    private func executionMetadataLabels(hasThinking: Bool, hasPlan: Bool, hasTools: Bool) -> [String] {
         var labels: [String] = []
-        if hasThinking {
+        if hasThinking && !hasTools {
             labels.append("Thinking")
         }
         if hasPlan {
