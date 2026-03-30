@@ -703,7 +703,7 @@ struct ContentView: View {
     }
 
     private func mentionSuggestionParticipants(for snapshot: DaemonThreadSnapshot) -> [DaemonThreadParticipant] {
-        guard let mentionContext = activeLeadingMentionContext(in: draft) else {
+        guard let mentionContext = activeComposerMentionContext(in: draft) else {
             return []
         }
 
@@ -719,7 +719,7 @@ struct ContentView: View {
     }
 
     private func applyMentionSuggestion(_ participant: DaemonThreadParticipant) {
-        guard let mentionContext = activeLeadingMentionContext(in: draft) else { return }
+        guard let mentionContext = activeComposerMentionContext(in: draft) else { return }
         draft.replaceSubrange(
             mentionContext.replacementRange,
             with: "@\(participant.mentionHandle) "
@@ -729,7 +729,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private func mentionSuggestions(snapshot: DaemonThreadSnapshot) -> some View {
-        if activeLeadingMentionContext(in: draft) != nil {
+        if activeComposerMentionContext(in: draft) != nil {
             let suggestions = mentionSuggestionParticipants(for: snapshot)
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
@@ -1058,63 +1058,59 @@ private struct ComposerSurfaceModifier: ViewModifier {
     }
 }
 
-private struct ComposerMentionContext {
+struct ComposerMentionContext: Equatable {
     let replacementRange: Range<String.Index>
     let query: String
 }
 
-private func activeLeadingMentionContext(in text: String) -> ComposerMentionContext? {
+func activeComposerMentionContext(in text: String) -> ComposerMentionContext? {
     let end = text.endIndex
-    var index = text.startIndex
+    guard !text.isEmpty else { return nil }
 
-    while index < end && text[index].isWhitespace {
-        index = text.index(after: index)
+    let contentEnd = text[..<end].lastIndex(where: { !$0.isWhitespace }).map { text.index(after: $0) } ?? text.startIndex
+    if contentEnd == text.startIndex {
+        return nil
     }
 
-    while index < end {
-        guard text[index] == "@" else { return nil }
-
-        let mentionStart = index
-        index = text.index(after: index)
-        let tokenStart = index
-
-        while index < end && isMentionCharacter(text[index]) {
-            index = text.index(after: index)
+    var tokenStart = contentEnd
+    while tokenStart > text.startIndex {
+        let previousIndex = text.index(before: tokenStart)
+        if !isMentionCharacter(text[previousIndex]) {
+            break
         }
-
-        if tokenStart == index {
-            return ComposerMentionContext(replacementRange: mentionStart..<end, query: "")
-        }
-
-        if index == end {
-            return ComposerMentionContext(
-                replacementRange: mentionStart..<end,
-                query: String(text[tokenStart..<index])
-            )
-        }
-
-        if text[index] == "," || text[index] == ":" || text[index] == ";" {
-            index = text.index(after: index)
-            if index == end {
-                return nil
-            }
-        }
-
-        guard text[index].isWhitespace else { return nil }
-        while index < end && text[index].isWhitespace {
-            index = text.index(after: index)
-        }
-
-        if index == end {
-            return nil
-        }
+        tokenStart = previousIndex
     }
 
-    return nil
+    guard tokenStart > text.startIndex else { return nil }
+    let mentionStart = text.index(before: tokenStart)
+    guard text[mentionStart] == "@",
+          isMentionLeadingBoundary(mentionStart > text.startIndex ? text[text.index(before: mentionStart)] : nil)
+    else {
+        return nil
+    }
+
+    return ComposerMentionContext(
+        replacementRange: mentionStart..<end,
+        query: String(text[tokenStart..<contentEnd])
+    )
 }
 
 private func isMentionCharacter(_ character: Character) -> Bool {
     character.isLetter || character.isNumber || character == "-" || character == "_" || character == "."
+}
+
+private func isMentionLeadingBoundary(_ character: Character?) -> Bool {
+    guard let character else { return true }
+    if character.isWhitespace {
+        return true
+    }
+
+    switch character {
+    case "(", "[", "{", "\"", "'", "，", "。", ",", ":", ";":
+        return true
+    default:
+        return false
+    }
 }
 
 private struct CompactPresentedThread: Identifiable {
