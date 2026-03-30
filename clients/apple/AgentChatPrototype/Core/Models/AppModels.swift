@@ -171,9 +171,13 @@ extension AgentKind {
         switch self {
         case .codex:
             return "CodexAvatar"
+        case .claude:
+            return "ClaudeCodeAvatar"
         case .opencode:
             return "OpenCodeAvatar"
-        case .claude, .pi, .human:
+        case .pi:
+            return "PiAvatar"
+        case .human:
             return nil
         }
     }

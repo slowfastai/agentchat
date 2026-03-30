@@ -82,7 +82,7 @@ impl AgentManager {
     ///
     /// Returns the first configured agent, which remains the default when the client omits `agent_id`.
     pub fn first_agent_id(&self) -> Option<&str> {
-        self.agents.keys().next().map(|id| id.as_str())
+        self.agents.keys().min().map(|id| id.as_str())
     }
 
     /// Return all configured agent IDs in stable sorted order.
@@ -90,6 +90,11 @@ impl AgentManager {
         let mut ids = self.agents.keys().cloned().collect::<Vec<_>>();
         ids.sort();
         ids
+    }
+
+    /// Report whether any agents are currently registered.
+    pub fn is_empty(&self) -> bool {
+        self.agents.is_empty()
     }
 
     /// Return app-facing summaries for all configured agents.
@@ -231,6 +236,13 @@ mod tests {
         let manager = AgentManager::new();
 
         assert_eq!(manager.first_agent_id(), None);
+    }
+
+    #[test]
+    fn is_empty_is_true_when_no_agents_are_registered() {
+        let manager = AgentManager::new();
+
+        assert!(manager.is_empty());
     }
 
     #[test]
