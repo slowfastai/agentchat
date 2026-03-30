@@ -170,7 +170,7 @@ fn parse_cli_options() -> Result<Option<CliOptions>, String> {
 
 fn print_usage() {
     println!(
-        "agentchat-daemon\n\nUsage:\n  agentchat-daemon [--mobile]\n\nOptions:\n  --mobile            Print a terminal QR code for the current direct or relay connection so the iOS app can scan it\n  -h, --help          Show this help text\n\nEnvironment:\n  AGENTCHAT_MOBILE_WS_URL   Override the websocket endpoint embedded in the QR payload (must be ws://... or wss://...)\n  AGENTCHAT_AGENT_BACKEND   Select the agent backend adapter for single-agent mode\n\nExamples:\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon\n    Starts the built-in agents: OpenCode, Codex, Claude Code, and Pi\n\n  AGENTCHAT_AGENT_ID=opencode \\\n  AGENTCHAT_AGENT_NAME=\"OpenCode (ACP)\" \\\n  AGENTCHAT_AGENT_BACKEND=acp \\\n  AGENTCHAT_AGENT_COMMAND=opencode \\\n  AGENTCHAT_AGENT_ARGS=\"acp\" \\\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon -- --mobile\n\n  AGENTCHAT_AGENTS_JSON='[{{\"id\":\"claude-code\",\"name\":\"Claude Code\",\"backend\":\"acp\",\"command\":\"npx\",\"args\":[\"--yes\",\"@agentclientprotocol/claude-agent-acp\"]}},{{\"id\":\"pi\",\"name\":\"Pi\",\"backend\":\"acp\",\"command\":\"npx\",\"args\":[\"--yes\",\"pi-acp\"]}}]' \\\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon"
+        "agentchat-daemon\n\nUsage:\n  agentchat-daemon [--mobile]\n\nOptions:\n  --mobile            Print a terminal QR code for the current direct or relay connection so the iOS app can scan it\n  -h, --help          Show this help text\n\nEnvironment:\n  AGENTCHAT_MOBILE_WS_URL   Override the websocket endpoint embedded in the QR payload (must be ws://... or wss://...)\n  AGENTCHAT_AGENT_BACKEND   Select the agent backend adapter for single-agent mode\n\nAgent config precedence:\n  1. AGENTCHAT_AGENTS_JSON\n  2. .agentchat/agents.json\n  3. Single-agent AGENTCHAT_AGENT_* env vars\n  4. Built-in agents\n\nExamples:\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon\n    Starts the built-in agents: OpenCode, Codex, Claude Code, and Pi\n\n  AGENTCHAT_AGENT_ID=opencode \\\n  AGENTCHAT_AGENT_NAME=\"OpenCode (ACP)\" \\\n  AGENTCHAT_AGENT_BACKEND=acp \\\n  AGENTCHAT_AGENT_COMMAND=opencode \\\n  AGENTCHAT_AGENT_ARGS=\"acp\" \\\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon -- --mobile\n\n  AGENTCHAT_AGENTS_JSON='[{{\"id\":\"claude-code\",\"name\":\"Claude Code\",\"backend\":\"acp\",\"command\":\"npx\",\"args\":[\"--yes\",\"@agentclientprotocol/claude-agent-acp\"]}},{{\"id\":\"pi\",\"name\":\"Pi\",\"backend\":\"acp\",\"command\":\"npx\",\"args\":[\"--yes\",\"pi-acp\"]}}]' \\\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon\n\n  cat .agentchat/agents.json\n    Local per-project agent config. Useful for setting env_vars such as HTTP_PROXY only for Claude Code."
     );
 }
 
@@ -311,14 +311,29 @@ fn built_in_agent_configs() -> Vec<AgentConfig> {
     ]
 }
 
-fn load_agent_configs() -> Result<Vec<AgentConfig>, String> {
+fn local_agent_config_path(project_root: &Path) -> PathBuf {
+    project_root.join(".agentchat").join("agents.json")
+}
+
+fn load_agent_configs_from_json(source: &str, raw: &str) -> Result<Vec<AgentConfig>, String> {
+    let configs: Vec<AgentConfig> =
+        serde_json::from_str(raw).map_err(|err| format!("failed to parse {source}: {err}"))?;
+    if configs.is_empty() {
+        return Err(format!("{source} must contain at least one agent config"));
+    }
+    Ok(configs)
+}
+
+fn load_agent_configs(project_root: &Path) -> Result<Vec<AgentConfig>, String> {
     if let Some(raw) = optional_env("AGENTCHAT_AGENTS_JSON") {
-        let configs: Vec<AgentConfig> = serde_json::from_str(&raw)
-            .map_err(|err| format!("failed to parse AGENTCHAT_AGENTS_JSON: {err}"))?;
-        if configs.is_empty() {
-            return Err("AGENTCHAT_AGENTS_JSON must contain at least one agent config".into());
-        }
-        return Ok(configs);
+        return load_agent_configs_from_json("AGENTCHAT_AGENTS_JSON", &raw);
+    }
+
+    let local_config_path = local_agent_config_path(project_root);
+    if local_config_path.exists() {
+        let raw = fs::read_to_string(&local_config_path)
+            .map_err(|err| format!("failed to read {}: {err}", local_config_path.display()))?;
+        return load_agent_configs_from_json(&format!("{}", local_config_path.display()), &raw);
     }
 
     if optional_env("AGENTCHAT_AGENT_COMMAND").is_some()
@@ -495,7 +510,7 @@ mod tests {
         let _guard = ENV_LOCK.lock().expect("env lock poisoned");
         clear_agent_config_env();
 
-        let configs = load_agent_configs().expect("expected built-in configs");
+        let configs = load_agent_configs(Path::new("/tmp")).expect("expected built-in configs");
         let ids = configs
             .into_iter()
             .map(|config| config.id)
@@ -511,7 +526,7 @@ mod tests {
         env::set_var("AGENTCHAT_AGENT_COMMAND", "opencode");
         env::set_var("AGENTCHAT_AGENT_ID", "custom-opencode");
 
-        let configs = load_agent_configs().expect("expected single-agent config");
+        let configs = load_agent_configs(Path::new("/tmp")).expect("expected single-agent config");
 
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].id, "custom-opencode");
@@ -530,12 +545,44 @@ mod tests {
             r#"[{"id":"pi","name":"Pi","backend":"acp","command":"npx","args":["--yes","pi-acp"]}]"#,
         );
 
-        let configs = load_agent_configs().expect("expected json config");
+        let configs = load_agent_configs(Path::new("/tmp")).expect("expected json config");
 
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].id, "pi");
         assert_eq!(configs[0].command, "npx");
 
+        clear_agent_config_env();
+    }
+
+    #[test]
+    fn load_agent_configs_prefers_local_project_file_over_single_agent_env() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        clear_agent_config_env();
+
+        let test_root =
+            std::env::temp_dir().join(format!("agentchat-daemon-test-{}", std::process::id()));
+        let local_config_dir = test_root.join(".agentchat");
+        fs::create_dir_all(&local_config_dir).expect("expected local config dir");
+        fs::write(
+            local_config_dir.join("agents.json"),
+            r#"[{"id":"claude-code","name":"Claude Code","backend":"acp","command":"npx","args":["--yes","@agentclientprotocol/claude-agent-acp"],"env_vars":{"HTTP_PROXY":"http://127.0.0.1:7897","HTTPS_PROXY":"http://127.0.0.1:7897"}}]"#,
+        )
+        .expect("expected local config file");
+
+        env::set_var("AGENTCHAT_AGENT_COMMAND", "opencode");
+        env::set_var("AGENTCHAT_AGENT_ID", "custom-opencode");
+
+        let configs = load_agent_configs(&test_root).expect("expected local project config");
+
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].id, "claude-code");
+        assert_eq!(configs[0].command, "npx");
+        assert_eq!(
+            configs[0].env_vars.get("HTTP_PROXY").map(String::as_str),
+            Some("http://127.0.0.1:7897")
+        );
+
+        let _ = fs::remove_dir_all(&test_root);
         clear_agent_config_env();
     }
 
@@ -1248,7 +1295,7 @@ async fn main() {
     info!("daemon logs redirected to {}", log_path.display());
 
     // Launch one or more configured agent backends from the environment.
-    let agent_configs = match load_agent_configs() {
+    let agent_configs = match load_agent_configs(&project_root) {
         Ok(configs) => configs,
         Err(err) => {
             error!("failed to load agent configuration: {err}");

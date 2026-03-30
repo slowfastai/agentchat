@@ -190,10 +190,7 @@ async fn send_startup_error_over_relay(relay_client: &mut RelayClient, event: &R
     }
 }
 
-async fn send_shutdown_notice_over_relay(
-    relay_client: &mut RelayClient,
-    reason: DaemonStopReason,
-) {
+async fn send_shutdown_notice_over_relay(relay_client: &mut RelayClient, reason: DaemonStopReason) {
     if !relay_client.has_active_channel() {
         return;
     }

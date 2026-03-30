@@ -7,6 +7,9 @@ with a top-level `type` field.
 For the next-step design that keeps the daemon alive across iOS disconnects and adds
 session re-attach / replay semantics, see `daemon/RECONNECT.md`.
 
+For daemon agent config precedence, per-agent `env_vars`, and a practical Claude
+Code proxy setup example, see `daemon/AGENT_CONFIGURATION.md`.
+
 ## Manual Smoke Test
 
 You do not need an iOS app to try these messages. Any WebSocket client works.
