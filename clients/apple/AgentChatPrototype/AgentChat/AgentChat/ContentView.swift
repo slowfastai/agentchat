@@ -915,7 +915,10 @@ struct ContentView: View {
                         EmptyThreadState(snapshot: snapshot)
                     } else {
                         ForEach(store.timeline, id: \.id) { entry in
-                            TimelineBubble(entry: entry)
+                            TimelineBubble(
+                                entry: entry,
+                                agentAvatarData: avatarData(for: entry.agentID)
+                            )
                                 .id(entry.id)
                         }
                     }
@@ -1042,6 +1045,11 @@ struct ContentView: View {
         return store.agents.first { $0.agentID == agentID }?.avatarImageData
     }
 
+    private func avatarData(for agentID: String?) -> Data? {
+        guard let agentID else { return nil }
+        return store.avatarData(for: agentID)
+    }
+
     private func customDisplayName(for participant: DaemonThreadParticipant) -> String? {
         guard let agentID = participant.agentID else { return nil }
         return store.agents.first { $0.agentID == agentID }?.customDisplayName
@@ -1147,7 +1155,7 @@ private struct CompactPresentedThread: Identifiable {
 
 private struct TimelineBubble: View {
     let entry: DaemonTimelineEntry
-    @EnvironmentObject private var store: DaemonChatStore
+    let agentAvatarData: Data?
     @Environment(\.colorScheme) private var colorScheme
     @State private var isShowingExecutionDetails = false
 
@@ -1551,7 +1559,7 @@ private struct TimelineBubble: View {
 
     @ViewBuilder
     private var agentAvatarBadge: some View {
-        if let avatarData = assistantAvatarData, let image = UIImage(data: avatarData) {
+        if let avatarData = agentAvatarData, let image = UIImage(data: avatarData) {
             Image(uiImage: image)
                 .resizable()
                 .scaledToFill()
@@ -1574,11 +1582,6 @@ private struct TimelineBubble: View {
         } else {
             iconBadge
         }
-    }
-
-    private var assistantAvatarData: Data? {
-        guard let agentID = entry.agentID else { return nil }
-        return store.agents.first { $0.agentID == agentID }?.avatarImageData
     }
 
     private var assistantFamily: DaemonAgentFamily {
