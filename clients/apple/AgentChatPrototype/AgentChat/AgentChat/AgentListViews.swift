@@ -3,7 +3,6 @@ import SwiftUI
 struct AgentListSection: View {
     let agents: [DaemonAgentSummary]
     let hasConfiguredDaemonURL: Bool
-    let subtitleForAgent: (DaemonAgentSummary) -> String
     let statusColorForAgent: (DaemonAgentSummary) -> Color
     let onReconnect: () -> Void
     let onEdit: (DaemonAgentSummary) -> Void
@@ -26,7 +25,6 @@ struct AgentListSection: View {
                 ForEach(agents, id: \.agentID) { agent in
                     AgentRowView(
                         agent: agent,
-                        subtitle: subtitleForAgent(agent),
                         statusColor: statusColorForAgent(agent),
                         hasConfiguredDaemonURL: hasConfiguredDaemonURL,
                         onReconnect: onReconnect
@@ -58,7 +56,6 @@ struct AgentListSection: View {
 
 struct AgentRowView: View {
     let agent: DaemonAgentSummary
-    let subtitle: String
     let statusColor: Color
     let hasConfiguredDaemonURL: Bool
     let onReconnect: () -> Void
@@ -78,11 +75,6 @@ struct AgentRowView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 

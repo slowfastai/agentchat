@@ -384,7 +384,6 @@ struct ContentView: View {
         AgentListSection(
             agents: store.agents,
             hasConfiguredDaemonURL: store.hasConfiguredDaemonURL,
-            subtitleForAgent: agentSubtitle,
             statusColorForAgent: agentStatusColor,
             onReconnect: store.reconnectNow,
             onEdit: { editingAgent = $0 },
