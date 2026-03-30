@@ -166,6 +166,19 @@ enum AgentKind: String, CaseIterable, Hashable {
     case human
 }
 
+extension AgentKind {
+    var defaultAvatarAssetName: String? {
+        switch self {
+        case .codex:
+            return "CodexAvatar"
+        case .opencode:
+            return "OpenCodeAvatar"
+        case .claude, .pi, .human:
+            return nil
+        }
+    }
+}
+
 struct ParticipantRef: Identifiable, Hashable {
     let id: UUID
     var displayName: String

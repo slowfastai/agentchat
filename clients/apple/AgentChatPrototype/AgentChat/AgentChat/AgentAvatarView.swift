@@ -30,6 +30,12 @@ struct AgentAvatarView: View {
                     .aspectRatio(contentMode: .fill)
                     .frame(width: size, height: size)
                     .clipShape(Circle())
+            } else if let assetName = agent.defaultAvatarAssetName {
+                AgentDefaultAvatarArtwork(
+                    assetName: assetName,
+                    size: size,
+                    shape: .circle
+                )
             } else {
                 ZStack {
                     Circle()
@@ -40,6 +46,44 @@ struct AgentAvatarView: View {
                         .foregroundStyle(AgentAvatarPalette.tintColor(named: agent.tintName))
                 }
                 .frame(width: size, height: size)
+            }
+        }
+    }
+}
+
+enum AgentAvatarShape {
+    case circle
+    case roundedRect(cornerRadius: CGFloat)
+}
+
+struct AgentDefaultAvatarArtwork: View {
+    let assetName: String
+    let size: CGFloat
+    let shape: AgentAvatarShape
+
+    var body: some View {
+        Group {
+            switch shape {
+            case .circle:
+                Image(assetName)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: size, height: size)
+                    .clipShape(Circle())
+                    .overlay {
+                        Circle()
+                            .stroke(Color.black.opacity(0.06), lineWidth: 0.5)
+                    }
+            case .roundedRect(let cornerRadius):
+                Image(assetName)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: size, height: size)
+                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .stroke(Color.black.opacity(0.06), lineWidth: 0.5)
+                    }
             }
         }
     }
