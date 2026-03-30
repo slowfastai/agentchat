@@ -52,6 +52,13 @@ final class DaemonChatStore: ObservableObject {
     private var cursorByThread: [String: UInt64] = [:]
     private var assistantTurns = AssistantTurnReducer()
     private var participantSelectionWasCustomized = false
+    private var reconnectAttempt = 0
+    private var reconnectTask: Task<Void, Never>?
+    private var isReconnecting = false
+
+    private static let maxReconnectAttempts = 10
+    private static let baseReconnectDelaySeconds: Double = 1.0
+    private static let maxReconnectDelaySeconds: Double = 30.0
 
     private struct PersistedThreadState: Codable {
         let allThreads: [DaemonThreadSummary]
@@ -264,6 +271,7 @@ final class DaemonChatStore: ObservableObject {
     }
 
     func disconnect() {
+        cancelScheduledReconnect()
         connectionTask?.cancel()
         connectionTask = nil
         receiveTask?.cancel()
@@ -291,6 +299,7 @@ final class DaemonChatStore: ObservableObject {
     }
 
     private func connect() {
+        cancelScheduledReconnect()
         connectionTask?.cancel()
         connectionTask = nil
         receiveTask?.cancel()
@@ -416,6 +425,7 @@ final class DaemonChatStore: ObservableObject {
                 markAgentsOffline()
                 connectionStatus = "Offline"
                 connectingAgentIDs.removeAll()
+                scheduleReconnect()
                 break
             }
         }
@@ -904,6 +914,46 @@ final class DaemonChatStore: ObservableObject {
         markAgentsOffline()
         connectionStatus = "Offline"
         connectingAgentIDs.removeAll()
+        scheduleReconnect()
+    }
+
+    private func scheduleReconnect() {
+        guard !isReconnecting, hasConfiguredDaemonURL else { return }
+        guard reconnectAttempt < Self.maxReconnectAttempts else {
+            reconnectAttempt = 0
+            errorMessage = "Connection lost. Please reconnect manually."
+            return
+        }
+
+        isReconnecting = true
+        reconnectAttempt += 1
+
+        let delay = min(
+            Self.baseReconnectDelaySeconds * pow(2.0, Double(reconnectAttempt - 1)),
+            Self.maxReconnectDelaySeconds
+        )
+
+        connectionStatus = reconnectAttempt > 1 ? "Reconnecting (\(reconnectAttempt))…" : "Reconnecting…"
+
+        reconnectTask?.cancel()
+        reconnectTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.isReconnecting = false
+                if !self.hasActiveConnection {
+                    self.connect()
+                }
+            }
+        }
+    }
+
+    private func cancelScheduledReconnect() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectAttempt = 0
+        isReconnecting = false
     }
 
     private var hasActiveConnection: Bool {

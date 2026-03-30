@@ -9,8 +9,9 @@ use std::rc::Rc;
 use futures::stream::StreamExt;
 use futures::SinkExt;
 use tokio::net::TcpListener;
+use tokio::time::{interval, Duration};
 use tokio::sync::{broadcast, mpsc, watch};
-use tokio_tungstenite::accept_async;
+use tokio_tungstenite::accept_async_with_config;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
 
@@ -79,7 +80,7 @@ impl WebSocketServer {
 
             info!("new connection from {}", peer);
 
-            let ws = match accept_async(stream).await {
+            let ws = match accept_async_with_config(stream, None).await {
                 Ok(ws) => ws,
                 Err(err) => {
                     error!("websocket handshake failed: {err}");
@@ -109,23 +110,50 @@ impl WebSocketServer {
         let (mut ws_tx, mut ws_rx) = ws.split();
         let mut response_rx = event_tx.subscribe();
 
+        let (ping_tx, mut ping_rx) = tokio::sync::mpsc::channel::<Message>(1);
+        let ping_tx_clone = ping_tx.clone();
+        let ping_interval = Duration::from_secs(25);
+        let ping_task = tokio::task::spawn_local(async move {
+            let mut ticker = interval(ping_interval);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        if ping_tx_clone.send(Message::Ping(vec![].into())).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
         let writer_task = tokio::task::spawn_local(async move {
             loop {
-                let event = match response_rx.recv().await {
-                    Ok(event) => event,
-                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        warn!("websocket event subscriber lagged and skipped {skipped} events");
-                        continue;
+                tokio::select! {
+                    msg = response_rx.recv() => {
+                        let event = match msg {
+                            Ok(event) => event,
+                            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                warn!("websocket event subscriber lagged and skipped {skipped} events");
+                                continue;
+                            }
+                            Err(broadcast::error::RecvError::Closed) => break,
+                        };
+
+                        let Some(json) = serialize_event(&event) else {
+                            continue;
+                        };
+
+                        if ws_tx.send(Message::Text(json.into())).await.is_err() {
+                            break;
+                        }
                     }
-                    Err(broadcast::error::RecvError::Closed) => break,
-                };
-
-                let Some(json) = serialize_event(&event) else {
-                    continue;
-                };
-
-                if ws_tx.send(Message::Text(json.into())).await.is_err() {
-                    break;
+                    ping = ping_rx.recv() => {
+                        if let Some(msg) = ping {
+                            if ws_tx.send(msg).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -167,8 +195,11 @@ impl WebSocketServer {
             }
         }
 
+        drop(ping_tx);
         writer_task.abort();
+        ping_task.abort();
         let _ = writer_task.await;
+        let _ = ping_task.await;
         info!("client disconnected");
     }
 }

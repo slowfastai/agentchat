@@ -501,7 +501,7 @@ struct ContentView: View {
             }
             .disabled(!store.hasConfiguredDaemonURL)
 
-            Text("The app will not auto-connect on first launch. Connect only by scanning a QR code, entering a URL, or tapping Reconnect.")
+            Text("The app will not auto-connect on first launch. Connect by scanning a QR code, entering a URL, or tapping Reconnect. If connection is lost, the app will automatically attempt to reconnect.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
