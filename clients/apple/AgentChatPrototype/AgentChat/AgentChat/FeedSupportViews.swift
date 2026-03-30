@@ -205,7 +205,6 @@ struct ThreadFeedRow: View {
 
                 HStack(spacing: 8) {
                     SmallInfoPill(icon: "person.2.fill", text: "\(thread.participantCount)")
-                    SmallInfoPill(icon: "number", text: "Seq \(thread.lastThreadSeq)")
                 }
             }
 

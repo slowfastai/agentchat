@@ -68,17 +68,14 @@ final class DaemonChatStore: ObservableObject {
         refreshIdleConnectionStatus()
     }
 
-    func createThreadWithSelectedAgents() {
+    func createThread(withAgentIDs agentIDs: [String]) {
         let onlineAgentIDs = Set(agents.filter(\.isOnline).map(\.agentID))
-        let chosenAgentIDs = Array(
-            selectedAgentIDs.isEmpty
-                ? onlineAgentIDs
-                : selectedAgentIDs.intersection(onlineAgentIDs)
-        )
+        let chosenAgentIDs = Array(Set(agentIDs).intersection(onlineAgentIDs)).sorted()
         guard !chosenAgentIDs.isEmpty else {
             errorMessage = "No online agents available. Reconnect to the daemon and try again."
             return
         }
+        rememberSelectedAgents(chosenAgentIDs)
         pendingThreadAgentIDs = chosenAgentIDs.sorted()
         let title = chosenAgentIDs.isEmpty ? "New Chat" : chosenAgentIDs.joined(separator: " + ")
         Task {
@@ -113,22 +110,21 @@ final class DaemonChatStore: ObservableObject {
         }
     }
 
-    func addSelectedAgentsToActiveThread() {
-        guard let threadID = activeThreadID else {
+    func addAgents(_ agentIDs: [String], toActiveThread threadID: String? = nil) {
+        guard let threadID = threadID ?? activeThreadID else {
             errorMessage = "Open a thread first, then add agents."
             return
         }
 
         let existingAgentIDs = Set(activeThreadSnapshot?.participants.compactMap(\.agentID) ?? [])
         let onlineAgentIDs = Set(agents.filter(\.isOnline).map(\.agentID))
-        let selectedOrAllAgents = selectedAgentIDs.isEmpty
-            ? onlineAgentIDs
-            : selectedAgentIDs.intersection(onlineAgentIDs)
-        guard !selectedOrAllAgents.isEmpty else {
+        let chosenAgentIDs = Set(agentIDs).intersection(onlineAgentIDs)
+        guard !chosenAgentIDs.isEmpty else {
             errorMessage = "No online agents available. Reconnect to the daemon and try again."
             return
         }
-        let agentIDsToAdd = selectedOrAllAgents.subtracting(existingAgentIDs).sorted()
+        rememberSelectedAgents(Array(chosenAgentIDs).sorted())
+        let agentIDsToAdd = chosenAgentIDs.subtracting(existingAgentIDs).sorted()
 
         guard !agentIDsToAdd.isEmpty else {
             errorMessage = "No new selected agents to add."
@@ -171,10 +167,24 @@ final class DaemonChatStore: ObservableObject {
         let allAgentIDs = Set(agentParticipants.map(\.participantID))
         let targets = Set(selectedParticipantIDs).intersection(allAgentIDs)
         guard !targets.isEmpty else {
-            errorMessage = "Select at least one checked agent to receive this message."
+            selectedParticipantIDs = allAgentIDs
+            let resetTargets = Set(selectedParticipantIDs).intersection(allAgentIDs)
+            guard !resetTargets.isEmpty else {
+                errorMessage = "Add at least one agent to this thread before sending a message."
+                return
+            }
+            errorMessage = nil
+            Task {
+                await send(
+                    SendThreadMessageRequest(
+                        threadID: threadID,
+                        content: trimmed,
+                        targetParticipantIDs: nil
+                    )
+                )
+            }
             return
         }
-
         let targetList: [String]? = targets == allAgentIDs ? nil : targets.sorted()
         errorMessage = nil
 
@@ -189,12 +199,8 @@ final class DaemonChatStore: ObservableObject {
         }
     }
 
-    func toggleAgentSelection(_ agentID: String) {
-        if selectedAgentIDs.contains(agentID) {
-            selectedAgentIDs.remove(agentID)
-        } else {
-            selectedAgentIDs.insert(agentID)
-        }
+    func rememberSelectedAgents(_ agentIDs: [String]) {
+        selectedAgentIDs = Set(agentIDs)
         persistSelectedAgents()
     }
 
@@ -215,19 +221,6 @@ final class DaemonChatStore: ObservableObject {
         guard let index = agents.firstIndex(where: { $0.agentID == agentID }) else { return }
         agents[index] = agents[index].withAvatarImageData(imageData)
         persistKnownAgents()
-    }
-
-    func toggleParticipantSelection(_ participantID: String) {
-        participantSelectionWasCustomized = true
-        if selectedParticipantIDs.contains(participantID) {
-            selectedParticipantIDs.remove(participantID)
-        } else {
-            selectedParticipantIDs.insert(participantID)
-        }
-    }
-
-    func isSelectedAgent(_ agentID: String) -> Bool {
-        selectedAgentIDs.contains(agentID)
     }
 
     func isSelectedParticipant(_ participantID: String) -> Bool {
@@ -356,7 +349,7 @@ final class DaemonChatStore: ObservableObject {
                 receiveTask = Task { [weak self] in
                     await self?.receiveLoop()
                 }
-                connectionStatus = "Connected via relay"
+                connectionStatus = "Online"
                 connectingAgentIDs.removeAll()
                 await refreshDaemonState()
             }
@@ -372,7 +365,7 @@ final class DaemonChatStore: ObservableObject {
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
         }
-        connectionStatus = "Connected"
+        connectionStatus = "Online"
         connectingAgentIDs.removeAll()
         await refreshDaemonState()
     }
@@ -407,7 +400,7 @@ final class DaemonChatStore: ObservableObject {
                 socketTask = nil
                 receiveTask = nil
                 markAgentsOffline()
-                connectionStatus = "Disconnected"
+                connectionStatus = "Offline"
                 connectingAgentIDs.removeAll()
                 break
             }
@@ -486,6 +479,17 @@ final class DaemonChatStore: ObservableObject {
                 let snapshot = try decoder.decode(ThreadSnapshotEvent.self, from: data).snapshot
                 snapshotsByThread[snapshot.threadID] = snapshot
                 cursorByThread[snapshot.threadID] = max(cursorByThread[snapshot.threadID] ?? 0, snapshot.lastThreadSeq)
+                updateThreadSummary(threadID: snapshot.threadID) { summary in
+                    DaemonThreadSummary(
+                        threadID: summary.threadID,
+                        title: snapshot.title ?? summary.title,
+                        workingDir: snapshot.workingDir,
+                        createdAtMS: snapshot.createdAtMS,
+                        state: summary.state,
+                        participantCount: snapshot.participants.count,
+                        lastThreadSeq: max(summary.lastThreadSeq, snapshot.lastThreadSeq)
+                    )
+                }
                 if activeThreadID == snapshot.threadID {
                     activeThreadSnapshot = snapshot
                     timeline = timelineByThread[snapshot.threadID] ?? []
@@ -500,7 +504,7 @@ final class DaemonChatStore: ObservableObject {
             case "thread_replay_complete":
                 let event = try decoder.decode(ThreadReplayCompleteEvent.self, from: data)
                 cursorByThread[event.threadID] = max(cursorByThread[event.threadID] ?? 0, event.lastThreadSeq)
-                connectionStatus = "Synced thread"
+                connectionStatus = "Online"
             case "thread_participant_added":
                 let event = try decoder.decode(ThreadParticipantAddedEvent.self, from: data)
                 upsertParticipant(event.participant, in: event.threadID)
@@ -516,13 +520,14 @@ final class DaemonChatStore: ObservableObject {
                     to: event.threadID
                 )
                 updateThreadSummary(threadID: event.threadID) { summary in
-                    DaemonThreadSummary(
+                    let participantCount = snapshotsByThread[event.threadID]?.participants.count ?? summary.participantCount
+                    return DaemonThreadSummary(
                         threadID: summary.threadID,
                         title: summary.title,
                         workingDir: summary.workingDir,
                         createdAtMS: summary.createdAtMS,
                         state: summary.state,
-                        participantCount: summary.participantCount + 1,
+                        participantCount: participantCount,
                         lastThreadSeq: max(summary.lastThreadSeq, event.threadSeq)
                     )
                 }
@@ -541,13 +546,14 @@ final class DaemonChatStore: ObservableObject {
                     to: event.threadID
                 )
                 updateThreadSummary(threadID: event.threadID) { summary in
-                    DaemonThreadSummary(
+                    let participantCount = snapshotsByThread[event.threadID]?.participants.count ?? summary.participantCount
+                    return DaemonThreadSummary(
                         threadID: summary.threadID,
                         title: summary.title,
                         workingDir: summary.workingDir,
                         createdAtMS: summary.createdAtMS,
                         state: summary.state,
-                        participantCount: max(summary.participantCount - 1, 1),
+                        participantCount: participantCount,
                         lastThreadSeq: max(summary.lastThreadSeq, event.threadSeq)
                     )
                 }
@@ -842,14 +848,14 @@ final class DaemonChatStore: ObservableObject {
         socketTask?.cancel(with: .goingAway, reason: nil)
         socketTask = nil
         markAgentsOffline()
-        connectionStatus = "Disconnected"
+        connectionStatus = "Offline"
         connectingAgentIDs.removeAll()
     }
 
     private var hasActiveConnection: Bool {
         guard socketTask != nil else { return false }
         switch connectionStatus {
-        case "Disconnected", "Not connected", "Not configured", "Bad URL":
+        case "Offline", "Not configured", "Bad URL":
             return false
         default:
             return true
@@ -857,7 +863,7 @@ final class DaemonChatStore: ObservableObject {
     }
 
     private func refreshIdleConnectionStatus() {
-        connectionStatus = hasConfiguredDaemonURL ? "Not connected" : "Not configured"
+        connectionStatus = hasConfiguredDaemonURL ? "Offline" : "Not configured"
     }
 
     private func upsertAgents(_ incomingAgents: [DaemonAgentSummary]) {

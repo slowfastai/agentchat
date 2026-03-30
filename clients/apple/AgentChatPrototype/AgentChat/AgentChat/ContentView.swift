@@ -6,6 +6,33 @@ private enum AppTab: Hashable {
     case settings
 }
 
+private enum AgentPickerMode: Identifiable, Equatable {
+    case createThread
+    case addAgent
+
+    var id: String {
+        switch self {
+        case .createThread:
+            return "create-thread"
+        case .addAgent:
+            return "add-agent"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .createThread:
+            return "Select Agents"
+        case .addAgent:
+            return "Add Agents"
+        }
+    }
+
+    var doneTitle: String {
+        "Done"
+    }
+}
+
 struct Theme {
     let colorScheme: ColorScheme
 
@@ -148,6 +175,8 @@ struct ContentView: View {
     @State private var selectedTab: AppTab = .feed
     @State private var editingAgent: DaemonAgentSummary?
     @State private var pendingDeleteAgent: DaemonAgentSummary?
+    @State private var agentPickerMode: AgentPickerMode?
+    @State private var draftAgentSelection: Set<String> = []
 
     private var theme: Theme {
         Theme(colorScheme: colorScheme)
@@ -273,6 +302,14 @@ struct ContentView: View {
                 editingAgent = nil
             }
         }
+        .sheet(item: $agentPickerMode, onDismiss: {
+            draftAgentSelection = []
+        }) { mode in
+            NavigationStack {
+                agentPickerSheet(mode: mode)
+            }
+            .presentationDetents([.medium, .large])
+        }
     }
 
     @ViewBuilder
@@ -329,10 +366,8 @@ struct ContentView: View {
         AgentListSection(
             agents: store.agents,
             hasConfiguredDaemonURL: store.hasConfiguredDaemonURL,
-            isSelectedAgent: store.isSelectedAgent,
             subtitleForAgent: agentSubtitle,
             statusColorForAgent: agentStatusColor,
-            onToggleSelection: store.toggleAgentSelection,
             onReconnect: store.reconnectNow,
             onEdit: { editingAgent = $0 },
             onDelete: { pendingDeleteAgent = $0 }
@@ -460,7 +495,7 @@ struct ContentView: View {
     private var feedMenu: some View {
         Menu {
             Button {
-                store.createThreadWithSelectedAgents()
+                presentAgentPicker(.createThread)
                 selectedTab = .feed
             } label: {
                 Label("Create Thread", systemImage: "plus.bubble")
@@ -468,7 +503,7 @@ struct ContentView: View {
             .disabled(store.agents.filter(\.isOnline).isEmpty)
 
             Button {
-                store.addSelectedAgentsToActiveThread()
+                presentAgentPicker(.addAgent)
                 selectedTab = .feed
             } label: {
                 Label("Add Agent", systemImage: "person.badge.plus")
@@ -488,16 +523,29 @@ struct ContentView: View {
     private var detail: some View {
         Group {
             if let snapshot = store.activeThreadSnapshot {
-                timeline(snapshot: snapshot)
-                    .background(ChatScreenBackground().ignoresSafeArea())
-                    .safeAreaInset(edge: .bottom, spacing: 0) {
-                        composer(snapshot: snapshot)
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 10)
-                            .background(.clear)
-                    }
-                    .navigationTitle(snapshot.title ?? snapshot.threadID)
-                    .navigationBarTitleDisplayMode(.inline)
+                GeometryReader { geometry in
+                    timeline(snapshot: snapshot)
+                        .background(ChatScreenBackground().ignoresSafeArea())
+                        .safeAreaInset(edge: .bottom, spacing: 0) {
+                            composer(snapshot: snapshot, availableWidth: geometry.size.width)
+                                .padding(.horizontal, composerOuterHorizontalPadding(for: geometry.size.width))
+                                .padding(.top, 4)
+                                .padding(.bottom, 4)
+                                .frame(maxWidth: .infinity)
+                                .overlay(alignment: .bottom) {
+                                    GeometryReader { proxy in
+                                        Rectangle()
+                                            .fill(theme.canvasBottom)
+                                            .frame(height: proxy.safeAreaInsets.bottom + 4)
+                                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                                            .ignoresSafeArea(edges: .bottom)
+                                    }
+                                    .allowsHitTesting(false)
+                                }
+                        }
+                        .navigationTitle(snapshot.title ?? snapshot.threadID)
+                        .navigationBarTitleDisplayMode(.inline)
+                }
             } else if store.activeThreadID != nil {
                 UnavailableStateView(
                     title: "Loading Thread",
@@ -509,9 +557,76 @@ struct ContentView: View {
                 UnavailableStateView(
                     title: "No Active Thread",
                     systemImage: "bubble.left.and.bubble.right",
-                    message: "Open a thread from Feed, or create one from Agents."
+                    message: "Open a thread from Feed, or create one from the Feed menu."
                 )
                 .background(ChatScreenBackground().ignoresSafeArea())
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func agentPickerSheet(mode: AgentPickerMode) -> some View {
+        let selectableAgents = selectableAgents(for: mode)
+
+        List {
+            Section {
+                if selectableAgents.isEmpty {
+                    Text(emptyAgentPickerMessage(for: mode))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 4)
+                } else {
+                    ForEach(selectableAgents, id: \.agentID) { agent in
+                        Button {
+                            toggleDraftAgentSelection(agent.agentID)
+                        } label: {
+                            HStack(spacing: 12) {
+                                AgentAvatarView(agent: agent, size: 40)
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(agent.displayName)
+                                        .font(.body.weight(.medium))
+                                        .foregroundStyle(theme.primaryText)
+
+                                    Text(agentSubtitle(for: agent))
+                                        .font(.caption)
+                                        .foregroundStyle(theme.secondaryText)
+                                        .lineLimit(1)
+                                }
+
+                                Spacer(minLength: 0)
+
+                                Image(systemName: draftAgentSelection.contains(agent.agentID) ? "checkmark.circle.fill" : "circle")
+                                    .font(.title3)
+                                    .foregroundStyle(draftAgentSelection.contains(agent.agentID) ? theme.accent : theme.tertiaryText)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            } header: {
+                Text(mode == .createThread ? "Online Agents" : "Available To Add")
+            } footer: {
+                Text(mode == .createThread
+                    ? "Choose one or more online agents, then tap Done to create a new thread."
+                    : "Choose online agents not already in this thread, then tap Done to add them.")
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle(mode.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Cancel") {
+                    agentPickerMode = nil
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(mode.doneTitle) {
+                    completeAgentPicker(mode)
+                }
+                .disabled(draftAgentSelection.isEmpty)
             }
         }
     }
@@ -537,8 +652,63 @@ struct ContentView: View {
         return nil
     }
 
+    private func presentAgentPicker(_ mode: AgentPickerMode) {
+        draftAgentSelection = defaultAgentSelection(for: mode)
+        agentPickerMode = mode
+    }
+
+    private func selectableAgents(for mode: AgentPickerMode) -> [DaemonAgentSummary] {
+        let onlineAgents = store.agents.filter(\.isOnline)
+        switch mode {
+        case .createThread:
+            return onlineAgents
+        case .addAgent:
+            let existingAgentIDs = Set(store.activeThreadSnapshot?.participants.compactMap(\.agentID) ?? [])
+            return onlineAgents.filter { !existingAgentIDs.contains($0.agentID) }
+        }
+    }
+
+    private func defaultAgentSelection(for mode: AgentPickerMode) -> Set<String> {
+        let selectableIDs = Set(selectableAgents(for: mode).map(\.agentID))
+        let rememberedIDs = store.selectedAgentIDs.intersection(selectableIDs)
+        if !rememberedIDs.isEmpty {
+            return rememberedIDs
+        }
+        return selectableIDs
+    }
+
+    private func toggleDraftAgentSelection(_ agentID: String) {
+        if draftAgentSelection.contains(agentID) {
+            draftAgentSelection.remove(agentID)
+        } else {
+            draftAgentSelection.insert(agentID)
+        }
+    }
+
+    private func completeAgentPicker(_ mode: AgentPickerMode) {
+        let selectedAgentIDs = draftAgentSelection.sorted()
+        switch mode {
+        case .createThread:
+            store.createThread(withAgentIDs: selectedAgentIDs)
+        case .addAgent:
+            store.addAgents(selectedAgentIDs)
+        }
+        agentPickerMode = nil
+    }
+
+    private func emptyAgentPickerMessage(for mode: AgentPickerMode) -> String {
+        switch mode {
+        case .createThread:
+            return store.hasConfiguredDaemonURL
+                ? "No online agents are available right now. Reconnect to the daemon and try again."
+                : "Add a daemon connection first, then reconnect to discover online agents."
+        case .addAgent:
+            return "Every online agent is already in this thread."
+        }
+    }
+
     private var connectionStatusColor: Color {
-        if store.connectionStatus.contains("Connected") || store.connectionStatus.contains("Synced") {
+        if store.connectionStatus.contains("Online") {
             return .green
         }
         if store.connectionStatus.contains("Not configured") {
@@ -577,7 +747,7 @@ struct ContentView: View {
 
     private func canSend(in snapshot: DaemonThreadSnapshot) -> Bool {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !selectedAgentParticipants(in: snapshot).isEmpty
+            && !snapshot.participants.filter(\.isAgent).isEmpty
     }
 
     private func sendDraft(in snapshot: DaemonThreadSnapshot) {
@@ -595,27 +765,14 @@ struct ContentView: View {
         #endif
     }
 
-    private func selectedAgentParticipants(in snapshot: DaemonThreadSnapshot) -> [DaemonThreadParticipant] {
-        snapshot.participants.filter { participant in
-            participant.isAgent && store.isSelectedParticipant(participant.participantID)
-        }
-    }
-
     private func participantSelectionSummary(for snapshot: DaemonThreadSnapshot) -> String {
         let agentParticipants = snapshot.participants.filter(\.isAgent)
-        let selectedCount = selectedAgentParticipants(in: snapshot).count
 
         guard !agentParticipants.isEmpty else {
             return "Add an agent to this thread before sending prompts."
         }
 
-        if selectedCount == 0 {
-            return "No agents are checked. Tap chips to choose who should receive the next prompt."
-        }
-        if selectedCount == agentParticipants.count {
-            return "All \(selectedCount) agents are checked. Start with @ to narrow replies."
-        }
-        return "\(selectedCount) of \(agentParticipants.count) agents are checked. @mentions intersect with the checked set."
+        return "Messages are sent to this group by default. Use @mentions to address a specific agent."
     }
 
     private func mentionSuggestionParticipants(for snapshot: DaemonThreadSnapshot) -> [DaemonThreadParticipant] {
@@ -623,7 +780,7 @@ struct ContentView: View {
             return []
         }
 
-        return selectedAgentParticipants(in: snapshot)
+        return snapshot.participants.filter(\.isAgent)
             .filter { $0.matchesMentionQuery(mentionContext.query) }
             .sorted { lhs, rhs in
                 let lhsHandle = lhs.mentionHandle.localizedCaseInsensitiveCompare(rhs.mentionHandle)
@@ -653,13 +810,13 @@ struct ContentView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(theme.mutedInk)
                     Spacer(minLength: 0)
-                    Text("Checked agents only")
+                    Text("In this group")
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(theme.subtleInk)
                 }
 
                 if suggestions.isEmpty {
-                    Text("No checked agents match this mention yet.")
+                    Text("No agents match this mention yet.")
                         .font(.footnote)
                         .foregroundStyle(theme.mutedInk)
                 } else {
@@ -709,38 +866,21 @@ struct ContentView: View {
 
                 VStack(alignment: .trailing, spacing: 8) {
                     HeaderInfoPill(
-                        icon: store.connectionStatus.contains("Connected") || store.connectionStatus.contains("Synced") ? "bolt.fill" : "antenna.radiowaves.left.and.right",
+                        icon: store.connectionStatus.contains("Online") ? "bolt.fill" : "antenna.radiowaves.left.and.right",
                         text: store.connectionStatus
                     )
-                    HeaderInfoPill(icon: "number", text: "Seq \(snapshot.lastThreadSeq)")
                 }
             }
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     ForEach(snapshot.participants, id: \.participantID) { participant in
-                        if participant.isAgent {
-                            Button {
-                                store.toggleParticipantSelection(participant.participantID)
-                            } label: {
-                                ThreadParticipantChip(
-                                    participant: participant,
-                                    color: chipColor(for: participant),
-                                    avatarData: avatarData(for: participant),
-                                    customName: customDisplayName(for: participant),
-                                    isSelected: store.isSelectedParticipant(participant.participantID),
-                                    isSelectable: true
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        } else {
-                            ThreadParticipantChip(
-                                participant: participant,
-                                color: chipColor(for: participant),
-                                avatarData: avatarData(for: participant),
-                                customName: customDisplayName(for: participant)
-                            )
-                        }
+                        ThreadParticipantChip(
+                            participant: participant,
+                            color: chipColor(for: participant),
+                            avatarData: avatarData(for: participant),
+                            customName: customDisplayName(for: participant)
+                        )
                     }
                 }
                 .padding(.vertical, 1)
@@ -782,7 +922,7 @@ struct ContentView: View {
                 .frame(maxWidth: 760)
                 .padding(.horizontal, 24)
                 .padding(.top, 18)
-                .padding(.bottom, 160)
+                .padding(.bottom, 28)
                 .frame(maxWidth: .infinity)
             }
             .scrollIndicators(.hidden)
@@ -800,13 +940,40 @@ struct ContentView: View {
         }
     }
 
-    private func composer(snapshot: DaemonThreadSnapshot) -> some View {
+    private func composerOuterHorizontalPadding(for availableWidth: CGFloat) -> CGFloat {
+        switch availableWidth {
+        case ..<390:
+            return 6
+        case ..<460:
+            return 8
+        default:
+            return 12
+        }
+    }
+
+    private func composerInnerHorizontalPadding(for availableWidth: CGFloat) -> CGFloat {
+        switch availableWidth {
+        case ..<390:
+            return 8
+        case ..<460:
+            return 10
+        default:
+            return 14
+        }
+    }
+
+    private func composerMaxWidth(for availableWidth: CGFloat) -> CGFloat {
+        min(760, max(availableWidth - (composerOuterHorizontalPadding(for: availableWidth) * 2), 0))
+    }
+
+    private func composer(snapshot: DaemonThreadSnapshot, availableWidth: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             mentionSuggestions(snapshot: snapshot)
 
             HStack(alignment: .bottom, spacing: 12) {
                 VStack(alignment: .leading, spacing: 10) {
                     TextField("Type a message or start with @agent-id ...", text: $draft, axis: .vertical)
+                        .accessibilityLabel("Message")
                         .focused($isComposerFocused)
                         .textFieldStyle(.plain)
                         .lineLimit(1...6)
@@ -841,18 +1008,10 @@ struct ContentView: View {
                 .disabled(!canSend(in: snapshot))
             }
         }
-        .frame(maxWidth: 760)
-        .padding(.horizontal, 16)
+        .frame(maxWidth: composerMaxWidth(for: availableWidth))
+        .padding(.horizontal, composerInnerHorizontalPadding(for: availableWidth))
         .padding(.vertical, 14)
-        .background(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .fill(theme.panel)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .stroke(theme.stroke, lineWidth: 1)
-        )
-        .shadow(color: Color.black.opacity(0.028), radius: 12, y: 4)
+        .modifier(ComposerSurfaceModifier(theme: theme))
     }
 
     private var compactPresentedThreadSheetBinding: Binding<CompactPresentedThread?> {
@@ -896,6 +1055,28 @@ struct ContentView: View {
         case "gray": return .gray
         case "red": return .red
         default: return .indigo
+        }
+    }
+}
+
+private struct ComposerSurfaceModifier: ViewModifier {
+    let theme: Theme
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26, *) {
+            content
+                .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        } else {
+            content
+                .background(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .fill(theme.panel)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .stroke(theme.stroke, lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(0.028), radius: 12, y: 4)
         }
     }
 }
@@ -1793,4 +1974,3 @@ private struct AssistantExecutionBadge: View {
             )
     }
 }
-
