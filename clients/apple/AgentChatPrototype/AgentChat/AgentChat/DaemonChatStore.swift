@@ -167,10 +167,24 @@ final class DaemonChatStore: ObservableObject {
         let allAgentIDs = Set(agentParticipants.map(\.participantID))
         let targets = Set(selectedParticipantIDs).intersection(allAgentIDs)
         guard !targets.isEmpty else {
-            errorMessage = "Select at least one checked agent to receive this message."
+            selectedParticipantIDs = allAgentIDs
+            let resetTargets = Set(selectedParticipantIDs).intersection(allAgentIDs)
+            guard !resetTargets.isEmpty else {
+                errorMessage = "Add at least one agent to this thread before sending a message."
+                return
+            }
+            errorMessage = nil
+            Task {
+                await send(
+                    SendThreadMessageRequest(
+                        threadID: threadID,
+                        content: trimmed,
+                        targetParticipantIDs: nil
+                    )
+                )
+            }
             return
         }
-
         let targetList: [String]? = targets == allAgentIDs ? nil : targets.sorted()
         errorMessage = nil
 
@@ -207,15 +221,6 @@ final class DaemonChatStore: ObservableObject {
         guard let index = agents.firstIndex(where: { $0.agentID == agentID }) else { return }
         agents[index] = agents[index].withAvatarImageData(imageData)
         persistKnownAgents()
-    }
-
-    func toggleParticipantSelection(_ participantID: String) {
-        participantSelectionWasCustomized = true
-        if selectedParticipantIDs.contains(participantID) {
-            selectedParticipantIDs.remove(participantID)
-        } else {
-            selectedParticipantIDs.insert(participantID)
-        }
     }
 
     func isSelectedParticipant(_ participantID: String) -> Bool {

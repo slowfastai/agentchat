@@ -734,7 +734,7 @@ struct ContentView: View {
 
     private func canSend(in snapshot: DaemonThreadSnapshot) -> Bool {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !selectedAgentParticipants(in: snapshot).isEmpty
+            && !snapshot.participants.filter(\.isAgent).isEmpty
     }
 
     private func sendDraft(in snapshot: DaemonThreadSnapshot) {
@@ -752,27 +752,14 @@ struct ContentView: View {
         #endif
     }
 
-    private func selectedAgentParticipants(in snapshot: DaemonThreadSnapshot) -> [DaemonThreadParticipant] {
-        snapshot.participants.filter { participant in
-            participant.isAgent && store.isSelectedParticipant(participant.participantID)
-        }
-    }
-
     private func participantSelectionSummary(for snapshot: DaemonThreadSnapshot) -> String {
         let agentParticipants = snapshot.participants.filter(\.isAgent)
-        let selectedCount = selectedAgentParticipants(in: snapshot).count
 
         guard !agentParticipants.isEmpty else {
             return "Add an agent to this thread before sending prompts."
         }
 
-        if selectedCount == 0 {
-            return "No agents are checked. Tap chips to choose who should receive the next prompt."
-        }
-        if selectedCount == agentParticipants.count {
-            return "All \(selectedCount) agents are checked. Start with @ to narrow replies."
-        }
-        return "\(selectedCount) of \(agentParticipants.count) agents are checked. @mentions intersect with the checked set."
+        return "Messages are sent to this group by default. Use @mentions to address a specific agent."
     }
 
     private func mentionSuggestionParticipants(for snapshot: DaemonThreadSnapshot) -> [DaemonThreadParticipant] {
@@ -780,7 +767,7 @@ struct ContentView: View {
             return []
         }
 
-        return selectedAgentParticipants(in: snapshot)
+        return snapshot.participants.filter(\.isAgent)
             .filter { $0.matchesMentionQuery(mentionContext.query) }
             .sorted { lhs, rhs in
                 let lhsHandle = lhs.mentionHandle.localizedCaseInsensitiveCompare(rhs.mentionHandle)
@@ -810,13 +797,13 @@ struct ContentView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(theme.mutedInk)
                     Spacer(minLength: 0)
-                    Text("Checked agents only")
+                    Text("In this group")
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(theme.subtleInk)
                 }
 
                 if suggestions.isEmpty {
-                    Text("No checked agents match this mention yet.")
+                    Text("No agents match this mention yet.")
                         .font(.footnote)
                         .foregroundStyle(theme.mutedInk)
                 } else {
@@ -875,28 +862,12 @@ struct ContentView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     ForEach(snapshot.participants, id: \.participantID) { participant in
-                        if participant.isAgent {
-                            Button {
-                                store.toggleParticipantSelection(participant.participantID)
-                            } label: {
-                                ThreadParticipantChip(
-                                    participant: participant,
-                                    color: chipColor(for: participant),
-                                    avatarData: avatarData(for: participant),
-                                    customName: customDisplayName(for: participant),
-                                    isSelected: store.isSelectedParticipant(participant.participantID),
-                                    isSelectable: true
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        } else {
-                            ThreadParticipantChip(
-                                participant: participant,
-                                color: chipColor(for: participant),
-                                avatarData: avatarData(for: participant),
-                                customName: customDisplayName(for: participant)
-                            )
-                        }
+                        ThreadParticipantChip(
+                            participant: participant,
+                            color: chipColor(for: participant),
+                            avatarData: avatarData(for: participant),
+                            customName: customDisplayName(for: participant)
+                        )
                     }
                 }
                 .padding(.vertical, 1)
@@ -963,6 +934,7 @@ struct ContentView: View {
             HStack(alignment: .bottom, spacing: 12) {
                 VStack(alignment: .leading, spacing: 10) {
                     TextField("Type a message or start with @agent-id ...", text: $draft, axis: .vertical)
+                        .accessibilityLabel("Message")
                         .focused($isComposerFocused)
                         .textFieldStyle(.plain)
                         .lineLimit(1...6)
