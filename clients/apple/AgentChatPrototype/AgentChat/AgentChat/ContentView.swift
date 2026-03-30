@@ -526,10 +526,7 @@ struct ContentView: View {
                 timeline(snapshot: snapshot)
                     .background(ChatScreenBackground().ignoresSafeArea())
                     .safeAreaInset(edge: .bottom, spacing: 0) {
-                        composer(snapshot: snapshot)
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 10)
-                            .background(.clear)
+                        composerDock(snapshot: snapshot)
                     }
                     .navigationTitle(snapshot.title ?? snapshot.threadID)
                     .navigationBarTitleDisplayMode(.inline)
@@ -909,7 +906,7 @@ struct ContentView: View {
                 .frame(maxWidth: 760)
                 .padding(.horizontal, 24)
                 .padding(.top, 18)
-                .padding(.bottom, 160)
+                .padding(.bottom, 28)
                 .frame(maxWidth: .infinity)
             }
             .scrollIndicators(.hidden)
@@ -924,6 +921,25 @@ struct ContentView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func composerDock(snapshot: DaemonThreadSnapshot) -> some View {
+        composer(snapshot: snapshot)
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            .padding(.bottom, 4)
+            .frame(maxWidth: .infinity)
+        .background(
+            Rectangle()
+                .fill(theme.canvasBottom)
+                .ignoresSafeArea(edges: .bottom)
+        )
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(theme.stroke)
+                .frame(height: 1)
+                .opacity(0.6)
         }
     }
 
