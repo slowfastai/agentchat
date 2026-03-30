@@ -142,6 +142,26 @@ struct AgentChatTests {
         #expect(store.agents[0].status == "offline")
     }
 
+    @Test @MainActor func daemonChatStoreOpensThreadLocallyWhileOfflineWithoutShowingError() async throws {
+        let suiteName = "AgentChatTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            Issue.record("Failed to create isolated UserDefaults suite")
+            return
+        }
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let store = DaemonChatStore(defaults: defaults)
+
+        store.attachThread("thread-1")
+        await Task.yield()
+
+        #expect(store.activeThreadID == "thread-1")
+        #expect(store.connectionStatus == "Not configured")
+        #expect(store.errorMessage == nil)
+    }
+
     @Test func agentRosterKeepsKnownAgentsVisibleWhenLiveListShrinks() async throws {
         let claude = makeAgent(
             agentID: "claude",

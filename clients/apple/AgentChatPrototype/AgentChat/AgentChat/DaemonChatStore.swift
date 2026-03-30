@@ -157,6 +157,10 @@ final class DaemonChatStore: ObservableObject {
     func attachThread(_ threadID: String) {
         setActiveThreadLocally(threadID)
 
+        guard hasActiveConnection else {
+            return
+        }
+
         Task {
             let afterSeq = cursorByThread[threadID]
             await send(AttachThreadRequest(threadID: threadID, afterSeq: afterSeq))
