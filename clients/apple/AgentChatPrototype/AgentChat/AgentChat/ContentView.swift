@@ -6,6 +6,33 @@ private enum AppTab: Hashable {
     case settings
 }
 
+private enum AgentPickerMode: Identifiable, Equatable {
+    case createThread
+    case addAgent
+
+    var id: String {
+        switch self {
+        case .createThread:
+            return "create-thread"
+        case .addAgent:
+            return "add-agent"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .createThread:
+            return "Select Agents"
+        case .addAgent:
+            return "Add Agents"
+        }
+    }
+
+    var doneTitle: String {
+        "Done"
+    }
+}
+
 struct Theme {
     let colorScheme: ColorScheme
 
@@ -148,6 +175,8 @@ struct ContentView: View {
     @State private var selectedTab: AppTab = .feed
     @State private var editingAgent: DaemonAgentSummary?
     @State private var pendingDeleteAgent: DaemonAgentSummary?
+    @State private var agentPickerMode: AgentPickerMode?
+    @State private var draftAgentSelection: Set<String> = []
 
     private var theme: Theme {
         Theme(colorScheme: colorScheme)
@@ -273,6 +302,14 @@ struct ContentView: View {
                 editingAgent = nil
             }
         }
+        .sheet(item: $agentPickerMode, onDismiss: {
+            draftAgentSelection = []
+        }) { mode in
+            NavigationStack {
+                agentPickerSheet(mode: mode)
+            }
+            .presentationDetents([.medium, .large])
+        }
     }
 
     @ViewBuilder
@@ -329,10 +366,8 @@ struct ContentView: View {
         AgentListSection(
             agents: store.agents,
             hasConfiguredDaemonURL: store.hasConfiguredDaemonURL,
-            isSelectedAgent: store.isSelectedAgent,
             subtitleForAgent: agentSubtitle,
             statusColorForAgent: agentStatusColor,
-            onToggleSelection: store.toggleAgentSelection,
             onReconnect: store.reconnectNow,
             onEdit: { editingAgent = $0 },
             onDelete: { pendingDeleteAgent = $0 }
@@ -460,7 +495,7 @@ struct ContentView: View {
     private var feedMenu: some View {
         Menu {
             Button {
-                store.createThreadWithSelectedAgents()
+                presentAgentPicker(.createThread)
                 selectedTab = .feed
             } label: {
                 Label("Create Thread", systemImage: "plus.bubble")
@@ -468,7 +503,7 @@ struct ContentView: View {
             .disabled(store.agents.filter(\.isOnline).isEmpty)
 
             Button {
-                store.addSelectedAgentsToActiveThread()
+                presentAgentPicker(.addAgent)
                 selectedTab = .feed
             } label: {
                 Label("Add Agent", systemImage: "person.badge.plus")
@@ -509,9 +544,76 @@ struct ContentView: View {
                 UnavailableStateView(
                     title: "No Active Thread",
                     systemImage: "bubble.left.and.bubble.right",
-                    message: "Open a thread from Feed, or create one from Agents."
+                    message: "Open a thread from Feed, or create one from the Feed menu."
                 )
                 .background(ChatScreenBackground().ignoresSafeArea())
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func agentPickerSheet(mode: AgentPickerMode) -> some View {
+        let selectableAgents = selectableAgents(for: mode)
+
+        List {
+            Section {
+                if selectableAgents.isEmpty {
+                    Text(emptyAgentPickerMessage(for: mode))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 4)
+                } else {
+                    ForEach(selectableAgents, id: \.agentID) { agent in
+                        Button {
+                            toggleDraftAgentSelection(agent.agentID)
+                        } label: {
+                            HStack(spacing: 12) {
+                                AgentAvatarView(agent: agent, size: 40)
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(agent.displayName)
+                                        .font(.body.weight(.medium))
+                                        .foregroundStyle(theme.primaryText)
+
+                                    Text(agentSubtitle(for: agent))
+                                        .font(.caption)
+                                        .foregroundStyle(theme.secondaryText)
+                                        .lineLimit(1)
+                                }
+
+                                Spacer(minLength: 0)
+
+                                Image(systemName: draftAgentSelection.contains(agent.agentID) ? "checkmark.circle.fill" : "circle")
+                                    .font(.title3)
+                                    .foregroundStyle(draftAgentSelection.contains(agent.agentID) ? theme.accent : theme.tertiaryText)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            } header: {
+                Text(mode == .createThread ? "Online Agents" : "Available To Add")
+            } footer: {
+                Text(mode == .createThread
+                    ? "Choose one or more online agents, then tap Done to create a new thread."
+                    : "Choose online agents not already in this thread, then tap Done to add them.")
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle(mode.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Cancel") {
+                    agentPickerMode = nil
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(mode.doneTitle) {
+                    completeAgentPicker(mode)
+                }
+                .disabled(draftAgentSelection.isEmpty)
             }
         }
     }
@@ -537,8 +639,63 @@ struct ContentView: View {
         return nil
     }
 
+    private func presentAgentPicker(_ mode: AgentPickerMode) {
+        draftAgentSelection = defaultAgentSelection(for: mode)
+        agentPickerMode = mode
+    }
+
+    private func selectableAgents(for mode: AgentPickerMode) -> [DaemonAgentSummary] {
+        let onlineAgents = store.agents.filter(\.isOnline)
+        switch mode {
+        case .createThread:
+            return onlineAgents
+        case .addAgent:
+            let existingAgentIDs = Set(store.activeThreadSnapshot?.participants.compactMap(\.agentID) ?? [])
+            return onlineAgents.filter { !existingAgentIDs.contains($0.agentID) }
+        }
+    }
+
+    private func defaultAgentSelection(for mode: AgentPickerMode) -> Set<String> {
+        let selectableIDs = Set(selectableAgents(for: mode).map(\.agentID))
+        let rememberedIDs = store.selectedAgentIDs.intersection(selectableIDs)
+        if !rememberedIDs.isEmpty {
+            return rememberedIDs
+        }
+        return selectableIDs
+    }
+
+    private func toggleDraftAgentSelection(_ agentID: String) {
+        if draftAgentSelection.contains(agentID) {
+            draftAgentSelection.remove(agentID)
+        } else {
+            draftAgentSelection.insert(agentID)
+        }
+    }
+
+    private func completeAgentPicker(_ mode: AgentPickerMode) {
+        let selectedAgentIDs = draftAgentSelection.sorted()
+        switch mode {
+        case .createThread:
+            store.createThread(withAgentIDs: selectedAgentIDs)
+        case .addAgent:
+            store.addAgents(selectedAgentIDs)
+        }
+        agentPickerMode = nil
+    }
+
+    private func emptyAgentPickerMessage(for mode: AgentPickerMode) -> String {
+        switch mode {
+        case .createThread:
+            return store.hasConfiguredDaemonURL
+                ? "No online agents are available right now. Reconnect to the daemon and try again."
+                : "Add a daemon connection first, then reconnect to discover online agents."
+        case .addAgent:
+            return "Every online agent is already in this thread."
+        }
+    }
+
     private var connectionStatusColor: Color {
-        if store.connectionStatus.contains("Connected") || store.connectionStatus.contains("Synced") {
+        if store.connectionStatus.contains("Online") {
             return .green
         }
         if store.connectionStatus.contains("Not configured") {
@@ -709,10 +866,9 @@ struct ContentView: View {
 
                 VStack(alignment: .trailing, spacing: 8) {
                     HeaderInfoPill(
-                        icon: store.connectionStatus.contains("Connected") || store.connectionStatus.contains("Synced") ? "bolt.fill" : "antenna.radiowaves.left.and.right",
+                        icon: store.connectionStatus.contains("Online") ? "bolt.fill" : "antenna.radiowaves.left.and.right",
                         text: store.connectionStatus
                     )
-                    HeaderInfoPill(icon: "number", text: "Seq \(snapshot.lastThreadSeq)")
                 }
             }
 
@@ -1793,4 +1949,3 @@ private struct AssistantExecutionBadge: View {
             )
     }
 }
-

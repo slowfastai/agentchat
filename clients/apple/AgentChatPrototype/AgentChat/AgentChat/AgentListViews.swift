@@ -3,10 +3,8 @@ import SwiftUI
 struct AgentListSection: View {
     let agents: [DaemonAgentSummary]
     let hasConfiguredDaemonURL: Bool
-    let isSelectedAgent: (String) -> Bool
     let subtitleForAgent: (DaemonAgentSummary) -> String
     let statusColorForAgent: (DaemonAgentSummary) -> Color
-    let onToggleSelection: (String) -> Void
     let onReconnect: () -> Void
     let onEdit: (DaemonAgentSummary) -> Void
     let onDelete: (DaemonAgentSummary) -> Void
@@ -28,11 +26,9 @@ struct AgentListSection: View {
                 ForEach(agents, id: \.agentID) { agent in
                     AgentRowView(
                         agent: agent,
-                        isSelected: isSelectedAgent(agent.agentID),
                         subtitle: subtitleForAgent(agent),
                         statusColor: statusColorForAgent(agent),
                         hasConfiguredDaemonURL: hasConfiguredDaemonURL,
-                        onToggleSelection: { onToggleSelection(agent.agentID) },
                         onReconnect: onReconnect
                     )
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
@@ -52,7 +48,7 @@ struct AgentListSection: View {
                     }
                 }
 
-                Text("Agents stay in this list after first discovery. Selected agents are used by Feed → menu → Create Thread / Add Agent, and only online agents can join right now.")
+                Text("Agents stay in this list after first discovery. Create threads and add agents from Feed, and only online agents can join right now.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -62,43 +58,33 @@ struct AgentListSection: View {
 
 struct AgentRowView: View {
     let agent: DaemonAgentSummary
-    let isSelected: Bool
     let subtitle: String
     let statusColor: Color
     let hasConfiguredDaemonURL: Bool
-    let onToggleSelection: () -> Void
     let onReconnect: () -> Void
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             AgentAvatarView(agent: agent, size: 40)
 
-            Button(action: onToggleSelection) {
-                HStack(spacing: 12) {
-                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(agent.displayName)
+                        .font(.body.weight(.medium))
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 4) {
-                            Text(agent.displayName)
-                                .font(.body.weight(.medium))
-
-                            if agent.customDisplayName != nil {
-                                Image(systemName: "pencil.circle.fill")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-
-                        Text(subtitle)
-                            .font(.caption)
+                    if agent.customDisplayName != nil {
+                        Image(systemName: "pencil.circle.fill")
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             VStack(alignment: .trailing, spacing: 6) {
                 Text(agent.status.replacingOccurrences(of: "_", with: " ").capitalized)
