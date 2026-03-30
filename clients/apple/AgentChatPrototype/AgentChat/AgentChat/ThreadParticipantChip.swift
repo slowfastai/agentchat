@@ -32,9 +32,10 @@ struct ThreadParticipantChip: View {
             ThreadParticipantAvatarView(
                 color: color,
                 avatarData: avatarData,
+                avatarAssetName: participant.defaultAvatarAssetName,
                 initials: initials,
                 size: 30,
-                cornerRadius: 11
+                cornerRadius: 15
             )
 
             VStack(alignment: .leading, spacing: 3) {
@@ -110,9 +111,10 @@ struct MentionSuggestionRow: View {
             ThreadParticipantAvatarView(
                 color: color,
                 avatarData: avatarData,
+                avatarAssetName: participant.defaultAvatarAssetName,
                 initials: initials,
                 size: 32,
-                cornerRadius: 10
+                cornerRadius: 16
             )
 
             VStack(alignment: .leading, spacing: 2) {
@@ -162,6 +164,7 @@ struct MentionSuggestionRow: View {
 private struct ThreadParticipantAvatarView: View {
     let color: Color
     let avatarData: Data?
+    let avatarAssetName: String?
     let initials: String
     let size: CGFloat
     let cornerRadius: CGFloat
@@ -173,9 +176,15 @@ private struct ThreadParticipantAvatarView: View {
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .clipShape(Circle())
+            } else if let avatarAssetName {
+                AgentDefaultAvatarArtwork(
+                    assetName: avatarAssetName,
+                    size: size,
+                    shape: .circle
+                )
             } else {
                 ZStack {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    Circle()
                         .fill(color.opacity(0.11))
                     Text(initials)
                         .font(.caption.weight(.bold))

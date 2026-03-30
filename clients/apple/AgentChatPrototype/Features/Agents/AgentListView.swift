@@ -241,6 +241,7 @@ private struct AgentFriendRow: View {
                 title: customName ?? agent.name,
                 accent: agent.accent,
                 systemImage: systemImage(for: agent.kind),
+                avatarAssetName: agent.kind.defaultAvatarAssetName,
                 avatarData: avatarData
             )
             .overlay(
@@ -311,6 +312,7 @@ private struct ContactIconTile: View {
     let title: String
     let accent: ColorToken
     let systemImage: String
+    var avatarAssetName: String? = nil
     var avatarData: Data?
 
     var body: some View {
@@ -320,6 +322,12 @@ private struct ContactIconTile: View {
                 .scaledToFill()
                 .frame(width: 42, height: 42)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        } else if let avatarAssetName {
+            AgentDefaultAvatarArtwork(
+                assetName: avatarAssetName,
+                size: 42,
+                shape: .roundedRect(cornerRadius: 10)
+            )
         } else {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(accent.color)

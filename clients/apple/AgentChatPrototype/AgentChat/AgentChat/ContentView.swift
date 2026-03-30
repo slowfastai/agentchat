@@ -202,6 +202,7 @@ struct ContentView: View {
                 }
                 .tag(AppTab.settings)
         }
+        .environmentObject(store)
         .tint(.indigo)
         .task {
             daemonURLDraft = store.daemonURL
@@ -914,7 +915,10 @@ struct ContentView: View {
                         EmptyThreadState(snapshot: snapshot)
                     } else {
                         ForEach(store.timeline, id: \.id) { entry in
-                            TimelineBubble(entry: entry)
+                            TimelineBubble(
+                                entry: entry,
+                                agentAvatarData: avatarData(for: entry.agentID)
+                            )
                                 .id(entry.id)
                         }
                     }
@@ -1041,6 +1045,11 @@ struct ContentView: View {
         return store.agents.first { $0.agentID == agentID }?.avatarImageData
     }
 
+    private func avatarData(for agentID: String?) -> Data? {
+        guard let agentID else { return nil }
+        return store.avatarData(for: agentID)
+    }
+
     private func customDisplayName(for participant: DaemonThreadParticipant) -> String? {
         guard let agentID = participant.agentID else { return nil }
         return store.agents.first { $0.agentID == agentID }?.customDisplayName
@@ -1146,6 +1155,7 @@ private struct CompactPresentedThread: Identifiable {
 
 private struct TimelineBubble: View {
     let entry: DaemonTimelineEntry
+    let agentAvatarData: Data?
     @Environment(\.colorScheme) private var colorScheme
     @State private var isShowingExecutionDetails = false
 
@@ -1214,7 +1224,7 @@ private struct TimelineBubble: View {
 
     private var assistantRow: some View {
         HStack(alignment: .top, spacing: 14) {
-            iconBadge
+            agentAvatarBadge
                 .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 14) {
@@ -1545,6 +1555,37 @@ private struct TimelineBubble: View {
             RoundedRectangle(cornerRadius: 13, style: .continuous)
                 .stroke(theme.stroke, lineWidth: 1)
         )
+    }
+
+    @ViewBuilder
+    private var agentAvatarBadge: some View {
+        if let avatarData = agentAvatarData, let image = UIImage(data: avatarData) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 38, height: 38)
+                .clipShape(Circle())
+                .overlay(
+                    Circle()
+                        .stroke(theme.stroke, lineWidth: 1)
+                )
+        } else if let assetName = assistantFamily.defaultAvatarAssetName {
+            AgentDefaultAvatarArtwork(
+                assetName: assetName,
+                size: 38,
+                shape: .circle
+            )
+            .overlay(
+                Circle()
+                    .stroke(theme.stroke, lineWidth: 1)
+            )
+        } else {
+            iconBadge
+        }
+    }
+
+    private var assistantFamily: DaemonAgentFamily {
+        DaemonAgentFamily(agentID: entry.agentID, kind: nil, name: entry.title)
     }
 
     private var iconName: String {
