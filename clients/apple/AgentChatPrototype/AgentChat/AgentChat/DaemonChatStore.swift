@@ -474,6 +474,17 @@ final class DaemonChatStore: ObservableObject {
                 let snapshot = try decoder.decode(ThreadSnapshotEvent.self, from: data).snapshot
                 snapshotsByThread[snapshot.threadID] = snapshot
                 cursorByThread[snapshot.threadID] = max(cursorByThread[snapshot.threadID] ?? 0, snapshot.lastThreadSeq)
+                updateThreadSummary(threadID: snapshot.threadID) { summary in
+                    DaemonThreadSummary(
+                        threadID: summary.threadID,
+                        title: snapshot.title ?? summary.title,
+                        workingDir: snapshot.workingDir,
+                        createdAtMS: snapshot.createdAtMS,
+                        state: summary.state,
+                        participantCount: snapshot.participants.count,
+                        lastThreadSeq: max(summary.lastThreadSeq, snapshot.lastThreadSeq)
+                    )
+                }
                 if activeThreadID == snapshot.threadID {
                     activeThreadSnapshot = snapshot
                     timeline = timelineByThread[snapshot.threadID] ?? []
@@ -504,13 +515,14 @@ final class DaemonChatStore: ObservableObject {
                     to: event.threadID
                 )
                 updateThreadSummary(threadID: event.threadID) { summary in
-                    DaemonThreadSummary(
+                    let participantCount = snapshotsByThread[event.threadID]?.participants.count ?? summary.participantCount
+                    return DaemonThreadSummary(
                         threadID: summary.threadID,
                         title: summary.title,
                         workingDir: summary.workingDir,
                         createdAtMS: summary.createdAtMS,
                         state: summary.state,
-                        participantCount: summary.participantCount + 1,
+                        participantCount: participantCount,
                         lastThreadSeq: max(summary.lastThreadSeq, event.threadSeq)
                     )
                 }
@@ -529,13 +541,14 @@ final class DaemonChatStore: ObservableObject {
                     to: event.threadID
                 )
                 updateThreadSummary(threadID: event.threadID) { summary in
-                    DaemonThreadSummary(
+                    let participantCount = snapshotsByThread[event.threadID]?.participants.count ?? summary.participantCount
+                    return DaemonThreadSummary(
                         threadID: summary.threadID,
                         title: summary.title,
                         workingDir: summary.workingDir,
                         createdAtMS: summary.createdAtMS,
                         state: summary.state,
-                        participantCount: max(summary.participantCount - 1, 1),
+                        participantCount: participantCount,
                         lastThreadSeq: max(summary.lastThreadSeq, event.threadSeq)
                     )
                 }
