@@ -1243,10 +1243,19 @@ private struct TimelineBubble: View {
                         .foregroundStyle(.white.opacity(0.70))
                 }
 
-                Text(entry.body.isEmpty ? "..." : entry.body)
-                    .font(.body)
-                    .foregroundStyle(.white)
-                    .lineSpacing(3)
+                if entry.body.isEmpty {
+                    Text("...")
+                        .font(.body)
+                        .foregroundStyle(.white)
+                        .lineSpacing(3)
+                } else {
+                    AgentSelectableText(
+                        entry.body,
+                        font: AgentSelectableText.preferredFont(for: .body),
+                        textColor: .white,
+                        lineSpacing: 3
+                    )
+                }
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 16)
@@ -1314,12 +1323,21 @@ private struct TimelineBubble: View {
                     }
                     .foregroundStyle(typeColor)
 
-                    Text(entry.body.isEmpty ? "..." : entry.body)
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(theme.ink)
-                        .lineSpacing(4)
-                        .textSelection(.enabled)
+                    if entry.body.isEmpty {
+                        Text("...")
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundStyle(theme.ink)
+                            .lineSpacing(4)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        AgentSelectableText(
+                            entry.body,
+                            font: AgentSelectableText.preferredMonospacedFont(for: .body),
+                            textColor: UIColor(theme.ink),
+                            lineSpacing: 4
+                        )
                         .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
                 .padding(14)
                 .background(
@@ -1341,10 +1359,12 @@ private struct TimelineBubble: View {
                     }
 
                     if !entry.body.isEmpty {
-                        AgentMarkdownText(content: entry.body)
-                            .font(.body)
-                            .foregroundStyle(theme.ink)
-                            .lineSpacing(5)
+                        AgentMarkdownText(
+                            content: entry.body,
+                            textStyle: .body,
+                            textColor: UIColor(theme.ink),
+                            lineSpacing: 5
+                        )
                             .frame(maxWidth: .infinity, alignment: .leading)
                     } else if entry.executionSummary == nil {
                         Text("...")
@@ -1364,11 +1384,21 @@ private struct TimelineBubble: View {
                     }
                 }
             } else {
-                Text(entry.body.isEmpty ? "..." : entry.body)
-                    .font(.body)
-                    .foregroundStyle(theme.ink)
-                    .lineSpacing(5)
+                if entry.body.isEmpty {
+                    Text("...")
+                        .font(.body)
+                        .foregroundStyle(theme.ink)
+                        .lineSpacing(5)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    AgentSelectableText(
+                        entry.body,
+                        font: AgentSelectableText.preferredFont(for: .body),
+                        textColor: UIColor(theme.ink),
+                        lineSpacing: 5
+                    )
                     .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
     }
@@ -1749,7 +1779,8 @@ private struct AssistantExecutionDetailSheet: View {
                         systemImage: "brain.head.profile",
                         content: thinkingBody,
                         titleColor: theme.subtleInk,
-                        bodyFont: .callout,
+                        markdownTextStyle: .callout,
+                        bodyUIFont: AgentSelectableText.preferredFont(for: .callout),
                         bodyColor: theme.subtleInk,
                         rendersMarkdown: true,
                         fill: theme.panel.opacity(0.96),
@@ -1763,7 +1794,8 @@ private struct AssistantExecutionDetailSheet: View {
                         systemImage: "list.bullet.clipboard",
                         content: planBody,
                         titleColor: theme.planColor,
-                        bodyFont: .system(.body, design: .monospaced),
+                        markdownTextStyle: .body,
+                        bodyUIFont: AgentSelectableText.preferredMonospacedFont(for: .body),
                         bodyColor: theme.ink,
                         rendersMarkdown: false,
                         fill: theme.planPanel.opacity(0.74),
@@ -1913,7 +1945,8 @@ private struct AssistantExecutionPanel: View {
     let systemImage: String
     let content: String
     let titleColor: Color
-    let bodyFont: Font
+    let markdownTextStyle: UIFont.TextStyle
+    let bodyUIFont: UIFont
     let bodyColor: Color
     let rendersMarkdown: Bool
     let fill: Color
@@ -1928,18 +1961,19 @@ private struct AssistantExecutionPanel: View {
             if rendersMarkdown {
                 AgentMarkdownText(
                     content: content,
-                    preferredSyntax: .inlineOnlyPreservingWhitespace
+                    preferredSyntax: .inlineOnlyPreservingWhitespace,
+                    textStyle: markdownTextStyle,
+                    textColor: UIColor(bodyColor),
+                    lineSpacing: 4
                 )
-                .font(bodyFont)
-                .foregroundStyle(bodyColor)
-                .lineSpacing(4)
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                Text(content)
-                    .font(bodyFont)
-                    .foregroundStyle(bodyColor)
-                    .lineSpacing(4)
-                    .textSelection(.enabled)
+                AgentSelectableText(
+                    content,
+                    font: bodyUIFont,
+                    textColor: UIColor(bodyColor),
+                    lineSpacing: 4
+                )
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -1979,11 +2013,12 @@ private struct AssistantExecutionToolCard: View {
 
             if let content = activity.content,
                !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(content)
-                    .font(.system(.footnote, design: .monospaced))
-                    .foregroundStyle(theme.ink)
-                    .lineSpacing(3)
-                    .textSelection(.enabled)
+                AgentSelectableText(
+                    content,
+                    font: AgentSelectableText.preferredMonospacedFont(for: .footnote),
+                    textColor: UIColor(theme.ink),
+                    lineSpacing: 3
+                )
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
