@@ -9,8 +9,8 @@ use std::rc::Rc;
 use futures::stream::StreamExt;
 use futures::SinkExt;
 use tokio::net::TcpListener;
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::time::{interval, Duration};
-use tokio::sync::{broadcast, mpsc, watch};
 use tokio_tungstenite::accept_async_with_config;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
@@ -61,6 +61,9 @@ impl WebSocketServer {
             app_session.shutdown().await;
         });
 
+        let mut active_connection: Option<(oneshot::Sender<()>, tokio::task::JoinHandle<()>)> =
+            None;
+
         loop {
             let accepted = tokio::select! {
                 accepted = listener.accept() => accepted,
@@ -88,8 +91,31 @@ impl WebSocketServer {
                 }
             };
 
-            self.handle_connection(ws, client_tx.clone(), event_tx.clone(), shutdown_rx.clone())
-                .await;
+            if let Some((replace_tx, handle)) = active_connection.take() {
+                info!("replacing existing client connection");
+                let _ = replace_tx.send(());
+                if let Err(err) = handle.await {
+                    error!("connection task panicked while replacing client: {err}");
+                }
+            }
+
+            let (replace_tx, replace_rx) = oneshot::channel();
+            let client_tx = client_tx.clone();
+            let event_tx = event_tx.clone();
+            let shutdown_rx = shutdown_rx.clone();
+            active_connection = Some((
+                replace_tx,
+                tokio::task::spawn_local(async move {
+                    Self::handle_connection(ws, client_tx, event_tx, shutdown_rx, replace_rx).await;
+                }),
+            ));
+        }
+
+        if let Some((replace_tx, handle)) = active_connection.take() {
+            let _ = replace_tx.send(());
+            if let Err(err) = handle.await {
+                error!("connection task panicked during shutdown: {err}");
+            }
         }
 
         drop(client_tx);
@@ -101,18 +127,18 @@ impl WebSocketServer {
     }
 
     async fn handle_connection(
-        &self,
         ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
         client_tx: mpsc::UnboundedSender<ClientMessage>,
         event_tx: broadcast::Sender<agentchat_protocol::ResponseEvent>,
         mut shutdown_rx: watch::Receiver<bool>,
+        mut replace_rx: oneshot::Receiver<()>,
     ) {
         let (mut ws_tx, mut ws_rx) = ws.split();
         let mut response_rx = event_tx.subscribe();
 
         let (ping_tx, mut ping_rx) = tokio::sync::mpsc::channel::<Message>(1);
         let ping_tx_clone = ping_tx.clone();
-        let ping_interval = Duration::from_secs(25);
+        let ping_interval = Duration::from_secs(10);
         let ping_task = tokio::task::spawn_local(async move {
             let mut ticker = interval(ping_interval);
             loop {
@@ -190,6 +216,10 @@ impl WebSocketServer {
                 }
                 _ = shutdown_rx.changed() => {
                     info!("closing client connection for shutdown");
+                    break;
+                }
+                _ = &mut replace_rx => {
+                    info!("closing replaced client connection");
                     break;
                 }
             }

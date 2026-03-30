@@ -233,6 +233,35 @@ async fn websocket_round_trip_streams_prompt_events_and_survives_reconnect() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn websocket_new_connection_replaces_existing_client() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_harness(FakeAgentMode::Normal).await;
+            let mut first_ws = connect_ws(harness.port).await;
+
+            send_client_message(&mut first_ws, &ClientMessage::ListSessions).await;
+            match receive_event(&mut first_ws).await {
+                ResponseEvent::SessionList { .. } => {}
+                event => panic!("unexpected event from first client: {event:?}"),
+            }
+
+            let mut second_ws = connect_ws(harness.port).await;
+            send_client_message(&mut second_ws, &ClientMessage::ListSessions).await;
+            match receive_event(&mut second_ws).await {
+                ResponseEvent::SessionList { .. } => {}
+                event => panic!("unexpected event from replacement client: {event:?}"),
+            }
+
+            second_ws.send(Message::Close(None)).await.unwrap();
+            drop(second_ws);
+            drop(first_ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn websocket_lists_agents_and_creates_sessions_for_requested_agent() {
     let local = tokio::task::LocalSet::new();
     local

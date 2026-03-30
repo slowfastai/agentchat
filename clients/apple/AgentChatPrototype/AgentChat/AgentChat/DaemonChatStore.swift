@@ -378,12 +378,17 @@ final class DaemonChatStore: ObservableObject {
             }
         } catch {
             guard !Task.isCancelled else { return }
-            handleConnectionFailure(message: "Failed to connect to daemon: \(error.localizedDescription)")
+            handleConnectionFailure(
+                message: connectionFailureMessage(
+                    for: error,
+                    connectionPayload: connectionPayload,
+                    rawValue: rawValue
+                )
+            )
         }
     }
 
     private func bootstrapDirectConnection(using task: URLSessionWebSocketTask) async throws {
-        try await ping(task)
         guard socketTask === task else { return }
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
@@ -866,18 +871,6 @@ final class DaemonChatStore: ObservableObject {
         }
     }
 
-    private func ping(_ task: URLSessionWebSocketTask) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            task.sendPing { error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: ())
-                }
-            }
-        }
-    }
-
     private func relayAppInstallationID() -> String {
         if let existing = defaults.string(forKey: Self.relayAppInstallationIDKey),
            !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -915,6 +908,77 @@ final class DaemonChatStore: ObservableObject {
         connectionStatus = "Offline"
         connectingAgentIDs.removeAll()
         scheduleReconnect()
+    }
+
+    private func connectionFailureMessage(
+        for error: Error,
+        connectionPayload: ScannedDaemonConnectionPayload,
+        rawValue: String
+    ) -> String {
+        let nsError = error as NSError
+        var components = [
+            "Failed to connect to daemon",
+            "\(nsError.domain) (\(nsError.code)): \(nsError.localizedDescription)"
+        ]
+
+        switch connectionPayload {
+        case .direct(let urlString, _):
+            components.append("URL: \(urlString)")
+            if let hint = directConnectionHint(for: urlString) {
+                components.append(hint)
+            }
+        case .relay(let relayPayload):
+            components.append("Relay URL: \(relayPayload.wsURL)")
+            components.append("If this is a public endpoint, it must use wss://.")
+        }
+
+        if rawValue != daemonURLString.trimmingCharacters(in: .whitespacesAndNewlines) {
+            components.append("The saved connection link changed while connecting.")
+        }
+
+        return components.joined(separator: "\n")
+    }
+
+    private func directConnectionHint(for urlString: String) -> String? {
+        guard let url = URL(string: urlString),
+              let scheme = url.scheme?.lowercased(),
+              let host = url.host?.lowercased()
+        else {
+            return nil
+        }
+
+        if scheme == "ws" && !isLocalNetworkHost(host) {
+            return "Remote iPhone connections to non-local hosts require wss://, not ws://."
+        }
+
+        if isLocalNetworkHost(host) {
+            return "If this is a LAN URL, allow AgentChat in Settings > Privacy & Security > Local Network."
+        }
+
+        return nil
+    }
+
+    private func isLocalNetworkHost(_ host: String) -> Bool {
+        if host == "localhost" || host.hasSuffix(".local") {
+            return true
+        }
+
+        if host.hasPrefix("10.") || host.hasPrefix("192.168.") || host.hasPrefix("127.") {
+            return true
+        }
+
+        if host.hasPrefix("172.") {
+            let parts = host.split(separator: ".")
+            if parts.count >= 2, let secondOctet = Int(parts[1]), (16...31).contains(secondOctet) {
+                return true
+            }
+        }
+
+        if host.hasPrefix("fe80:") || host.hasPrefix("fc") || host.hasPrefix("fd") || host == "::1" {
+            return true
+        }
+
+        return false
     }
 
     private func scheduleReconnect() {
