@@ -569,6 +569,7 @@ final class DaemonChatStore: ObservableObject {
                         threadID: event.threadID,
                         threadSeq: event.threadSeq,
                         kind: .user,
+                        agentID: nil,
                         title: event.sender.displayName,
                         body: event.content,
                         tintName: "blue"

@@ -125,6 +125,17 @@ enum DaemonAgentFamily: String, Hashable {
         }
     }
 
+    var defaultAvatarAssetName: String? {
+        switch self {
+        case .codex:
+            return "CodexAvatar"
+        case .opencode:
+            return "OpenCodeAvatar"
+        case .claude, .pi, .human, .generic:
+            return nil
+        }
+    }
+
     var tintName: String {
         switch self {
         case .claude:
@@ -238,6 +249,7 @@ struct DaemonAgentSummary: Codable, Identifiable, Hashable {
     var family: DaemonAgentFamily { DaemonAgentFamily(agentID: agentID, kind: kind, name: name) }
     var symbolName: String { family.symbolName }
     var tintName: String { family.tintName }
+    var defaultAvatarAssetName: String? { family.defaultAvatarAssetName }
     var kindTitle: String { family.title }
     var displayName: String {
         if let customName = customDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines), !customName.isEmpty {
@@ -345,6 +357,7 @@ struct DaemonThreadParticipant: Codable, Identifiable, Hashable {
     var isAgent: Bool { kind == "agent" }
     var family: DaemonAgentFamily { DaemonAgentFamily(agentID: agentID, kind: kind, name: displayName) }
     var tintName: String { family.tintName }
+    var defaultAvatarAssetName: String? { family.defaultAvatarAssetName }
     var kindTitle: String { isAgent ? family.title : humanizeAgentIdentifier(kind) }
     var mentionHandle: String {
         if let mentionHandleOverride,
@@ -796,6 +809,7 @@ struct DaemonTimelineEntry: Codable, Identifiable, Hashable {
     let sortThreadSeq: UInt64
     let lastThreadSeq: UInt64
     let kind: Kind
+    let agentID: String?
     let title: String
     let body: String
     let thinkingBody: String?
@@ -808,6 +822,7 @@ struct DaemonTimelineEntry: Codable, Identifiable, Hashable {
         threadID: String,
         threadSeq: UInt64,
         kind: Kind,
+        agentID: String? = nil,
         title: String,
         body: String,
         thinkingBody: String? = nil,
@@ -820,6 +835,7 @@ struct DaemonTimelineEntry: Codable, Identifiable, Hashable {
         self.sortThreadSeq = threadSeq
         self.lastThreadSeq = threadSeq
         self.kind = kind
+        self.agentID = agentID
         self.title = title
         self.body = body
         self.thinkingBody = thinkingBody
@@ -834,6 +850,7 @@ struct DaemonTimelineEntry: Codable, Identifiable, Hashable {
         sortThreadSeq: UInt64,
         lastThreadSeq: UInt64,
         kind: Kind,
+        agentID: String? = nil,
         title: String,
         body: String,
         thinkingBody: String? = nil,
@@ -846,6 +863,7 @@ struct DaemonTimelineEntry: Codable, Identifiable, Hashable {
         self.sortThreadSeq = sortThreadSeq
         self.lastThreadSeq = lastThreadSeq
         self.kind = kind
+        self.agentID = agentID
         self.title = title
         self.body = body
         self.thinkingBody = thinkingBody
@@ -1174,6 +1192,7 @@ struct AssistantTurnState: Equatable {
             sortThreadSeq: sortThreadSeq,
             lastThreadSeq: lastThreadSeq,
             kind: .assistantTurn,
+            agentID: agentID,
             title: agentID.capitalized,
             body: response,
             thinkingBody: thinking.isEmpty ? nil : thinking,

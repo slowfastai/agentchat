@@ -154,15 +154,25 @@ private struct ThreadAvatarView: View {
     let thread: ChatThreadSummary
 
     var body: some View {
+        let family = DaemonAgentFamily(agentID: nil, kind: nil, name: thread.participants.first)
+
         ZStack {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(thread.accent.color.opacity(0.15))
                 .frame(width: 54, height: 54)
 
             if thread.participants.count <= 1 {
-                Image(systemName: iconName)
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(thread.accent.color)
+                if let avatarAssetName = family.defaultAvatarAssetName {
+                    AgentDefaultAvatarArtwork(
+                        assetName: avatarAssetName,
+                        size: 38,
+                        shape: .circle
+                    )
+                } else {
+                    Image(systemName: iconName)
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(thread.accent.color)
+                }
             } else {
                 ZStack {
                     Circle()
