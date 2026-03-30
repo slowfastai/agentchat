@@ -180,7 +180,6 @@ struct ContentView: View {
     @StateObject private var store = DaemonChatStore()
     @State private var draft = ""
     @FocusState private var isComposerFocused: Bool
-    @State private var daemonURLDraft = ""
     @State private var isScannerPresented = false
     @State private var compactPresentedThreadID: String?
     @State private var pendingCloseThread: DaemonThreadSummary?
@@ -218,11 +217,7 @@ struct ContentView: View {
         .environmentObject(store)
         .tint(.indigo)
         .task {
-            daemonURLDraft = store.daemonURL
             store.start()
-        }
-        .onChange(of: store.daemonURL) { newValue in
-            daemonURLDraft = newValue
         }
         .alert("Daemon Error", isPresented: Binding(
             get: { store.errorMessage != nil },
@@ -360,7 +355,6 @@ struct ContentView: View {
     private var settingsRoot: some View {
         NavigationStack {
             List {
-                settingsConnectionSection
             }
             .listStyle(.insetGrouped)
             .navigationTitle("Settings")
@@ -384,7 +378,6 @@ struct ContentView: View {
         AgentListSection(
             agents: store.agents,
             hasConfiguredDaemonURL: store.hasConfiguredDaemonURL,
-            subtitleForAgent: agentSubtitle,
             statusColorForAgent: agentStatusColor,
             onReconnect: store.reconnectNow,
             onEdit: { editingAgent = $0 },
@@ -443,71 +436,6 @@ struct ContentView: View {
                     }
                 }
             }
-        }
-    }
-
-    private var settingsConnectionSection: some View {
-        Section("Connection") {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(connectionStatusColor)
-                    .frame(width: 10, height: 10)
-                Text(store.connectionStatus)
-                    .font(.subheadline)
-            }
-            .padding(.vertical, 4)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Connection link")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-
-                TextField("ws://192.168.1.10:9390", text: $daemonURLDraft)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled(true)
-                    .keyboardType(.URL)
-                    .font(.footnote.monospaced())
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit {
-                        submitDaemonURL()
-                    }
-
-                if !store.daemonURL.isEmpty {
-                    Text("Saved: \(store.daemonURL)")
-                        .font(.footnote.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-            }
-            .padding(.vertical, 4)
-
-            Button {
-                submitDaemonURL()
-            } label: {
-                Label("Save & Connect", systemImage: "link.badge.plus")
-            }
-            .disabled(daemonURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-            Button {
-                isScannerPresented = true
-            } label: {
-                Label("Scan QR", systemImage: "qrcode.viewfinder")
-            }
-
-            Button {
-                store.reconnectNow()
-            } label: {
-                Label("Reconnect", systemImage: "arrow.clockwise")
-            }
-            .disabled(!store.hasConfiguredDaemonURL)
-
-            Text("The app will not auto-connect on first launch. Connect by scanning a QR code, entering a URL, or tapping Reconnect. If connection is lost, the app will automatically attempt to reconnect.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-
-            Text("Paste ws://..., wss://..., or an agentchat://connect?... link. Relay QR links can use relay_url=<websocket-url>&pairing_ticket=<pairing-ticket>&relay_pairing=claim&relay_crypto=dev.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
         }
     }
 
@@ -720,16 +648,6 @@ struct ContentView: View {
         }
     }
 
-    private var connectionStatusColor: Color {
-        if store.connectionStatus.contains("Online") {
-            return .green
-        }
-        if store.connectionStatus.contains("Not configured") {
-            return .gray
-        }
-        return .orange
-    }
-
     private func agentStatusColor(for agent: DaemonAgentSummary) -> Color {
         if agent.isOnline {
             return color(named: agent.tintName)
@@ -752,10 +670,6 @@ struct ContentView: View {
             return "empty"
         }
         return "\(lastEntry.id)-\(lastEntry.lastThreadSeq)-\(store.timeline.count)"
-    }
-
-    private func submitDaemonURL() {
-        store.updateDaemonURL(daemonURLDraft)
     }
 
     private func canSend(in snapshot: DaemonThreadSnapshot) -> Bool {
