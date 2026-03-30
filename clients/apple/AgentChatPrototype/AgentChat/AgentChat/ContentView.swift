@@ -523,13 +523,29 @@ struct ContentView: View {
     private var detail: some View {
         Group {
             if let snapshot = store.activeThreadSnapshot {
-                timeline(snapshot: snapshot)
-                    .background(ChatScreenBackground().ignoresSafeArea())
-                    .safeAreaInset(edge: .bottom, spacing: 0) {
-                        composerDock(snapshot: snapshot)
-                    }
-                    .navigationTitle(snapshot.title ?? snapshot.threadID)
-                    .navigationBarTitleDisplayMode(.inline)
+                GeometryReader { geometry in
+                    timeline(snapshot: snapshot)
+                        .background(ChatScreenBackground().ignoresSafeArea())
+                        .safeAreaInset(edge: .bottom, spacing: 0) {
+                            composer(snapshot: snapshot, availableWidth: geometry.size.width)
+                                .padding(.horizontal, composerOuterHorizontalPadding(for: geometry.size.width))
+                                .padding(.top, 4)
+                                .padding(.bottom, 4)
+                                .frame(maxWidth: .infinity)
+                                .overlay(alignment: .bottom) {
+                                    GeometryReader { proxy in
+                                        Rectangle()
+                                            .fill(theme.canvasBottom)
+                                            .frame(height: proxy.safeAreaInsets.bottom + 4)
+                                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                                            .ignoresSafeArea(edges: .bottom)
+                                    }
+                                    .allowsHitTesting(false)
+                                }
+                        }
+                        .navigationTitle(snapshot.title ?? snapshot.threadID)
+                        .navigationBarTitleDisplayMode(.inline)
+                }
             } else if store.activeThreadID != nil {
                 UnavailableStateView(
                     title: "Loading Thread",
@@ -924,26 +940,33 @@ struct ContentView: View {
         }
     }
 
-    private func composerDock(snapshot: DaemonThreadSnapshot) -> some View {
-        composer(snapshot: snapshot)
-            .padding(.horizontal, 16)
-            .padding(.top, 4)
-            .padding(.bottom, 4)
-            .frame(maxWidth: .infinity)
-        .background(
-            Rectangle()
-                .fill(theme.canvasBottom)
-                .ignoresSafeArea(edges: .bottom)
-        )
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(theme.stroke)
-                .frame(height: 1)
-                .opacity(0.6)
+    private func composerOuterHorizontalPadding(for availableWidth: CGFloat) -> CGFloat {
+        switch availableWidth {
+        case ..<390:
+            return 6
+        case ..<460:
+            return 8
+        default:
+            return 12
         }
     }
 
-    private func composer(snapshot: DaemonThreadSnapshot) -> some View {
+    private func composerInnerHorizontalPadding(for availableWidth: CGFloat) -> CGFloat {
+        switch availableWidth {
+        case ..<390:
+            return 8
+        case ..<460:
+            return 10
+        default:
+            return 14
+        }
+    }
+
+    private func composerMaxWidth(for availableWidth: CGFloat) -> CGFloat {
+        min(760, max(availableWidth - (composerOuterHorizontalPadding(for: availableWidth) * 2), 0))
+    }
+
+    private func composer(snapshot: DaemonThreadSnapshot, availableWidth: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             mentionSuggestions(snapshot: snapshot)
 
@@ -985,18 +1008,10 @@ struct ContentView: View {
                 .disabled(!canSend(in: snapshot))
             }
         }
-        .frame(maxWidth: 760)
-        .padding(.horizontal, 16)
+        .frame(maxWidth: composerMaxWidth(for: availableWidth))
+        .padding(.horizontal, composerInnerHorizontalPadding(for: availableWidth))
         .padding(.vertical, 14)
-        .background(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .fill(theme.panel)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .stroke(theme.stroke, lineWidth: 1)
-        )
-        .shadow(color: Color.black.opacity(0.028), radius: 12, y: 4)
+        .modifier(ComposerSurfaceModifier(theme: theme))
     }
 
     private var compactPresentedThreadSheetBinding: Binding<CompactPresentedThread?> {
@@ -1040,6 +1055,28 @@ struct ContentView: View {
         case "gray": return .gray
         case "red": return .red
         default: return .indigo
+        }
+    }
+}
+
+private struct ComposerSurfaceModifier: ViewModifier {
+    let theme: Theme
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26, *) {
+            content
+                .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        } else {
+            content
+                .background(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .fill(theme.panel)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .stroke(theme.stroke, lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(0.028), radius: 12, y: 4)
         }
     }
 }
