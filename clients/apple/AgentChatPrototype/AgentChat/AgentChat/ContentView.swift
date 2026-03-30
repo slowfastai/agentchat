@@ -534,30 +534,13 @@ struct ContentView: View {
         Group {
             if let snapshot = store.activeThreadSnapshot {
                 GeometryReader { geometry in
-                    VStack(spacing: 0) {
-                        timeline(snapshot: snapshot)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                        composer(snapshot: snapshot, availableWidth: geometry.size.width)
-                            .padding(.horizontal, composerOuterHorizontalPadding(for: geometry.size.width))
-                            .padding(.top, 4)
-                            .padding(.bottom, composerBottomPadding(safeAreaBottom: geometry.safeAreaInsets.bottom))
-                            .frame(maxWidth: .infinity)
-                    }
-                    .background(ChatScreenBackground().ignoresSafeArea())
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                    .overlay(alignment: .bottom) {
-                        GeometryReader { proxy in
-                            Rectangle()
-                                .fill(theme.canvasBottom)
-                                .frame(height: proxy.safeAreaInsets.bottom)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                                .ignoresSafeArea(edges: .bottom)
+                    timeline(snapshot: snapshot)
+                        .background(ChatScreenBackground().ignoresSafeArea())
+                        .safeAreaInset(edge: .bottom, spacing: 0) {
+                            composerDock(snapshot: snapshot, availableWidth: geometry.size.width)
                         }
-                        .allowsHitTesting(false)
-                    }
-                    .navigationTitle(snapshot.title ?? snapshot.threadID)
-                    .navigationBarTitleDisplayMode(.inline)
+                        .navigationTitle(snapshot.title ?? snapshot.threadID)
+                        .navigationBarTitleDisplayMode(.inline)
                 }
             } else if store.activeThreadID != nil {
                 UnavailableStateView(
@@ -982,8 +965,22 @@ struct ContentView: View {
         min(760, max(availableWidth - (composerOuterHorizontalPadding(for: availableWidth) * 2), 0))
     }
 
-    private func composerBottomPadding(safeAreaBottom: CGFloat) -> CGFloat {
-        isKeyboardPresented ? 4 : max(4, safeAreaBottom)
+    private func composerDock(snapshot: DaemonThreadSnapshot, availableWidth: CGFloat) -> some View {
+        composer(snapshot: snapshot, availableWidth: availableWidth)
+            .padding(.horizontal, composerOuterHorizontalPadding(for: availableWidth))
+            .padding(.top, 4)
+            .padding(.bottom, 4)
+            .frame(maxWidth: .infinity)
+            .overlay(alignment: .bottom) {
+                GeometryReader { proxy in
+                    Rectangle()
+                        .fill(theme.canvasBottom)
+                        .frame(height: isKeyboardPresented ? 4 : proxy.safeAreaInsets.bottom + 4)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                        .ignoresSafeArea(edges: .bottom)
+                }
+                .allowsHitTesting(false)
+            }
     }
 
     private func composer(snapshot: DaemonThreadSnapshot, availableWidth: CGFloat) -> some View {
