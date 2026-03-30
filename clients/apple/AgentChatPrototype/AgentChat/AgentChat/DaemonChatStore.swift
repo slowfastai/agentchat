@@ -97,6 +97,10 @@ final class DaemonChatStore: ObservableObject {
         pinnedThreadIDs.contains(threadID)
     }
 
+    func participants(for threadID: String) -> [DaemonThreadParticipant] {
+        snapshotsByThread[threadID]?.participants ?? []
+    }
+
     func togglePinnedThread(_ threadID: String) {
         if pinnedThreadIDs.contains(threadID) {
             pinnedThreadIDs.remove(threadID)

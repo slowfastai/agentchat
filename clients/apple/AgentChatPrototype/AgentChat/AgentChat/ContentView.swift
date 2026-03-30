@@ -403,7 +403,8 @@ struct ContentView: View {
                         ThreadFeedRow(
                             thread: thread,
                             isActive: store.activeThreadID == thread.threadID,
-                            isPinned: store.isPinnedThread(thread.threadID)
+                            isPinned: store.isPinnedThread(thread.threadID),
+                            avatarItems: threadFeedAvatarItems(for: thread.threadID)
                         )
                     }
                     .buttonStyle(.plain)
@@ -1068,6 +1069,30 @@ struct ContentView: View {
     private func customDisplayName(for participant: DaemonThreadParticipant) -> String? {
         guard let agentID = participant.agentID else { return nil }
         return store.agents.first { $0.agentID == agentID }?.customDisplayName
+    }
+
+    private func threadFeedAvatarItems(for threadID: String) -> [ThreadFeedAvatarItem] {
+        store.participants(for: threadID)
+            .filter(\.isAgent)
+            .prefix(2)
+            .map { participant in
+                let displayName = customDisplayName(for: participant) ?? participant.displayName
+                let initials = displayName
+                    .split(separator: " ")
+                    .prefix(2)
+                    .compactMap(\.first)
+                    .map(String.init)
+                    .joined()
+                    .uppercased()
+
+                return ThreadFeedAvatarItem(
+                    id: participant.participantID,
+                    tintColor: chipColor(for: participant),
+                    avatarData: avatarData(for: participant),
+                    avatarAssetName: participant.defaultAvatarAssetName,
+                    initials: initials.isEmpty ? "?" : initials
+                )
+            }
     }
 
     private func color(named tintName: String) -> Color {

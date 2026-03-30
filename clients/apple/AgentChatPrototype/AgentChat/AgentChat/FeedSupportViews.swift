@@ -1,4 +1,15 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
+
+struct ThreadFeedAvatarItem: Identifiable, Hashable {
+    let id: String
+    let tintColor: Color
+    let avatarData: Data?
+    let avatarAssetName: String?
+    let initials: String
+}
 
 struct ChatScreenBackground: View {
     @Environment(\.colorScheme) private var colorScheme
@@ -165,26 +176,16 @@ struct ThreadFeedRow: View {
     let thread: DaemonThreadSummary
     let isActive: Bool
     let isPinned: Bool
+    let avatarItems: [ThreadFeedAvatarItem]
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.accentColor.opacity(0.22), Color.accentColor.opacity(0.10)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 56, height: 56)
+            ThreadFeedAvatarStack(
+                avatarItems: avatarItems,
+                participantCount: thread.participantCount
+            )
 
-                Image(systemName: thread.participantCount > 1 ? "person.2.fill" : "message.fill")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(thread.title ?? thread.threadID)
                         .font(.body.weight(.semibold))
@@ -198,14 +199,14 @@ struct ThreadFeedRow: View {
                     }
                 }
 
+                HStack(spacing: 8) {
+                    SmallInfoPill(icon: "person.2.fill", text: "\(thread.participantCount)")
+                }
+
                 Text(thread.workingDir)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-
-                HStack(spacing: 8) {
-                    SmallInfoPill(icon: "person.2.fill", text: "\(thread.participantCount)")
-                }
             }
 
             Spacer(minLength: 0)
@@ -232,6 +233,79 @@ struct ThreadFeedRow: View {
         )
         .shadow(color: Color.black.opacity(isActive ? 0.08 : 0.03), radius: 16, y: 8)
         .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+}
+
+private struct ThreadFeedAvatarStack: View {
+    let avatarItems: [ThreadFeedAvatarItem]
+    let participantCount: Int
+
+    var body: some View {
+        let visibleItems = Array(avatarItems.prefix(2))
+
+        ZStack {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color.accentColor.opacity(0.22), Color.accentColor.opacity(0.10)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+
+            if visibleItems.isEmpty {
+                Image(systemName: participantCount > 1 ? "person.2.fill" : "message.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+            } else if visibleItems.count == 1 {
+                ThreadFeedAvatarBubble(item: visibleItems[0], size: 40)
+            } else {
+                ZStack {
+                    ThreadFeedAvatarBubble(item: visibleItems[0], size: 32)
+                        .offset(x: -8, y: -4)
+
+                    ThreadFeedAvatarBubble(item: visibleItems[1], size: 32)
+                        .offset(x: 8, y: 4)
+                }
+            }
+        }
+        .frame(width: 56, height: 56)
+    }
+}
+
+private struct ThreadFeedAvatarBubble: View {
+    let item: ThreadFeedAvatarItem
+    let size: CGFloat
+
+    var body: some View {
+        Group {
+            if let avatarData = item.avatarData,
+               let image = UIImage(data: avatarData) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else if let assetName = item.avatarAssetName {
+                Image(assetName)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                ZStack {
+                    Circle()
+                        .fill(item.tintColor.opacity(0.14))
+
+                    Text(item.initials)
+                        .font(.system(size: size * 0.32, weight: .bold))
+                        .foregroundStyle(item.tintColor)
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay {
+            Circle()
+                .stroke(Color.white.opacity(0.92), lineWidth: 2)
+        }
+        .shadow(color: Color.black.opacity(0.10), radius: 5, y: 2)
     }
 }
 
