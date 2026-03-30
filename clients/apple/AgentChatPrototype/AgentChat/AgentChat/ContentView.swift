@@ -372,8 +372,6 @@ struct ContentView: View {
             threadsSection
         }
         .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
-        .background(ChatScreenBackground())
         .navigationTitle("Feed")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -546,7 +544,7 @@ struct ContentView: View {
             if let snapshot = store.activeThreadSnapshot {
                 GeometryReader { geometry in
                     timeline(snapshot: snapshot)
-                        .background(ChatScreenBackground().ignoresSafeArea())
+                        .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
                         .safeAreaInset(edge: .bottom, spacing: 0) {
                             composerDock(snapshot: snapshot, availableWidth: geometry.size.width)
                         }
@@ -559,14 +557,14 @@ struct ContentView: View {
                     systemImage: "clock.arrow.trianglehead.2.counterclockwise.rotate.90",
                     message: "Waiting for the daemon to attach and replay the thread timeline."
                 )
-                .background(ChatScreenBackground().ignoresSafeArea())
+                .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
             } else {
                 UnavailableStateView(
                     title: "No Active Thread",
                     systemImage: "bubble.left.and.bubble.right",
                     message: "Open a thread from Feed, or create one from the Feed menu."
                 )
-                .background(ChatScreenBackground().ignoresSafeArea())
+                .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
             }
         }
     }
@@ -823,17 +821,17 @@ struct ContentView: View {
                 HStack {
                     Text("Mention agent")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(theme.mutedInk)
+                        .foregroundStyle(.secondary)
                     Spacer(minLength: 0)
                     Text("In this group")
                         .font(.caption2.weight(.medium))
-                        .foregroundStyle(theme.subtleInk)
+                        .foregroundStyle(.secondary)
                 }
 
                 if suggestions.isEmpty {
                     Text("No agents match this mention yet.")
                         .font(.footnote)
-                        .foregroundStyle(theme.mutedInk)
+                        .foregroundStyle(.secondary)
                 } else {
                     ForEach(Array(suggestions.prefix(5)), id: \.participantID) { participant in
                         Button {
@@ -853,11 +851,11 @@ struct ContentView: View {
             .padding(14)
             .background(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(theme.paper)
+                    .fill(Color(uiColor: .secondarySystemGroupedBackground))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(theme.stroke, lineWidth: 1)
+                    .stroke(Color(uiColor: .separator).opacity(0.18), lineWidth: 1)
             )
         }
     }
@@ -868,12 +866,12 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(snapshot.title ?? snapshot.threadID)
                         .font(.system(.title3, design: .rounded).weight(.medium))
-                        .foregroundStyle(theme.ink)
+                        .foregroundStyle(.primary)
                         .lineLimit(2)
 
                     Label(snapshot.workingDir, systemImage: "folder")
                         .font(.caption)
-                        .foregroundStyle(theme.mutedInk)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
 
@@ -903,18 +901,18 @@ struct ContentView: View {
 
             Text(participantSelectionSummary(for: snapshot))
                 .font(.footnote)
-                .foregroundStyle(theme.mutedInk)
+                .foregroundStyle(.secondary)
         }
         .frame(maxWidth: 760, alignment: .leading)
         .padding(.horizontal, 22)
         .padding(.vertical, 20)
         .background(
             RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .fill(theme.panel)
+                .fill(Color(uiColor: .secondarySystemGroupedBackground))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .stroke(theme.stroke, lineWidth: 1)
+                .stroke(Color(uiColor: .separator).opacity(0.18), lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(0.025), radius: 12, y: 4)
     }
@@ -993,7 +991,7 @@ struct ContentView: View {
             .overlay(alignment: .bottom) {
                 GeometryReader { proxy in
                     Rectangle()
-                        .fill(theme.canvasBottom)
+                        .fill(Color(uiColor: .systemGroupedBackground))
                         .frame(height: isKeyboardPresented ? 4 : proxy.safeAreaInsets.bottom + 4)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                         .ignoresSafeArea(edges: .bottom)
@@ -1015,18 +1013,18 @@ struct ContentView: View {
                         .lineLimit(1...6)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled(true)
-                        .foregroundStyle(theme.ink)
+                        .foregroundStyle(.primary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 18)
                 .padding(.vertical, 16)
                 .background(
                     RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .fill(theme.paper)
+                        .fill(Color(uiColor: .secondarySystemGroupedBackground))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(theme.stroke, lineWidth: 1)
+                        .stroke(Color(uiColor: .separator).opacity(0.18), lineWidth: 1)
                 )
 
                 Button {
@@ -1034,11 +1032,11 @@ struct ContentView: View {
                 } label: {
                     Image(systemName: "arrow.up")
                         .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(canSend(in: snapshot) ? theme.paper : theme.subtleInk)
+                        .foregroundStyle(canSend(in: snapshot) ? .white : .secondary)
                         .frame(width: 46, height: 46)
                         .background(
                             Circle()
-                                .fill(canSend(in: snapshot) ? theme.ink : theme.chip)
+                                .fill(canSend(in: snapshot) ? Color.accentColor : Color(uiColor: .tertiarySystemFill))
                         )
                 }
                 .disabled(!canSend(in: snapshot))
@@ -1281,7 +1279,7 @@ private struct TimelineBubble: View {
             .frame(maxWidth: 420, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(theme.userBubble)
+                    .fill(Color.accentColor)
             )
             .shadow(color: Color.black.opacity(0.08), radius: 12, y: 4)
         }
@@ -1296,7 +1294,7 @@ private struct TimelineBubble: View {
                 HStack(alignment: .firstTextBaseline) {
                     Text(entry.title)
                         .font(.subheadline.weight(.medium))
-                        .foregroundStyle(theme.ink)
+                        .foregroundStyle(.primary)
 
                     typeTag
 
@@ -1304,7 +1302,7 @@ private struct TimelineBubble: View {
 
                     Text("seq \(entry.lastThreadSeq)")
                         .font(.caption2.monospacedDigit())
-                        .foregroundStyle(theme.subtleInk)
+                        .foregroundStyle(.secondary)
                 }
 
                 messageBody
@@ -1345,14 +1343,14 @@ private struct TimelineBubble: View {
                     if entry.body.isEmpty {
                         Text("...")
                             .font(.system(.body, design: .monospaced))
-                            .foregroundStyle(theme.ink)
+                            .foregroundStyle(.primary)
                             .lineSpacing(4)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     } else {
                         AgentSelectableText(
                             entry.body,
                             font: AgentSelectableText.preferredMonospacedFont(for: .body),
-                            textColor: UIColor(theme.ink),
+                            textColor: .label,
                             lineSpacing: 4
                         )
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1381,14 +1379,14 @@ private struct TimelineBubble: View {
                         AgentMarkdownText(
                             content: entry.body,
                             textStyle: .body,
-                            textColor: UIColor(theme.ink),
+                            textColor: .label,
                             lineSpacing: 5
                         )
                             .frame(maxWidth: .infinity, alignment: .leading)
                     } else if entry.executionSummary == nil {
                         Text("...")
                             .font(.body)
-                            .foregroundStyle(theme.subtleInk)
+                            .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
@@ -1406,14 +1404,14 @@ private struct TimelineBubble: View {
                 if entry.body.isEmpty {
                     Text("...")
                         .font(.body)
-                        .foregroundStyle(theme.ink)
+                        .foregroundStyle(.primary)
                         .lineSpacing(5)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     AgentSelectableText(
                         entry.body,
                         font: AgentSelectableText.preferredFont(for: .body),
-                        textColor: UIColor(theme.ink),
+                        textColor: .label,
                         lineSpacing: 5
                     )
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1439,7 +1437,7 @@ private struct TimelineBubble: View {
                         if let footnote = summary.footnote, !footnote.isEmpty {
                             Text(footnote)
                                 .font(.caption)
-                                .foregroundStyle(theme.mutedInk)
+                                .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
                     }
@@ -1448,13 +1446,13 @@ private struct TimelineBubble: View {
 
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(theme.subtleInk)
+                        .foregroundStyle(.secondary)
                 }
 
                 if let detailLine = summary.detailLine, !detailLine.isEmpty {
                     Text(detailLine)
                         .font(.caption)
-                        .foregroundStyle(theme.mutedInk)
+                        .foregroundStyle(.secondary)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1475,22 +1473,22 @@ private struct TimelineBubble: View {
         HStack(spacing: 10) {
             ProgressView()
                 .controlSize(.small)
-                .tint(theme.mutedInk)
+                .tint(.secondary)
 
             Text(title)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(theme.subtleInk)
+                .foregroundStyle(.secondary)
 
             Spacer(minLength: 0)
         }
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(theme.panel.opacity(0.94))
+                .fill(Color(uiColor: .tertiarySystemGroupedBackground))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(theme.stroke, lineWidth: 1)
+                .stroke(Color(uiColor: .separator).opacity(0.18), lineWidth: 1)
         )
     }
 
@@ -1530,11 +1528,11 @@ private struct TimelineBubble: View {
     private func executionToneColor(_ tone: AssistantExecutionSummary.Tone) -> Color {
         switch tone {
         case .neutral:
-            return theme.mutedInk
+            return .secondary
         case .active:
-            return theme.mutedInk
+            return .secondary
         case .warning:
-            return theme.accentWarm
+            return .orange
         case .failure:
             return .red
         }
@@ -1543,9 +1541,9 @@ private struct TimelineBubble: View {
     private func executionSummaryFill(_ tone: AssistantExecutionSummary.Tone) -> Color {
         switch tone {
         case .neutral, .active:
-            return theme.panel.opacity(0.94)
+            return Color(uiColor: .tertiarySystemGroupedBackground)
         case .warning:
-            return theme.toolPanel.opacity(0.78)
+            return Color.orange.opacity(colorScheme == .dark ? 0.18 : 0.10)
         case .failure:
             return Color.red.opacity(colorScheme == .dark ? 0.16 : 0.08)
         }
@@ -1554,9 +1552,9 @@ private struct TimelineBubble: View {
     private func executionSummaryStroke(_ tone: AssistantExecutionSummary.Tone) -> Color {
         switch tone {
         case .neutral, .active:
-            return theme.stroke
+            return Color(uiColor: .separator).opacity(0.18)
         case .warning:
-            return theme.accentWarm.opacity(0.22)
+            return Color.orange.opacity(0.22)
         case .failure:
             return Color.red.opacity(0.24)
         }
@@ -1589,13 +1587,13 @@ private struct TimelineBubble: View {
 
             Label(centeredText, systemImage: iconName)
                 .font(.caption.weight(.medium))
-                .foregroundStyle(theme.mutedInk)
+                .foregroundStyle(.secondary)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .background(theme.paper, in: Capsule())
+                .background(Color(uiColor: .secondarySystemGroupedBackground), in: Capsule())
                 .overlay(
                     Capsule()
-                        .stroke(theme.stroke, lineWidth: 1)
+                        .stroke(Color(uiColor: .separator).opacity(0.18), lineWidth: 1)
                 )
 
             Spacer(minLength: 0)
@@ -1641,7 +1639,7 @@ private struct TimelineBubble: View {
         .frame(width: 38, height: 38)
         .overlay(
             RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .stroke(theme.stroke, lineWidth: 1)
+                .stroke(Color(uiColor: .separator).opacity(0.18), lineWidth: 1)
         )
     }
 
@@ -1655,7 +1653,7 @@ private struct TimelineBubble: View {
                 .clipShape(Circle())
                 .overlay(
                     Circle()
-                        .stroke(theme.stroke, lineWidth: 1)
+                        .stroke(Color(uiColor: .separator).opacity(0.18), lineWidth: 1)
                 )
         } else if let assetName = assistantFamily.defaultAvatarAssetName {
             AgentDefaultAvatarArtwork(
@@ -1665,7 +1663,7 @@ private struct TimelineBubble: View {
             )
             .overlay(
                 Circle()
-                    .stroke(theme.stroke, lineWidth: 1)
+                    .stroke(Color(uiColor: .separator).opacity(0.18), lineWidth: 1)
             )
         } else {
             iconBadge
@@ -1690,89 +1688,89 @@ private struct TimelineBubble: View {
     private var typeColor: Color {
         switch entry.kind {
         case .assistantTurn:
-            return attentionSummary.map { executionToneColor($0.tone) } ?? theme.mutedInk
+            return attentionSummary.map { executionToneColor($0.tone) } ?? .secondary
         case .tool:
-            return theme.accentWarm
+            return .orange
         case .plan:
-            return theme.planColor
+            return .secondary
         case .user:
             return .white
         case .turnEnd:
-            return theme.mutedInk
+            return .secondary
         case .system:
-            return theme.mutedInk
+            return .secondary
         }
     }
 
     private var cardFill: Color {
         switch entry.kind {
         case .tool:
-            return theme.toolPanel
+            return Color(uiColor: .tertiarySystemGroupedBackground)
         case .plan:
-            return theme.planPanel
+            return Color(uiColor: .tertiarySystemGroupedBackground)
         case .assistantTurn:
-            return theme.paper
+            return Color(uiColor: .secondarySystemGroupedBackground)
         case .user, .turnEnd, .system:
-            return theme.paper
+            return Color(uiColor: .secondarySystemGroupedBackground)
         }
     }
 
     private var borderColor: Color {
         switch entry.kind {
         case .tool:
-            return theme.accentWarm.opacity(0.22)
+            return Color.orange.opacity(0.22)
         case .plan:
-            return theme.planColor.opacity(0.16)
+            return Color(uiColor: .separator).opacity(0.18)
         case .assistantTurn:
             return attentionSummary == nil
-                ? theme.stroke
+                ? Color(uiColor: .separator).opacity(0.18)
                 : attentionHighlightColor.opacity(0.28)
         case .user, .turnEnd, .system:
-            return theme.stroke
+            return Color(uiColor: .separator).opacity(0.18)
         }
     }
 
     private var typeTagFill: Color {
         switch entry.kind {
         case .tool:
-            return theme.paper.opacity(0.65)
+            return Color(uiColor: .secondarySystemGroupedBackground)
         case .plan:
-            return theme.paper.opacity(0.7)
+            return Color(uiColor: .secondarySystemGroupedBackground)
         default:
-            return theme.chip.opacity(0.9)
+            return Color(uiColor: .tertiarySystemGroupedBackground)
         }
     }
 
     private var iconBadgeFill: Color {
         switch entry.kind {
         case .tool:
-            return theme.paper.opacity(0.7)
+            return Color(uiColor: .secondarySystemGroupedBackground)
         case .plan:
-            return theme.paper.opacity(0.72)
+            return Color(uiColor: .secondarySystemGroupedBackground)
         default:
-            return theme.paper.opacity(0.96)
+            return Color(uiColor: .secondarySystemGroupedBackground)
         }
     }
 
     private var toolBodyFill: Color {
         switch entry.kind {
         case .tool:
-            return theme.paper.opacity(0.68)
+            return Color(uiColor: .secondarySystemGroupedBackground)
         case .plan:
-            return theme.paper.opacity(0.72)
+            return Color(uiColor: .secondarySystemGroupedBackground)
         default:
-            return theme.paper
+            return Color(uiColor: .secondarySystemGroupedBackground)
         }
     }
 
     private var toolBodyStroke: Color {
         switch entry.kind {
         case .tool:
-            return theme.accentWarm.opacity(0.18)
+            return Color.orange.opacity(0.18)
         case .plan:
-            return theme.planColor.opacity(0.14)
+            return Color(uiColor: .separator).opacity(0.18)
         default:
-            return theme.stroke
+            return Color(uiColor: .separator).opacity(0.18)
         }
     }
 }
@@ -1780,10 +1778,6 @@ private struct TimelineBubble: View {
 private struct AssistantExecutionDetailSheet: View {
     let entry: DaemonTimelineEntry
     @Environment(\.colorScheme) private var colorScheme
-
-    private var theme: Theme {
-        Theme(colorScheme: colorScheme)
-    }
 
     var body: some View {
         ScrollView {
@@ -1797,13 +1791,13 @@ private struct AssistantExecutionDetailSheet: View {
                         title: "Thinking",
                         systemImage: "brain.head.profile",
                         content: thinkingBody,
-                        titleColor: theme.subtleInk,
+                        titleColor: .secondary,
                         markdownTextStyle: .callout,
                         bodyUIFont: AgentSelectableText.preferredFont(for: .callout),
-                        bodyColor: theme.subtleInk,
+                        bodyColor: .secondary,
                         rendersMarkdown: true,
-                        fill: theme.panel.opacity(0.96),
-                        stroke: theme.stroke
+                        fill: Color(uiColor: .secondarySystemGroupedBackground),
+                        stroke: Color(uiColor: .separator).opacity(0.18)
                     )
                 }
 
@@ -1812,13 +1806,13 @@ private struct AssistantExecutionDetailSheet: View {
                         title: "Plan draft",
                         systemImage: "list.bullet.clipboard",
                         content: planBody,
-                        titleColor: theme.planColor,
+                        titleColor: .secondary,
                         markdownTextStyle: .body,
                         bodyUIFont: AgentSelectableText.preferredMonospacedFont(for: .body),
-                        bodyColor: theme.ink,
+                        bodyColor: Color(uiColor: .label),
                         rendersMarkdown: false,
-                        fill: theme.planPanel.opacity(0.74),
-                        stroke: theme.planColor.opacity(0.14)
+                        fill: Color(uiColor: .secondarySystemGroupedBackground),
+                        stroke: Color(uiColor: .separator).opacity(0.18)
                     )
                 }
 
@@ -1826,7 +1820,7 @@ private struct AssistantExecutionDetailSheet: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Label("Tool activity", systemImage: "hammer")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(theme.accentWarm)
+                            .foregroundStyle(.orange)
 
                         ForEach(entry.orderedToolActivities) { activity in
                             AssistantExecutionToolCard(activity: activity)
@@ -1840,7 +1834,7 @@ private struct AssistantExecutionDetailSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .scrollIndicators(.hidden)
-        .background(ChatScreenBackground().ignoresSafeArea())
+        .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
         .navigationTitle("Execution")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -1861,7 +1855,7 @@ private struct AssistantExecutionDetailSheet: View {
                     if let footnote = summary.footnote, !footnote.isEmpty {
                         Text(footnote)
                             .font(.subheadline)
-                            .foregroundStyle(theme.mutedInk)
+                            .foregroundStyle(.secondary)
                     }
                 }
 
@@ -1875,7 +1869,7 @@ private struct AssistantExecutionDetailSheet: View {
             if let detailLine = summary.detailLine, !detailLine.isEmpty {
                 Text(detailLine)
                     .font(.caption)
-                    .foregroundStyle(theme.mutedInk)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(16)
@@ -1926,11 +1920,11 @@ private struct AssistantExecutionDetailSheet: View {
     private func summaryToneColor(_ tone: AssistantExecutionSummary.Tone) -> Color {
         switch tone {
         case .neutral:
-            return theme.mutedInk
+            return .secondary
         case .active:
-            return theme.mutedInk
+            return .secondary
         case .warning:
-            return theme.accentWarm
+            return .orange
         case .failure:
             return .red
         }
@@ -1939,9 +1933,9 @@ private struct AssistantExecutionDetailSheet: View {
     private func summaryFill(_ tone: AssistantExecutionSummary.Tone) -> Color {
         switch tone {
         case .neutral, .active:
-            return theme.panel.opacity(0.95)
+            return Color(uiColor: .secondarySystemGroupedBackground)
         case .warning:
-            return theme.toolPanel.opacity(0.80)
+            return Color.orange.opacity(colorScheme == .dark ? 0.18 : 0.10)
         case .failure:
             return Color.red.opacity(colorScheme == .dark ? 0.16 : 0.08)
         }
@@ -1950,9 +1944,9 @@ private struct AssistantExecutionDetailSheet: View {
     private func summaryStroke(_ tone: AssistantExecutionSummary.Tone) -> Color {
         switch tone {
         case .neutral, .active:
-            return theme.stroke
+            return Color(uiColor: .separator).opacity(0.18)
         case .warning:
-            return theme.accentWarm.opacity(0.22)
+            return Color.orange.opacity(0.22)
         case .failure:
             return Color.red.opacity(0.24)
         }
@@ -2012,17 +2006,13 @@ private struct AssistantExecutionToolCard: View {
     let activity: DaemonToolActivity
     @Environment(\.colorScheme) private var colorScheme
 
-    private var theme: Theme {
-        Theme(colorScheme: colorScheme)
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(activity.displayTitle)
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(theme.ink)
+                        .foregroundStyle(.primary)
                 }
 
                 Spacer(minLength: 8)
@@ -2035,7 +2025,7 @@ private struct AssistantExecutionToolCard: View {
                 AgentSelectableText(
                     content,
                     font: AgentSelectableText.preferredMonospacedFont(for: .footnote),
-                    textColor: UIColor(theme.ink),
+                    textColor: .label,
                     lineSpacing: 3
                 )
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -2054,46 +2044,41 @@ private struct AssistantExecutionToolCard: View {
 
     private var statusColor: Color {
         if activity.needsApproval {
-            return theme.accentWarm
+            return .orange
         }
         if activity.isFailed {
             return .red
         }
         if activity.isRunning {
-            return theme.mutedInk
+            return .secondary
         }
-        return theme.subtleInk
+        return .secondary
     }
 
     private var cardFill: Color {
         if activity.needsApproval {
-            return theme.toolPanel.opacity(0.80)
+            return Color.orange.opacity(colorScheme == .dark ? 0.18 : 0.10)
         }
         if activity.isFailed {
             return Color.red.opacity(colorScheme == .dark ? 0.14 : 0.07)
         }
-        return theme.panel.opacity(0.95)
+        return Color(uiColor: .secondarySystemGroupedBackground)
     }
 
     private var cardStroke: Color {
         if activity.needsApproval {
-            return theme.accentWarm.opacity(0.22)
+            return Color.orange.opacity(0.22)
         }
         if activity.isFailed {
             return Color.red.opacity(0.24)
         }
-        return theme.stroke
+        return Color(uiColor: .separator).opacity(0.18)
     }
 }
 
 private struct AssistantExecutionBadge: View {
     let text: String
     let color: Color
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var theme: Theme {
-        Theme(colorScheme: colorScheme)
-    }
 
     var body: some View {
         Text(text)
@@ -2101,7 +2086,7 @@ private struct AssistantExecutionBadge: View {
             .foregroundStyle(color)
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
-            .background(theme.paper.opacity(0.9), in: Capsule())
+            .background(Color(uiColor: .secondarySystemGroupedBackground), in: Capsule())
             .overlay(
                 Capsule()
                     .stroke(color.opacity(0.18), lineWidth: 1)
