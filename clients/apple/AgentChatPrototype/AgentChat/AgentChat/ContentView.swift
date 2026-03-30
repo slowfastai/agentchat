@@ -36,7 +36,7 @@ private enum AgentPickerMode: Identifiable, Equatable {
 
 enum AgentPickerDraftSelection {
     static func createThread(selectableIDs: Set<String>, rememberedIDs: Set<String>) -> Set<String> {
-        rememberedIDs.intersection(selectableIDs)
+        []
     }
 
     static func addAgent(selectableIDs: Set<String>, rememberedIDs: Set<String>) -> Set<String> {

@@ -449,13 +449,13 @@ struct AgentChatTests {
         #expect(selection.isEmpty)
     }
 
-    @Test func createThreadDraftSelectionRestoresOnlyRememberedOnlineAgents() async throws {
+    @Test func createThreadDraftSelectionIgnoresRememberedAgents() async throws {
         let selection = AgentPickerDraftSelection.createThread(
             selectableIDs: ["codex", "opencode"],
             rememberedIDs: ["codex", "offline-agent"]
         )
 
-        #expect(selection == ["codex"])
+        #expect(selection.isEmpty)
     }
 
     private func makeAgent(

@@ -9,6 +9,7 @@ final class DaemonChatStore: ObservableObject {
     private static let knownAgentsKey = "agentchat_known_agents"
     private static let selectedAgentsKey = "agentchat_selected_agent_ids"
     private static let persistedThreadStateKey = "agentchat_persisted_thread_state"
+    private static let initialNetworkWarmupKey = "agentchat_initial_network_warmup_completed"
     private static let relayAppInstallationIDKey = "agentchat_relay_app_installation_id"
     private static let agentCustomNamesKey = "agentchat_agent_custom_names"
     private static let agentAvatarDataKey = "agentchat_agent_avatar_data"
@@ -76,6 +77,7 @@ final class DaemonChatStore: ObservableObject {
         guard !hasStarted else { return }
         hasStarted = true
         refreshIdleConnectionStatus()
+        performInitialNetworkWarmupIfNeeded()
     }
 
     func createThread(withAgentIDs agentIDs: [String]) {
@@ -823,6 +825,34 @@ final class DaemonChatStore: ObservableObject {
         await send(ListThreadsRequest())
         if let activeThreadID {
             await send(AttachThreadRequest(threadID: activeThreadID, afterSeq: cursorByThread[activeThreadID]))
+        }
+    }
+
+    private func performInitialNetworkWarmupIfNeeded() {
+        guard defaults.object(forKey: Self.initialNetworkWarmupKey) == nil else {
+            return
+        }
+
+        defaults.set(true, forKey: Self.initialNetworkWarmupKey)
+
+        Task.detached(priority: .background) {
+            guard let url = URL(string: "https://www.google.com/generate_204") else {
+                return
+            }
+
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.waitsForConnectivity = true
+
+            let session = URLSession(configuration: configuration)
+            defer {
+                session.finishTasksAndInvalidate()
+            }
+
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 10
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+
+            _ = try? await session.data(for: request)
         }
     }
 
