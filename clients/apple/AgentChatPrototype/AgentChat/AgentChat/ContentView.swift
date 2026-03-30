@@ -384,7 +384,6 @@ struct ContentView: View {
         AgentListSection(
             agents: store.agents,
             hasConfiguredDaemonURL: store.hasConfiguredDaemonURL,
-            subtitleForAgent: agentSubtitle,
             statusColorForAgent: agentStatusColor,
             onReconnect: store.reconnectNow,
             onEdit: { editingAgent = $0 },
@@ -510,7 +509,6 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
         }
     }
-
     private var feedMenu: some View {
         Menu {
             Button {
@@ -732,7 +730,6 @@ struct ContentView: View {
             return .orange
         }
     }
-
     private func agentStatusColor(for agent: DaemonAgentSummary) -> Color {
         if agent.isOnline {
             return color(named: agent.tintName)
