@@ -636,7 +636,14 @@ impl AppProtocolSession {
         requested_agent_id: Option<String>,
         working_dir: String,
     ) -> Result<(String, String), ResponseEvent> {
-        let cwd = PathBuf::from(&working_dir);
+        let cwd = {
+            let p = PathBuf::from(&working_dir);
+            if p.is_relative() {
+                std::env::current_dir().map(|d| d.join(&p)).unwrap_or(p)
+            } else {
+                p
+            }
+        };
         let (agent_id, agent, is_alive) = {
             let mgr = self.manager.borrow();
             let resolved_agent_id = requested_agent_id

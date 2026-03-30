@@ -100,8 +100,24 @@ struct AgentChatTests {
 
         #expect(claude.family == .claude)
         #expect(claude.tintName == "blue")
+        #expect(claude.defaultAvatarAssetName == "ClaudeCodeAvatar")
         #expect(openCode.family == .opencode)
         #expect(openCode.displayName == "OpenCode")
+        #expect(openCode.defaultAvatarAssetName == "OpenCodeAvatar")
+    }
+
+    @Test func daemonAgentSummaryUsesPiAvatarAsset() async throws {
+        let pi = DaemonAgentSummary(
+            agentID: "pi",
+            name: "Pi",
+            kind: "pi",
+            status: "online",
+            defaultWorkingDir: nil,
+            capabilities: []
+        )
+
+        #expect(pi.family == .pi)
+        #expect(pi.defaultAvatarAssetName == "PiAvatar")
     }
 
     @Test func daemonModelsDecodeExplicitMentionHandles() async throws {
