@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 private enum AppTab: Hashable {
     case feed
@@ -177,6 +178,7 @@ struct ContentView: View {
     @State private var pendingDeleteAgent: DaemonAgentSummary?
     @State private var agentPickerMode: AgentPickerMode?
     @State private var draftAgentSelection: Set<String> = []
+    @State private var isKeyboardPresented = false
 
     private var theme: Theme {
         Theme(colorScheme: colorScheme)
@@ -238,8 +240,14 @@ struct ContentView: View {
                                 compactPresentedThreadID = nil
                             }
                         }
-                    }
+                }
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            isKeyboardPresented = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            isKeyboardPresented = false
         }
         .confirmationDialog(
             "Close Thread?",
@@ -524,27 +532,30 @@ struct ContentView: View {
         Group {
             if let snapshot = store.activeThreadSnapshot {
                 GeometryReader { geometry in
-                    timeline(snapshot: snapshot)
-                        .background(ChatScreenBackground().ignoresSafeArea())
-                        .safeAreaInset(edge: .bottom, spacing: 0) {
-                            composer(snapshot: snapshot, availableWidth: geometry.size.width)
-                                .padding(.horizontal, composerOuterHorizontalPadding(for: geometry.size.width))
-                                .padding(.top, 4)
-                                .padding(.bottom, 4)
-                                .frame(maxWidth: .infinity)
-                                .overlay(alignment: .bottom) {
-                                    GeometryReader { proxy in
-                                        Rectangle()
-                                            .fill(theme.canvasBottom)
-                                            .frame(height: proxy.safeAreaInsets.bottom + 4)
-                                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                                            .ignoresSafeArea(edges: .bottom)
-                                    }
-                                    .allowsHitTesting(false)
-                                }
+                    VStack(spacing: 0) {
+                        timeline(snapshot: snapshot)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                        composer(snapshot: snapshot, availableWidth: geometry.size.width)
+                            .padding(.horizontal, composerOuterHorizontalPadding(for: geometry.size.width))
+                            .padding(.top, 4)
+                            .padding(.bottom, composerBottomPadding(safeAreaBottom: geometry.safeAreaInsets.bottom))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .background(ChatScreenBackground().ignoresSafeArea())
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .overlay(alignment: .bottom) {
+                        GeometryReader { proxy in
+                            Rectangle()
+                                .fill(theme.canvasBottom)
+                                .frame(height: proxy.safeAreaInsets.bottom)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                                .ignoresSafeArea(edges: .bottom)
                         }
-                        .navigationTitle(snapshot.title ?? snapshot.threadID)
-                        .navigationBarTitleDisplayMode(.inline)
+                        .allowsHitTesting(false)
+                    }
+                    .navigationTitle(snapshot.title ?? snapshot.threadID)
+                    .navigationBarTitleDisplayMode(.inline)
                 }
             } else if store.activeThreadID != nil {
                 UnavailableStateView(
@@ -964,6 +975,10 @@ struct ContentView: View {
 
     private func composerMaxWidth(for availableWidth: CGFloat) -> CGFloat {
         min(760, max(availableWidth - (composerOuterHorizontalPadding(for: availableWidth) * 2), 0))
+    }
+
+    private func composerBottomPadding(safeAreaBottom: CGFloat) -> CGFloat {
+        isKeyboardPresented ? 4 : max(4, safeAreaBottom)
     }
 
     private func composer(snapshot: DaemonThreadSnapshot, availableWidth: CGFloat) -> some View {

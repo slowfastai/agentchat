@@ -8,6 +8,7 @@ final class DaemonChatStore: ObservableObject {
     private static let hiddenThreadsKey = "agentchat_hidden_thread_ids"
     private static let knownAgentsKey = "agentchat_known_agents"
     private static let selectedAgentsKey = "agentchat_selected_agent_ids"
+    private static let persistedThreadStateKey = "agentchat_persisted_thread_state"
     private static let relayAppInstallationIDKey = "agentchat_relay_app_installation_id"
     private static let agentCustomNamesKey = "agentchat_agent_custom_names"
     private static let agentAvatarDataKey = "agentchat_agent_avatar_data"
@@ -51,6 +52,14 @@ final class DaemonChatStore: ObservableObject {
     private var assistantTurns = AssistantTurnReducer()
     private var participantSelectionWasCustomized = false
 
+    private struct PersistedThreadState: Codable {
+        let allThreads: [DaemonThreadSummary]
+        let snapshotsByThread: [String: DaemonThreadSnapshot]
+        let timelineByThread: [String: [DaemonTimelineEntry]]
+        let cursorByThread: [String: UInt64]
+        let activeThreadID: String?
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.pinnedThreadIDs = Set(defaults.stringArray(forKey: Self.pinnedThreadsKey) ?? [])
@@ -59,6 +68,7 @@ final class DaemonChatStore: ObservableObject {
         self.selectedAgentIDs = Set(defaults.stringArray(forKey: Self.selectedAgentsKey) ?? [])
         self.agentCustomNames = Self.loadAgentCustomNames(from: defaults)
         self.agentAvatarData = Self.loadAgentAvatarData(from: defaults)
+        restorePersistedThreadState()
         refreshIdleConnectionStatus()
     }
 
@@ -141,13 +151,7 @@ final class DaemonChatStore: ObservableObject {
     }
 
     func attachThread(_ threadID: String) {
-        activeThreadID = threadID
-        activeThreadSnapshot = snapshotsByThread[threadID]
-        timeline = timelineByThread[threadID] ?? []
-        participantSelectionWasCustomized = false
-        selectedParticipantIDs = Set(
-            activeThreadSnapshot?.participants.filter(\.isAgent).map(\.participantID) ?? []
-        )
+        setActiveThreadLocally(threadID)
 
         Task {
             let afterSeq = cursorByThread[threadID]
@@ -467,7 +471,7 @@ final class DaemonChatStore: ObservableObject {
                     await send(AttachThreadRequest(threadID: event.threadID, afterSeq: nil))
                 }
             case "thread_list":
-                allThreads = try decoder.decode(ThreadListEvent.self, from: data).threads
+                mergeThreadSummaries(try decoder.decode(ThreadListEvent.self, from: data).threads)
                 applyThreadPresentation()
                 if activeThreadID == nil, let firstThread = threads.first {
                     attachThread(firstThread.threadID)
@@ -479,17 +483,18 @@ final class DaemonChatStore: ObservableObject {
                 let snapshot = try decoder.decode(ThreadSnapshotEvent.self, from: data).snapshot
                 snapshotsByThread[snapshot.threadID] = snapshot
                 cursorByThread[snapshot.threadID] = max(cursorByThread[snapshot.threadID] ?? 0, snapshot.lastThreadSeq)
-                updateThreadSummary(threadID: snapshot.threadID) { summary in
+                mergeThreadSummary(
                     DaemonThreadSummary(
-                        threadID: summary.threadID,
-                        title: snapshot.title ?? summary.title,
+                        threadID: snapshot.threadID,
+                        title: snapshot.title,
                         workingDir: snapshot.workingDir,
                         createdAtMS: snapshot.createdAtMS,
-                        state: summary.state,
+                        state: "idle",
                         participantCount: snapshot.participants.count,
-                        lastThreadSeq: max(summary.lastThreadSeq, snapshot.lastThreadSeq)
+                        lastThreadSeq: snapshot.lastThreadSeq
                     )
-                }
+                )
+                applyThreadPresentation()
                 if activeThreadID == snapshot.threadID {
                     activeThreadSnapshot = snapshot
                     timeline = timelineByThread[snapshot.threadID] ?? []
@@ -617,6 +622,7 @@ final class DaemonChatStore: ObservableObject {
         if activeThreadID == threadID {
             timeline = entries
         }
+        persistThreadState()
     }
 
     private func upsertAssistantMessage(_ event: ThreadAssistantMessageEvent) {
@@ -686,6 +692,7 @@ final class DaemonChatStore: ObservableObject {
             activeThreadSnapshot = snapshot
             syncSelectedParticipants(with: snapshot)
         }
+        persistThreadState()
     }
 
     private func removeParticipant(_ participantID: String, from threadID: String) {
@@ -703,6 +710,7 @@ final class DaemonChatStore: ObservableObject {
             activeThreadSnapshot = updated
             syncSelectedParticipants(with: updated)
         }
+        persistThreadState()
     }
 
     private func syncSelectedParticipants(with snapshot: DaemonThreadSnapshot) {
@@ -755,6 +763,7 @@ final class DaemonChatStore: ObservableObject {
         if activeThreadID == nil, let firstThread = threads.first {
             attachThread(firstThread.threadID)
         }
+        persistThreadState()
     }
 
     private func applyThreadPresentation() {
@@ -768,6 +777,12 @@ final class DaemonChatStore: ObservableObject {
                 }
                 return lhs.createdAtMS > rhs.createdAtMS
             }
+
+        if let activeThreadID, !threads.contains(where: { $0.threadID == activeThreadID }) {
+            setActiveThreadLocally(threads.first?.threadID)
+        }
+
+        persistThreadState()
     }
 
     private func persistThreadPreferences() {
@@ -988,6 +1003,73 @@ final class DaemonChatStore: ObservableObject {
             try await socketTask.send(.string(outboundText))
         } catch {
             handleConnectionFailure(message: "Send failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func restorePersistedThreadState() {
+        guard let data = defaults.data(forKey: Self.persistedThreadStateKey),
+              let state = try? JSONDecoder().decode(PersistedThreadState.self, from: data)
+        else {
+            return
+        }
+
+        allThreads = state.allThreads
+        snapshotsByThread = state.snapshotsByThread
+        timelineByThread = state.timelineByThread
+        cursorByThread = state.cursorByThread
+        assistantTurns.restore(from: timelineByThread)
+        applyThreadPresentation()
+
+        let candidateThreadID = state.activeThreadID.flatMap { threadID in
+            threads.contains(where: { $0.threadID == threadID }) ? threadID : nil
+        } ?? threads.first?.threadID
+        setActiveThreadLocally(candidateThreadID)
+    }
+
+    private func persistThreadState() {
+        let state = PersistedThreadState(
+            allThreads: allThreads,
+            snapshotsByThread: snapshotsByThread,
+            timelineByThread: timelineByThread,
+            cursorByThread: cursorByThread,
+            activeThreadID: activeThreadID
+        )
+
+        guard let data = try? JSONEncoder().encode(state) else { return }
+        defaults.set(data, forKey: Self.persistedThreadStateKey)
+    }
+
+    private func setActiveThreadLocally(_ threadID: String?) {
+        activeThreadID = threadID
+        activeThreadSnapshot = threadID.flatMap { snapshotsByThread[$0] }
+        timeline = threadID.flatMap { timelineByThread[$0] } ?? []
+        participantSelectionWasCustomized = false
+        selectedParticipantIDs = Set(
+            activeThreadSnapshot?.participants.filter(\.isAgent).map(\.participantID) ?? []
+        )
+        persistThreadState()
+    }
+
+    private func mergeThreadSummaries(_ incoming: [DaemonThreadSummary]) {
+        for summary in incoming {
+            mergeThreadSummary(summary)
+        }
+    }
+
+    private func mergeThreadSummary(_ incoming: DaemonThreadSummary) {
+        if let index = allThreads.firstIndex(where: { $0.threadID == incoming.threadID }) {
+            let existing = allThreads[index]
+            allThreads[index] = DaemonThreadSummary(
+                threadID: incoming.threadID,
+                title: incoming.title ?? existing.title,
+                workingDir: incoming.workingDir,
+                createdAtMS: incoming.createdAtMS,
+                state: incoming.state,
+                participantCount: incoming.participantCount,
+                lastThreadSeq: max(existing.lastThreadSeq, incoming.lastThreadSeq)
+            )
+        } else {
+            allThreads.append(incoming)
         }
     }
 }

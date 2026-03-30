@@ -692,7 +692,7 @@ struct SendThreadMessageRequest: Encodable {
     }
 }
 
-struct DaemonToolActivity: Identifiable, Hashable {
+struct DaemonToolActivity: Codable, Identifiable, Hashable {
     let id: String
     let title: String
     let status: String
@@ -782,8 +782,8 @@ extension DaemonToolActivity {
     }
 }
 
-struct DaemonTimelineEntry: Identifiable, Hashable {
-    enum Kind: String, Hashable {
+struct DaemonTimelineEntry: Codable, Identifiable, Hashable {
+    enum Kind: String, Codable, Hashable {
         case user
         case assistantTurn
         case tool
@@ -1183,10 +1183,51 @@ struct AssistantTurnState: Equatable {
             tintName: tintName
         )
     }
+
+    init?(persistedEntry entry: DaemonTimelineEntry, threadID: String) {
+        guard entry.kind == .assistantTurn else { return nil }
+        guard entry.normalizedStatusToken != "completed", entry.normalizedStatusToken != "failed" else {
+            return nil
+        }
+
+        let prefix = "assistant-turn-\(threadID)-"
+        guard entry.id.hasPrefix(prefix) else { return nil }
+
+        let turnIdentity = String(entry.id.dropFirst(prefix.count))
+        guard !turnIdentity.isEmpty else { return nil }
+
+        self.threadID = threadID
+        self.sessionID = turnIdentity
+        self.turnIdentity = turnIdentity
+        self.entryID = entry.id
+        self.sortThreadSeq = entry.sortThreadSeq
+        self.agentID = entry.title
+        self.lastThreadSeq = entry.lastThreadSeq
+        self.thinking = entry.thinkingBody ?? ""
+        self.response = entry.body
+        self.planBody = entry.planBody
+        self.toolActivities = entry.toolActivities
+        self.status = entry.status ?? "streaming"
+    }
 }
 
 struct AssistantTurnReducer {
     private(set) var activeStates: [AssistantTurnKey: AssistantTurnState] = [:]
+
+    mutating func restore(from timelineByThread: [String: [DaemonTimelineEntry]]) {
+        activeStates.removeAll()
+
+        for (threadID, entries) in timelineByThread {
+            for entry in entries {
+                guard let state = AssistantTurnState(persistedEntry: entry, threadID: threadID) else {
+                    continue
+                }
+
+                let key = AssistantTurnKey(threadID: threadID, turnIdentity: state.turnIdentity)
+                activeStates[key] = state
+            }
+        }
+    }
 
     mutating func consume(snapshot event: ThreadAssistantMessageEvent) -> AssistantTurnState {
         let key = AssistantTurnKey(
