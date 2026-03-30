@@ -1336,6 +1336,10 @@ private struct TimelineBubble: View {
                         executionSummaryButton(summary)
                     }
 
+                    if let summary = regularSummary {
+                        executionSummaryButton(summary)
+                    }
+
                     if !entry.body.isEmpty {
                         AgentMarkdownText(content: entry.body)
                             .font(.body)
@@ -1349,9 +1353,7 @@ private struct TimelineBubble: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
-                    if let summary = regularSummary {
-                        executionSummaryButton(summary)
-                    } else if entry.executionSummary == nil,
+                    if entry.executionSummary == nil,
                               let status = entry.status,
                               entry.normalizedStatusToken != "completed" {
                         assistantStatusStrip(

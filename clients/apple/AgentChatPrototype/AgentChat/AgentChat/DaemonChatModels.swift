@@ -981,7 +981,7 @@ extension DaemonTimelineEntry {
         if !toolActivities.isEmpty {
             headline = "Used \(pluralizedExecutionLabel(toolActivities.count, singular: "tool"))"
         } else if hasThinkingBody {
-            headline = "Reasoning available"
+            headline = "Thought process"
         } else {
             headline = "Plan available"
         }
