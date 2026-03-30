@@ -1,33 +1,20 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
+
+struct ThreadFeedAvatarItem: Identifiable, Hashable {
+    let id: String
+    let tintColor: Color
+    let avatarData: Data?
+    let avatarAssetName: String?
+    let initials: String
+}
 
 struct ChatScreenBackground: View {
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var theme: Theme {
-        Theme(colorScheme: colorScheme)
-    }
-
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [theme.canvasTop, theme.canvasBottom],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-
-            Circle()
-                .fill(theme.accentWarm.opacity(0.10))
-                .frame(width: 300, height: 300)
-                .blur(radius: 90)
-                .offset(x: -160, y: -280)
-
-            Circle()
-                .fill(Color.white.opacity(colorScheme == .dark ? 0.05 : 0.38))
-                .frame(width: 220, height: 220)
-                .blur(radius: 40)
-                .offset(x: 170, y: -180)
-        }
-        .ignoresSafeArea()
+        Color(uiColor: .systemGroupedBackground)
+            .ignoresSafeArea()
     }
 }
 
@@ -35,19 +22,17 @@ struct HeaderInfoPill: View {
     let icon: String
     let text: String
 
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var theme: Theme {
-        Theme(colorScheme: colorScheme)
-    }
-
     var body: some View {
         Label(text, systemImage: icon)
             .font(.caption.weight(.medium))
-            .foregroundStyle(theme.mutedInk)
+            .foregroundStyle(.secondary)
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(theme.chip, in: Capsule())
+            .background(Color(uiColor: .secondarySystemBackground), in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(Color(uiColor: .separator).opacity(0.18), lineWidth: 1)
+            )
     }
 }
 
@@ -70,22 +55,16 @@ struct SmallInfoPill: View {
     let icon: String
     let text: String
 
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var theme: Theme {
-        Theme(colorScheme: colorScheme)
-    }
-
     var body: some View {
         Label(text, systemImage: icon)
             .font(.caption.weight(.medium))
-            .foregroundStyle(theme.mutedInk)
+            .foregroundStyle(.secondary)
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(theme.paper.opacity(0.95), in: Capsule())
+            .background(Color(uiColor: .secondarySystemBackground), in: Capsule())
             .overlay(
                 Capsule()
-                    .stroke(theme.stroke, lineWidth: 1)
+                    .stroke(Color(uiColor: .separator).opacity(0.18), lineWidth: 1)
             )
     }
 }
@@ -93,35 +72,29 @@ struct SmallInfoPill: View {
 struct EmptyThreadState: View {
     let snapshot: DaemonThreadSnapshot
 
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var theme: Theme {
-        Theme(colorScheme: colorScheme)
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Begin a calm, focused thread")
                 .font(.headline)
-                .foregroundStyle(theme.ink)
+                .foregroundStyle(.primary)
 
             Text("Ask for a summary, a code change, or route work to one or more agents. Responses will unfold here with more room to read.")
                 .font(.subheadline)
-                .foregroundStyle(theme.mutedInk)
+                .foregroundStyle(.secondary)
 
             Text(snapshot.participants.map(\.displayName).joined(separator: " · "))
                 .font(.caption)
-                .foregroundStyle(theme.subtleInk)
+                .foregroundStyle(.secondary)
         }
         .padding(22)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(theme.panel)
+                .fill(Color(uiColor: .secondarySystemGroupedBackground))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(theme.stroke, lineWidth: 1)
+                .stroke(Color(uiColor: .separator).opacity(0.18), lineWidth: 1)
         )
     }
 }
@@ -131,32 +104,26 @@ struct TargetSelectionChip: View {
     let color: Color
     let isSelected: Bool
 
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var theme: Theme {
-        Theme(colorScheme: colorScheme)
-    }
-
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(isSelected ? theme.accentWarm : theme.subtleInk)
+                .foregroundStyle(isSelected ? color : .secondary)
 
             Text(participant.displayName)
                 .font(.subheadline.weight(.medium))
-                .foregroundStyle(theme.ink)
+                .foregroundStyle(.primary)
                 .lineLimit(1)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
         .background(
             RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .fill(isSelected ? theme.toolPanel : theme.paper)
+                .fill(isSelected ? color.opacity(0.10) : Color(uiColor: .secondarySystemGroupedBackground))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .stroke(isSelected ? theme.accentWarm.opacity(0.25) : theme.stroke, lineWidth: 1)
+                .stroke(isSelected ? color.opacity(0.25) : Color(uiColor: .separator).opacity(0.18), lineWidth: 1)
         )
     }
 }
@@ -165,73 +132,240 @@ struct ThreadFeedRow: View {
     let thread: DaemonThreadSummary
     let isActive: Bool
     let isPinned: Bool
+    let avatarItems: [ThreadFeedAvatarItem]
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: Theme {
+        Theme(colorScheme: colorScheme)
+    }
+
+    private var displayTitle: String {
+        let trimmedTitle = thread.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmedTitle.isEmpty ? thread.threadID : trimmedTitle
+    }
+
+    private var normalizedStateTitle: String {
+        thread.state
+            .replacingOccurrences(of: "_", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .capitalized
+    }
+
+    private var shortWorkingDirectory: String? {
+        let trimmed = thread.workingDir.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != ".", trimmed != "./" else {
+            return nil
+        }
+
+        let normalized = trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
+        let lastComponent = NSString(string: normalized).lastPathComponent
+        return lastComponent.isEmpty ? normalized : lastComponent
+    }
+
+    private var stateTint: Color {
+        let normalized = thread.state.lowercased()
+
+        if normalized.contains("run") || normalized.contains("stream") || normalized.contains("busy") {
+            return theme.accent
+        }
+        if normalized.contains("error") || normalized.contains("fail") {
+            return .red
+        }
+        if normalized.contains("wait") || normalized.contains("input") || normalized.contains("pending") {
+            return .orange
+        }
+        return theme.subtleInk
+    }
+
+    private var cardBackground: Color {
+        Color(uiColor: .secondarySystemGroupedBackground)
+    }
+
+    private var cardStroke: Color {
+        isActive ? stateTint.opacity(0.18) : Color(uiColor: .separator).opacity(0.12)
+    }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.accentColor.opacity(0.22), Color.accentColor.opacity(0.10)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 56, height: 56)
-
-                Image(systemName: thread.participantCount > 1 ? "person.2.fill" : "message.fill")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-            }
+        HStack(alignment: .center, spacing: 12) {
+            ThreadFeedAvatarStack(
+                avatarItems: avatarItems,
+                participantCount: thread.participantCount
+            )
 
             VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(thread.title ?? thread.threadID)
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(displayTitle)
                         .font(.body.weight(.semibold))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(theme.ink)
                         .lineLimit(1)
 
-                    if isPinned {
-                        Image(systemName: "pin.fill")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-                }
+                    Spacer(minLength: 0)
 
-                Text(thread.workingDir)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    ThreadStateBadge(
+                        title: normalizedStateTitle,
+                        tint: stateTint,
+                        isActive: isActive
+                    )
+                }
 
                 HStack(spacing: 8) {
-                    SmallInfoPill(icon: "person.2.fill", text: "\(thread.participantCount)")
+                    ThreadMetaChip(icon: "person.2.fill", text: "\(thread.participantCount)")
+
+                    if let shortWorkingDirectory {
+                        ThreadMetaChip(icon: "folder.fill", text: shortWorkingDirectory)
+                    }
+
+                    if isPinned {
+                        ThreadMetaChip(icon: "pin.fill", text: "Pinned")
+                    }
                 }
             }
-
-            Spacer(minLength: 0)
-
-            VStack(alignment: .trailing, spacing: 8) {
-                if isActive {
-                    Image(systemName: "bubble.left.and.bubble.right.fill")
-                        .foregroundStyle(Color.accentColor)
-                }
-
-                Text(thread.state.replacingOccurrences(of: "_", with: " ").capitalized)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(14)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 13)
         .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(Color(uiColor: .secondarySystemBackground).opacity(0.96))
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(cardBackground)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(isActive ? Color.accentColor.opacity(0.35) : Color.black.opacity(0.06), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(cardStroke, lineWidth: 1)
         )
-        .shadow(color: Color.black.opacity(isActive ? 0.08 : 0.03), radius: 16, y: 8)
-        .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(isActive ? stateTint : .clear)
+                .frame(width: 3, height: 38)
+                .padding(.leading, 8)
+        }
+        .shadow(color: Color.black.opacity(isActive ? 0.03 : 0.01), radius: 6, y: 2)
+        .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+}
+
+private struct ThreadFeedAvatarStack: View {
+    let avatarItems: [ThreadFeedAvatarItem]
+    let participantCount: Int
+
+    var body: some View {
+        let visibleItems = Array(avatarItems.prefix(2))
+
+        ZStack {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color(uiColor: .tertiarySystemGroupedBackground))
+
+            if visibleItems.isEmpty {
+                Image(systemName: participantCount > 1 ? "person.2.fill" : "message.fill")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            } else if visibleItems.count == 1 {
+                ThreadFeedAvatarBubble(item: visibleItems[0], size: 40)
+            } else {
+                ZStack {
+                    ThreadFeedAvatarBubble(item: visibleItems[0], size: 32)
+                        .offset(x: -8, y: -4)
+
+                    ThreadFeedAvatarBubble(item: visibleItems[1], size: 32)
+                        .offset(x: 8, y: 4)
+                }
+            }
+        }
+        .frame(width: 48, height: 48)
+    }
+}
+
+private struct ThreadFeedAvatarBubble: View {
+    let item: ThreadFeedAvatarItem
+    let size: CGFloat
+
+    var body: some View {
+        Group {
+            if let avatarData = item.avatarData,
+               let image = UIImage(data: avatarData) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else if let assetName = item.avatarAssetName {
+                Image(assetName)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                ZStack {
+                    Circle()
+                        .fill(item.tintColor.opacity(0.14))
+
+                    Text(item.initials)
+                        .font(.system(size: size * 0.32, weight: .bold))
+                        .foregroundStyle(item.tintColor)
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay {
+            Circle()
+                .stroke(Color.white.opacity(0.92), lineWidth: 2)
+        }
+        .shadow(color: Color.black.opacity(0.10), radius: 5, y: 2)
+    }
+}
+
+private struct ThreadMetaChip: View {
+    let icon: String
+    let text: String
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: Theme {
+        Theme(colorScheme: colorScheme)
+    }
+
+    var body: some View {
+        Label(text, systemImage: icon)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(Color(uiColor: .tertiarySystemFill), in: Capsule())
+            .overlay {
+                Capsule()
+                    .stroke(Color(uiColor: .separator).opacity(0.08), lineWidth: 1)
+            }
+    }
+}
+
+private struct ThreadStateBadge: View {
+    let title: String
+    let tint: Color
+    let isActive: Bool
+
+    private var labelTint: Color {
+        isActive ? tint : .secondary
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(tint)
+                .frame(width: 7, height: 7)
+
+            Text(isActive ? "Live" : title)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+        }
+        .foregroundStyle(labelTint)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(
+            isActive ? tint.opacity(0.12) : Color(uiColor: .tertiarySystemFill),
+            in: Capsule()
+        )
+        .overlay {
+            Capsule()
+                .stroke(isActive ? tint.opacity(0.12) : Color(uiColor: .separator).opacity(0.08), lineWidth: 1)
+        }
     }
 }
 

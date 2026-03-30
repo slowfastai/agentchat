@@ -5,6 +5,7 @@ SwiftUI code skeleton for a macOS + iPad-first prototype.
 ## What is included
 
 - `App/` root app entry and split-view navigation
+- `Assets/AgentAvatars/` original source avatar artwork; app-ready copies live in `AgentChat/AgentChat/Assets.xcassets/`
 - `Core/Models/` prototype data models
 - `Core/Store/` mock in-memory demo store with fake streaming responses
 - `DesignSystem/` shared colors, cards, pills, badges, avatars

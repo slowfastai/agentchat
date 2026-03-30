@@ -142,6 +142,26 @@ struct AgentChatTests {
         #expect(store.agents[0].status == "offline")
     }
 
+    @Test @MainActor func daemonChatStoreOpensThreadLocallyWhileOfflineWithoutShowingError() async throws {
+        let suiteName = "AgentChatTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            Issue.record("Failed to create isolated UserDefaults suite")
+            return
+        }
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let store = DaemonChatStore(defaults: defaults)
+
+        store.attachThread("thread-1")
+        await Task.yield()
+
+        #expect(store.activeThreadID == "thread-1")
+        #expect(store.connectionStatus == "Not configured")
+        #expect(store.errorMessage == nil)
+    }
+
     @Test func agentRosterKeepsKnownAgentsVisibleWhenLiveListShrinks() async throws {
         let claude = makeAgent(
             agentID: "claude",
@@ -197,6 +217,7 @@ struct AgentChatTests {
         let emptyDelta = ThreadAgentDeltaEvent(
             threadID: "thread-1",
             threadSeq: 2,
+            turnID: "turn-1",
             participantID: "participant-1",
             agentID: "opencode",
             sessionID: "session-1",
@@ -217,6 +238,7 @@ struct AgentChatTests {
         let firstThinking = ThreadAgentDeltaEvent(
             threadID: "thread-1",
             threadSeq: 4,
+            turnID: "turn-1",
             participantID: "participant-1",
             agentID: "opencode",
             sessionID: "session-1",
@@ -227,6 +249,7 @@ struct AgentChatTests {
         let secondThinking = ThreadAgentDeltaEvent(
             threadID: "thread-1",
             threadSeq: 5,
+            turnID: "turn-1",
             participantID: "participant-1",
             agentID: "opencode",
             sessionID: "session-1",
@@ -237,6 +260,7 @@ struct AgentChatTests {
         let responseChunk = ThreadAgentDeltaEvent(
             threadID: "thread-1",
             threadSeq: 7,
+            turnID: "turn-1",
             participantID: "participant-1",
             agentID: "opencode",
             sessionID: "session-1",
@@ -247,6 +271,7 @@ struct AgentChatTests {
         let turnEnd = ThreadAgentTurnEndEvent(
             threadID: "thread-1",
             threadSeq: 8,
+            turnID: "turn-1",
             participantID: "participant-1",
             agentID: "opencode",
             sessionID: "session-1",
@@ -281,6 +306,7 @@ struct AgentChatTests {
         let toolPending = ThreadAgentToolUpdateEvent(
             threadID: "thread-1",
             threadSeq: 12,
+            turnID: "turn-1",
             participantID: "participant-1",
             agentID: "opencode",
             sessionID: "session-1",
@@ -293,6 +319,7 @@ struct AgentChatTests {
         let toolCompleted = ThreadAgentToolUpdateEvent(
             threadID: "thread-1",
             threadSeq: 14,
+            turnID: "turn-1",
             participantID: "participant-1",
             agentID: "opencode",
             sessionID: "session-1",
@@ -305,6 +332,7 @@ struct AgentChatTests {
         let planUpdate = ThreadAgentPlanUpdateEvent(
             threadID: "thread-1",
             threadSeq: 15,
+            turnID: "turn-1",
             participantID: "participant-1",
             agentID: "opencode",
             sessionID: "session-1",
@@ -354,6 +382,8 @@ struct AgentChatTests {
         #expect(timelineEntry.planBody?.contains("\"steps\"") == true)
         #expect(timelineEntry.body == "Weather looks mild tomorrow.")
         #expect(timelineEntry.status == "completed")
+        #expect(timelineEntry.executionSummary?.headline == "Used 1 tool")
+        #expect(timelineEntry.executionSummary?.detailLine == "Plan")
     }
 
     @Test func assistantTurnReducerKeepsToolOnlyTurnInOneEntry() async throws {
@@ -362,6 +392,7 @@ struct AgentChatTests {
         let toolUpdate = ThreadAgentToolUpdateEvent(
             threadID: "thread-1",
             threadSeq: 9,
+            turnID: "turn-1",
             participantID: "participant-1",
             agentID: "opencode",
             sessionID: "session-1",
@@ -374,6 +405,7 @@ struct AgentChatTests {
         let turnEnd = ThreadAgentTurnEndEvent(
             threadID: "thread-1",
             threadSeq: 10,
+            turnID: "turn-1",
             participantID: "participant-1",
             agentID: "opencode",
             sessionID: "session-1",
@@ -388,6 +420,42 @@ struct AgentChatTests {
         #expect(completedState?.response.isEmpty == true)
         #expect(completedState?.status == "completed")
         #expect(reducer.activeStates.isEmpty)
+    }
+
+    @Test func thoughtProcessSummaryOmitsRedundantThinkingDetail() async throws {
+        let entry = DaemonTimelineEntry(
+            id: "entry-1",
+            sortThreadSeq: 1,
+            lastThreadSeq: 1,
+            kind: .assistantTurn,
+            agentID: "opencode",
+            title: "OpenCode",
+            body: "Here is the answer.",
+            thinkingBody: "Need to inspect the repository state first.",
+            status: "completed",
+            tintName: "orange"
+        )
+
+        #expect(entry.executionSummary?.headline == "Thought process")
+        #expect(entry.executionSummary?.detailLine == nil)
+    }
+
+    @Test func createThreadDraftSelectionStartsEmptyWithoutRememberedAgents() async throws {
+        let selection = AgentPickerDraftSelection.createThread(
+            selectableIDs: ["codex", "opencode"],
+            rememberedIDs: []
+        )
+
+        #expect(selection.isEmpty)
+    }
+
+    @Test func createThreadDraftSelectionIgnoresRememberedAgents() async throws {
+        let selection = AgentPickerDraftSelection.createThread(
+            selectableIDs: ["codex", "opencode"],
+            rememberedIDs: ["codex", "offline-agent"]
+        )
+
+        #expect(selection.isEmpty)
     }
 
     private func makeAgent(

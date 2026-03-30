@@ -11,12 +11,6 @@ struct ThreadParticipantChip: View {
     var isSelected: Bool = true
     var isSelectable: Bool = false
 
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var theme: Theme {
-        Theme(colorScheme: colorScheme)
-    }
-
     private var trimmedCustomName: String? {
         guard let customName else { return nil }
         let trimmed = customName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -42,7 +36,7 @@ struct ThreadParticipantChip: View {
                 HStack(spacing: 4) {
                     Text(displayName)
                         .font(.subheadline.weight(.medium))
-                        .foregroundStyle(theme.ink)
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
 
                     if trimmedCustomName != nil {
@@ -54,25 +48,25 @@ struct ThreadParticipantChip: View {
 
                 Text(isSelectable ? "@\(participant.mentionHandle)" : participant.kindTitle)
                     .font(.caption)
-                    .foregroundStyle(theme.mutedInk)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
 
             if isSelectable {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(isSelected ? color : theme.subtleInk)
+                    .foregroundStyle(isSelected ? color : .secondary)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(
-            (isSelectable && isSelected ? color.opacity(0.09) : theme.paper),
+            (isSelectable && isSelected ? color.opacity(0.09) : Color(uiColor: .secondarySystemGroupedBackground)),
             in: RoundedRectangle(cornerRadius: 16, style: .continuous)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(isSelectable && isSelected ? color.opacity(0.28) : theme.stroke, lineWidth: 1)
+                .stroke(isSelectable && isSelected ? color.opacity(0.28) : Color(uiColor: .separator).opacity(0.18), lineWidth: 1)
         )
         .opacity(isSelectable && !isSelected ? 0.72 : 1)
     }
@@ -89,12 +83,6 @@ struct MentionSuggestionRow: View {
     let color: Color
     var avatarData: Data? = nil
     var customName: String? = nil
-
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var theme: Theme {
-        Theme(colorScheme: colorScheme)
-    }
 
     private var trimmedCustomName: String? {
         guard let customName else { return nil }
@@ -120,12 +108,12 @@ struct MentionSuggestionRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("@\(participant.mentionHandle)")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(theme.ink)
+                    .foregroundStyle(.primary)
 
                 HStack(spacing: 4) {
                     Text(displayName)
                         .font(.caption)
-                        .foregroundStyle(theme.mutedInk)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
 
                     if trimmedCustomName != nil {
@@ -140,17 +128,17 @@ struct MentionSuggestionRow: View {
 
             Text(participant.kindTitle)
                 .font(.caption2.weight(.medium))
-                .foregroundStyle(theme.subtleInk)
+                .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(theme.panel)
+                .fill(Color(uiColor: .secondarySystemGroupedBackground))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(theme.stroke, lineWidth: 1)
+                .stroke(Color(uiColor: .separator).opacity(0.18), lineWidth: 1)
         )
     }
 

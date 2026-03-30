@@ -216,13 +216,35 @@ private func mentionHandleValue(_ value: String) -> String {
 struct DaemonAgentSummary: Codable, Identifiable, Hashable {
     let agentID: String
     let name: String
-    let mentionHandleOverride: String? = nil
+    let mentionHandleOverride: String?
     let kind: String
     let status: String
     let defaultWorkingDir: String?
     let capabilities: [String]
     var customDisplayName: String?
     var avatarImageData: Data?
+
+    nonisolated init(
+        agentID: String,
+        name: String,
+        mentionHandleOverride: String? = nil,
+        kind: String,
+        status: String,
+        defaultWorkingDir: String?,
+        capabilities: [String],
+        customDisplayName: String? = nil,
+        avatarImageData: Data? = nil
+    ) {
+        self.agentID = agentID
+        self.name = name
+        self.mentionHandleOverride = mentionHandleOverride
+        self.kind = kind
+        self.status = status
+        self.defaultWorkingDir = defaultWorkingDir
+        self.capabilities = capabilities
+        self.customDisplayName = customDisplayName
+        self.avatarImageData = avatarImageData
+    }
 
     enum CodingKeys: String, CodingKey {
         case agentID = "agent_id"
@@ -275,6 +297,7 @@ struct DaemonAgentSummary: Codable, Identifiable, Hashable {
         Self(
             agentID: agentID,
             name: name,
+            mentionHandleOverride: mentionHandleOverride,
             kind: kind,
             status: status,
             defaultWorkingDir: defaultWorkingDir,
@@ -302,6 +325,7 @@ struct DaemonAgentSummary: Codable, Identifiable, Hashable {
         return Self(
             agentID: agentID,
             name: name,
+            mentionHandleOverride: mentionHandleOverride,
             kind: kind,
             status: status,
             defaultWorkingDir: defaultWorkingDir,
@@ -339,9 +363,27 @@ struct DaemonThreadParticipant: Codable, Identifiable, Hashable {
     let kind: String
     let displayName: String
     let agentID: String?
-    let mentionHandleOverride: String? = nil
+    let mentionHandleOverride: String?
     let sessionID: String?
     let state: String
+
+    nonisolated init(
+        participantID: String,
+        kind: String,
+        displayName: String,
+        agentID: String?,
+        mentionHandleOverride: String? = nil,
+        sessionID: String?,
+        state: String
+    ) {
+        self.participantID = participantID
+        self.kind = kind
+        self.displayName = displayName
+        self.agentID = agentID
+        self.mentionHandleOverride = mentionHandleOverride
+        self.sessionID = sessionID
+        self.state = state
+    }
 
     enum CodingKeys: String, CodingKey {
         case participantID = "participant_id"
@@ -705,7 +747,7 @@ struct SendThreadMessageRequest: Encodable {
     }
 }
 
-struct DaemonToolActivity: Identifiable, Hashable {
+struct DaemonToolActivity: Codable, Identifiable, Hashable {
     let id: String
     let title: String
     let status: String
@@ -795,8 +837,8 @@ extension DaemonToolActivity {
     }
 }
 
-struct DaemonTimelineEntry: Identifiable, Hashable {
-    enum Kind: String, Hashable {
+struct DaemonTimelineEntry: Codable, Identifiable, Hashable {
+    enum Kind: String, Codable, Hashable {
         case user
         case assistantTurn
         case tool
@@ -919,7 +961,8 @@ extension DaemonTimelineEntry {
         let hasResponse = !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let metadataLabels = executionMetadataLabels(
             hasThinking: hasThinkingBody,
-            hasPlan: hasPlanBody
+            hasPlan: hasPlanBody,
+            hasTools: !toolActivities.isEmpty
         )
         let toolCountLabel = toolActivities.isEmpty
             ? nil
@@ -978,18 +1021,26 @@ extension DaemonTimelineEntry {
         guard hasExecutionDetails else { return nil }
 
         let headline: String
+        let completedDetailLine: String?
         if !toolActivities.isEmpty {
             headline = "Used \(pluralizedExecutionLabel(toolActivities.count, singular: "tool"))"
+            completedDetailLine = detailLine
         } else if hasThinkingBody {
-            headline = "Reasoning available"
+            headline = "Thought process"
+            completedDetailLine = detailLineText(labels: executionMetadataLabels(
+                hasThinking: false,
+                hasPlan: hasPlanBody,
+                hasTools: false
+            ))
         } else {
             headline = "Plan available"
+            completedDetailLine = detailLine
         }
 
         return AssistantExecutionSummary(
             headline: headline,
             footnote: nil,
-            detailLine: detailLine,
+            detailLine: completedDetailLine,
             tone: .neutral,
             showsProgress: false
         )
@@ -1011,9 +1062,9 @@ extension DaemonTimelineEntry {
         return 3
     }
 
-    private func executionMetadataLabels(hasThinking: Bool, hasPlan: Bool) -> [String] {
+    private func executionMetadataLabels(hasThinking: Bool, hasPlan: Bool, hasTools: Bool) -> [String] {
         var labels: [String] = []
-        if hasThinking {
+        if hasThinking && !hasTools {
             labels.append("Thinking")
         }
         if hasPlan {
@@ -1202,10 +1253,51 @@ struct AssistantTurnState: Equatable {
             tintName: tintName
         )
     }
+
+    init?(persistedEntry entry: DaemonTimelineEntry, threadID: String) {
+        guard entry.kind == .assistantTurn else { return nil }
+        guard entry.normalizedStatusToken != "completed", entry.normalizedStatusToken != "failed" else {
+            return nil
+        }
+
+        let prefix = "assistant-turn-\(threadID)-"
+        guard entry.id.hasPrefix(prefix) else { return nil }
+
+        let turnIdentity = String(entry.id.dropFirst(prefix.count))
+        guard !turnIdentity.isEmpty else { return nil }
+
+        self.threadID = threadID
+        self.sessionID = turnIdentity
+        self.turnIdentity = turnIdentity
+        self.entryID = entry.id
+        self.sortThreadSeq = entry.sortThreadSeq
+        self.agentID = entry.title
+        self.lastThreadSeq = entry.lastThreadSeq
+        self.thinking = entry.thinkingBody ?? ""
+        self.response = entry.body
+        self.planBody = entry.planBody
+        self.toolActivities = entry.toolActivities
+        self.status = entry.status ?? "streaming"
+    }
 }
 
 struct AssistantTurnReducer {
     private(set) var activeStates: [AssistantTurnKey: AssistantTurnState] = [:]
+
+    mutating func restore(from timelineByThread: [String: [DaemonTimelineEntry]]) {
+        activeStates.removeAll()
+
+        for (threadID, entries) in timelineByThread {
+            for entry in entries {
+                guard let state = AssistantTurnState(persistedEntry: entry, threadID: threadID) else {
+                    continue
+                }
+
+                let key = AssistantTurnKey(threadID: threadID, turnIdentity: state.turnIdentity)
+                activeStates[key] = state
+            }
+        }
+    }
 
     mutating func consume(snapshot event: ThreadAssistantMessageEvent) -> AssistantTurnState {
         let key = AssistantTurnKey(
