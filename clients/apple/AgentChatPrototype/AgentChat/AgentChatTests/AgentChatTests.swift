@@ -457,6 +457,32 @@ struct AgentChatTests {
         #expect(entry.executionSummary?.detailLine == nil)
     }
 
+    @Test func activeComposerMentionContextDetectsMentionsAtEndOfDraftAnywhere() async throws {
+        let startOnly = activeComposerMentionContext(in: "@cod")
+        #expect(startOnly?.query == "cod")
+
+        let midSentence = activeComposerMentionContext(in: "Hi @ ")
+        #expect(midSentence?.query == "")
+
+        let partialMidSentence = activeComposerMentionContext(in: "Hi @co")
+        #expect(partialMidSentence?.query == "co")
+    }
+
+    @Test func activeComposerMentionContextReplacesOnlyTheActiveTrailingMention() async throws {
+        let text = "Hello @co"
+        guard let context = activeComposerMentionContext(in: text) else {
+            Issue.record("Expected a mention context for a trailing mid-sentence mention")
+            return
+        }
+
+        #expect(String(text[context.replacementRange]) == "@co")
+    }
+
+    @Test func activeComposerMentionContextIgnoresEmailLikeText() async throws {
+        #expect(activeComposerMentionContext(in: "email me at foo@bar.com") == nil)
+        #expect(activeComposerMentionContext(in: "package pkg@1.2.3") == nil)
+    }
+
     @Test func createThreadDraftSelectionStartsEmptyWithoutRememberedAgents() async throws {
         let selection = AgentPickerDraftSelection.createThread(
             selectableIDs: ["codex", "opencode"],
