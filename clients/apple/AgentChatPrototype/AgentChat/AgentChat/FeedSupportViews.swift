@@ -178,6 +178,14 @@ struct ThreadFeedRow: View {
         return theme.subtleInk
     }
 
+    private var cardBackground: Color {
+        Color(uiColor: .secondarySystemGroupedBackground)
+    }
+
+    private var cardStroke: Color {
+        isActive ? stateTint.opacity(0.18) : Color(uiColor: .separator).opacity(0.12)
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             ThreadFeedAvatarStack(
@@ -219,11 +227,11 @@ struct ThreadFeedRow: View {
         .padding(.vertical, 13)
         .background(
             RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(theme.panel.opacity(0.98))
+                .fill(cardBackground)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(isActive ? stateTint.opacity(0.30) : theme.stroke, lineWidth: 1)
+                .stroke(cardStroke, lineWidth: 1)
         )
         .overlay(alignment: .leading) {
             RoundedRectangle(cornerRadius: 2, style: .continuous)
@@ -231,7 +239,7 @@ struct ThreadFeedRow: View {
                 .frame(width: 3, height: 38)
                 .padding(.leading, 8)
         }
-        .shadow(color: Color.black.opacity(isActive ? 0.05 : 0.02), radius: 12, y: 5)
+        .shadow(color: Color.black.opacity(isActive ? 0.03 : 0.01), radius: 6, y: 2)
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 }
@@ -245,18 +253,12 @@ private struct ThreadFeedAvatarStack: View {
 
         ZStack {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Color.accentColor.opacity(0.22), Color.accentColor.opacity(0.10)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+                .fill(Color(uiColor: .tertiarySystemGroupedBackground))
 
             if visibleItems.isEmpty {
                 Image(systemName: participantCount > 1 ? "person.2.fill" : "message.fill")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(.secondary)
             } else if visibleItems.count == 1 {
                 ThreadFeedAvatarBubble(item: visibleItems[0], size: 40)
             } else {
@@ -322,14 +324,14 @@ private struct ThreadMetaChip: View {
     var body: some View {
         Label(text, systemImage: icon)
             .font(.caption.weight(.medium))
-            .foregroundStyle(theme.mutedInk)
+            .foregroundStyle(.secondary)
             .lineLimit(1)
             .padding(.horizontal, 9)
-            .padding(.vertical, 6)
-            .background(theme.paper, in: Capsule())
+            .padding(.vertical, 5)
+            .background(Color(uiColor: .tertiarySystemFill), in: Capsule())
             .overlay {
                 Capsule()
-                    .stroke(theme.stroke, lineWidth: 1)
+                    .stroke(Color(uiColor: .separator).opacity(0.08), lineWidth: 1)
             }
     }
 }
@@ -338,6 +340,10 @@ private struct ThreadStateBadge: View {
     let title: String
     let tint: Color
     let isActive: Bool
+
+    private var labelTint: Color {
+        isActive ? tint : .secondary
+    }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -349,10 +355,17 @@ private struct ThreadStateBadge: View {
                 .font(.caption.weight(.semibold))
                 .lineLimit(1)
         }
-        .foregroundStyle(tint)
+        .foregroundStyle(labelTint)
         .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(tint.opacity(isActive ? 0.16 : 0.10), in: Capsule())
+        .padding(.vertical, 5)
+        .background(
+            isActive ? tint.opacity(0.12) : Color(uiColor: .tertiarySystemFill),
+            in: Capsule()
+        )
+        .overlay {
+            Capsule()
+                .stroke(isActive ? tint.opacity(0.12) : Color(uiColor: .separator).opacity(0.08), lineWidth: 1)
+        }
     }
 }
 
