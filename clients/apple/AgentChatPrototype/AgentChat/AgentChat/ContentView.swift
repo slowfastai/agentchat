@@ -2,9 +2,10 @@ import SwiftUI
 import UIKit
 import OSLog
 import QuartzCore
+import Combine
 
 @MainActor
-final class UIPerformanceProbe {
+final class UIPerformanceProbe: ObservableObject {
     static let shared = UIPerformanceProbe()
 
     private struct Trace {
@@ -13,8 +14,12 @@ final class UIPerformanceProbe {
         let metadata: [String: String]
     }
 
+    @Published private(set) var debugLogText = ""
+
     private let logger = Logger(subsystem: "dev.slowfast.AgentChat", category: "UIPerformance")
     private var activeTraces: [String: Trace] = [:]
+    private var debugEntries: [String] = []
+    private let maxDebugEntries = 40
 
     private init() {}
 
@@ -56,6 +61,78 @@ final class UIPerformanceProbe {
         )
     }
 
+    func beginThreadOpen(threadID: String, presentation: String) {
+        let metadata = [
+            "thread_id": threadID,
+            "presentation": presentation
+        ]
+        begin(
+            key: "thread_open_visible",
+            label: "thread_tap_to_detail_visible",
+            metadata: metadata
+        )
+        begin(
+            key: "thread_open_composer",
+            label: "thread_tap_to_composer_ready",
+            metadata: metadata
+        )
+    }
+
+    func finishThreadOpenVisible(threadID: String, phase: String) {
+        end(
+            key: "thread_open_visible",
+            metadata: [
+                "thread_id": threadID,
+                "phase": phase
+            ]
+        )
+    }
+
+    func finishThreadComposerReady(threadID: String, participantCount: Int) {
+        end(
+            key: "thread_open_composer",
+            metadata: [
+                "thread_id": threadID,
+                "participant_count": String(participantCount)
+            ]
+        )
+    }
+
+    func cancelThreadOpen(reason: String) {
+        cancel(key: "thread_open_visible", reason: reason)
+        cancel(key: "thread_open_composer", reason: reason)
+    }
+
+    func beginComposerTap(threadID: String) {
+        let metadata = ["thread_id": threadID]
+        begin(
+            key: "composer_tap_focus",
+            label: "composer_tap_to_focus",
+            metadata: metadata
+        )
+        begin(
+            key: "composer_tap_keyboard",
+            label: "composer_tap_to_keyboard",
+            metadata: metadata
+        )
+    }
+
+    func finishComposerFocus(threadID: String) {
+        end(
+            key: "composer_tap_focus",
+            metadata: ["thread_id": threadID]
+        )
+    }
+
+    func finishComposerKeyboard() {
+        end(key: "composer_tap_keyboard")
+    }
+
+    func cancelComposerTap(reason: String) {
+        cancel(key: "composer_tap_focus", reason: reason)
+        cancel(key: "composer_tap_keyboard", reason: reason)
+    }
+
     func beginKeyboardPresentation(threadID: String) {
         begin(
             key: "keyboard_presentation",
@@ -79,7 +156,9 @@ final class UIPerformanceProbe {
             startedAt: CACurrentMediaTime(),
             metadata: metadata
         )
-        logger.info("[UITrace] START \(label, privacy: .public) \(Self.format(metadata), privacy: .public)")
+        let line = "[UITrace] START \(label) \(Self.format(metadata))"
+        logger.info("\(line, privacy: .public)")
+        appendDebugEntry(line)
         #endif
     }
 
@@ -88,15 +167,27 @@ final class UIPerformanceProbe {
         guard let trace = activeTraces.removeValue(forKey: key) else { return }
         let elapsedMS = (CACurrentMediaTime() - trace.startedAt) * 1000
         let combinedMetadata = trace.metadata.merging(metadata) { _, latest in latest }
-        logger.info("[UITrace] END \(trace.label, privacy: .public) elapsed_ms=\(String(format: "%.2f", elapsedMS), privacy: .public) \(Self.format(combinedMetadata), privacy: .public)")
+        let line = "[UITrace] END \(trace.label) elapsed_ms=\(String(format: "%.2f", elapsedMS)) \(Self.format(combinedMetadata))"
+        logger.info("\(line, privacy: .public)")
+        appendDebugEntry(line)
         #endif
     }
 
     private func cancel(key: String, reason: String) {
         #if DEBUG
         guard let trace = activeTraces.removeValue(forKey: key) else { return }
-        logger.info("[UITrace] CANCEL \(trace.label, privacy: .public) reason=\(reason, privacy: .public)")
+        let line = "[UITrace] CANCEL \(trace.label) reason=\(reason)"
+        logger.info("\(line, privacy: .public)")
+        appendDebugEntry(line)
         #endif
+    }
+
+    private func appendDebugEntry(_ line: String) {
+        debugEntries.append(line)
+        if debugEntries.count > maxDebugEntries {
+            debugEntries.removeFirst(debugEntries.count - maxDebugEntries)
+        }
+        debugLogText = debugEntries.joined(separator: "\n")
     }
 
     private static func format(_ metadata: [String: String]) -> String {
@@ -289,13 +380,16 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @StateObject private var store = DaemonChatStore()
+    @ObservedObject private var performanceProbe = UIPerformanceProbe.shared
     @State private var draft = ""
     @FocusState private var isComposerFocused: Bool
     @State private var isScannerPresented = false
-    @State private var compactPresentedThreadID: String?
+    @State private var compactNavigationPath = NavigationPath()
     @State private var pendingCloseThread: DaemonThreadSummary?
     @State private var selectedTab: AppTab = .feed
     @State private var editingAgent: DaemonAgentSummary?
+    @State private var shouldAutoFocusComposerForNewThread = false
+    @State private var pendingAutoFocusThreadID: String?
     @State private var pendingDeleteAgent: DaemonAgentSummary?
     @State private var agentPickerMode: AgentPickerMode?
     @State private var draftAgentSelection: Set<String> = []
@@ -307,6 +401,10 @@ struct ContentView: View {
 
     private var avatarSettingsHostMode: AvatarSettingsHostMode {
         ProcessInfo.processInfo.arguments.contains("UITestAvatarSettingsHostRoot") ? .root : .local
+    }
+
+    private var shouldExposePerformanceProbe: Bool {
+        ProcessInfo.processInfo.arguments.contains("UITestExposePerformanceProbe")
     }
 
     private var threadAvatarTapHandler: ((String?) -> Void)? {
@@ -360,31 +458,23 @@ struct ContentView: View {
                 store.applyScannedConnectionPayload(payload)
             }
         }
-        .sheet(item: compactPresentedThreadSheetBinding) { _ in
-            NavigationStack {
-                detail
-                    .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button("Done") {
-                                compactPresentedThreadID = nil
-                            }
-                        }
-                }
-            }
-        }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             isKeyboardPresented = true
+            UIPerformanceProbe.shared.finishComposerKeyboard()
             UIPerformanceProbe.shared.finishKeyboardPresentation()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             isKeyboardPresented = false
+            UIPerformanceProbe.shared.cancelComposerTap(reason: "keyboard_will_hide")
             UIPerformanceProbe.shared.cancelKeyboardPresentation(reason: "keyboard_will_hide")
         }
         .onChange(of: isComposerFocused) { isFocused in
             if isFocused,
                let threadID = store.activeThreadID ?? store.activeThreadSnapshot?.threadID {
+                UIPerformanceProbe.shared.finishComposerFocus(threadID: threadID)
                 UIPerformanceProbe.shared.beginKeyboardPresentation(threadID: threadID)
             } else if !isFocused {
+                UIPerformanceProbe.shared.cancelComposerTap(reason: "focus_cleared")
                 UIPerformanceProbe.shared.cancelKeyboardPresentation(reason: "focus_cleared")
             }
         }
@@ -394,6 +484,14 @@ struct ContentView: View {
                 lastEntryID: store.timeline.last?.id,
                 lastEntryKind: store.timeline.last?.kind.rawValue
             )
+        }
+        .onChange(of: store.activeThreadID) { threadID in
+            guard shouldAutoFocusComposerForNewThread, let threadID else { return }
+            pendingAutoFocusThreadID = threadID
+        }
+        .onChange(of: store.errorMessage) { message in
+            guard message != nil, pendingAutoFocusThreadID == nil else { return }
+            shouldAutoFocusComposerForNewThread = false
         }
         .confirmationDialog(
             "Close Thread?",
@@ -468,13 +566,26 @@ struct ContentView: View {
             }
             .presentationDetents([.medium, .large])
         }
+        .overlay(alignment: .bottomLeading) {
+            if shouldExposePerformanceProbe {
+                Text(performanceProbe.debugLogText.isEmpty ? "[UITrace] idle" : performanceProbe.debugLogText)
+                    .font(.caption2)
+                    .foregroundStyle(.clear)
+                    .frame(width: 1, height: 1)
+                    .clipped()
+                    .accessibilityIdentifier("UIPerformanceProbeLog")
+            }
+        }
     }
 
     @ViewBuilder
     private var feedRoot: some View {
         if horizontalSizeClass == .compact {
-            NavigationStack {
+            NavigationStack(path: $compactNavigationPath) {
                 feedList
+                    .navigationDestination(for: CompactPresentedThread.self) { _ in
+                        detail
+                    }
             }
         } else {
             NavigationSplitView {
@@ -601,6 +712,7 @@ struct ContentView: View {
             .disabled(store.activeThreadID == nil || store.agents.filter(\.isOnline).isEmpty)
 
             Button {
+                prepareForSheetPresentation()
                 isScannerPresented = true
             } label: {
                 Label("Scan", systemImage: "qrcode.viewfinder")
@@ -608,6 +720,9 @@ struct ContentView: View {
         } label: {
             Image(systemName: "plus.circle.fill")
         }
+        .simultaneousGesture(TapGesture().onEnded {
+            prepareForSheetPresentation()
+        })
     }
 
     private var detail: some View {
@@ -630,14 +745,26 @@ struct ContentView: View {
                         }
                         .navigationTitle(snapshot.title ?? snapshot.threadID)
                         .navigationBarTitleDisplayMode(.inline)
+                        .onAppear {
+                            UIPerformanceProbe.shared.finishThreadOpenVisible(
+                                threadID: snapshot.threadID,
+                                phase: "snapshot"
+                            )
+                        }
                 }
-            } else if store.activeThreadID != nil {
+            } else if let activeThreadID = store.activeThreadID {
                 UnavailableStateView(
                     title: "Loading Thread",
                     systemImage: "clock.arrow.trianglehead.2.counterclockwise.rotate.90",
                     message: "Waiting for the daemon to attach and replay the thread timeline."
                 )
                 .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
+                .onAppear {
+                    UIPerformanceProbe.shared.finishThreadOpenVisible(
+                        threadID: activeThreadID,
+                        phase: "loading"
+                    )
+                }
             } else {
                 UnavailableStateView(
                     title: "No Active Thread",
@@ -647,6 +774,7 @@ struct ContentView: View {
                 .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
             }
         }
+        .toolbar(store.activeThreadID != nil ? .hidden : .visible, for: .tabBar)
     }
 
     @ViewBuilder
@@ -737,7 +865,29 @@ struct ContentView: View {
         return nil
     }
 
+    private func prepareForSheetPresentation() {
+        guard isComposerFocused || isKeyboardPresented else { return }
+        isComposerFocused = false
+        dismissKeyboard()
+    }
+
+    private func handleComposerTap(in snapshot: DaemonThreadSnapshot) {
+        guard !isComposerFocused, !isKeyboardPresented else { return }
+        UIPerformanceProbe.shared.beginComposerTap(threadID: snapshot.threadID)
+    }
+
+    private func autoFocusComposerIfNeeded(for threadID: String) {
+        guard pendingAutoFocusThreadID == threadID else { return }
+        pendingAutoFocusThreadID = nil
+        shouldAutoFocusComposerForNewThread = false
+        Task { @MainActor in
+            await Task.yield()
+            isComposerFocused = true
+        }
+    }
+
     private func presentAgentPicker(_ mode: AgentPickerMode) {
+        prepareForSheetPresentation()
         draftAgentSelection = defaultAgentSelection(for: mode)
         agentPickerMode = mode
     }
@@ -782,8 +932,10 @@ struct ContentView: View {
         let selectedAgentIDs = draftAgentSelection.sorted()
         switch mode {
         case .createThread:
+            shouldAutoFocusComposerForNewThread = true
             store.createThread(withAgentIDs: selectedAgentIDs)
         case .addAgent:
+            shouldAutoFocusComposerForNewThread = false
             store.addAgents(selectedAgentIDs)
         }
         agentPickerMode = nil
@@ -959,6 +1111,13 @@ struct ContentView: View {
 
     private func composerDock(snapshot: DaemonThreadSnapshot, availableWidth: CGFloat) -> some View {
         composer(snapshot: snapshot, availableWidth: availableWidth)
+            .onAppear {
+                UIPerformanceProbe.shared.finishThreadComposerReady(
+                    threadID: snapshot.threadID,
+                    participantCount: snapshot.participants.count
+                )
+                autoFocusComposerIfNeeded(for: snapshot.threadID)
+            }
             .padding(.horizontal, composerOuterHorizontalPadding(for: availableWidth))
             .padding(.top, 4)
             .padding(.bottom, 4)
@@ -989,6 +1148,9 @@ struct ContentView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled(true)
                         .foregroundStyle(.primary)
+                        .simultaneousGesture(TapGesture().onEnded {
+                            handleComposerTap(in: snapshot)
+                        })
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 18)
@@ -1023,21 +1185,14 @@ struct ContentView: View {
         .modifier(ComposerSurfaceModifier(theme: theme))
     }
 
-    private var compactPresentedThreadSheetBinding: Binding<CompactPresentedThread?> {
-        Binding<CompactPresentedThread?>(
-            get: {
-                compactPresentedThreadID.map { CompactPresentedThread(id: $0) }
-            },
-            set: { newValue in
-                compactPresentedThreadID = newValue?.id
-            }
-        )
-    }
-
     private func openThread(_ threadID: String) {
+        UIPerformanceProbe.shared.beginThreadOpen(
+            threadID: threadID,
+            presentation: horizontalSizeClass == .compact ? "compact_push" : "split_view"
+        )
         store.attachThread(threadID)
         if horizontalSizeClass == .compact {
-            compactPresentedThreadID = threadID
+            compactNavigationPath.append(CompactPresentedThread(id: threadID))
         }
     }
 
@@ -1194,7 +1349,7 @@ private func isMentionLeadingBoundary(_ character: Character?) -> Bool {
     }
 }
 
-private struct CompactPresentedThread: Identifiable {
+private struct CompactPresentedThread: Identifiable, Hashable {
     let id: String
 }
 

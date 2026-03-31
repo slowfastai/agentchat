@@ -17,6 +17,7 @@ final class DaemonChatStore: ObservableObject {
     private static let agentSettingsKey = "agentchat_agent_settings"
     private static let uiTestAvatarLatencyArgument = "UITestSeedAvatarLatency"
     private let logger = Logger(subsystem: "dev.slowfast.AgentChat", category: "DaemonConnection")
+    private static let uiTestThreadComposerLatencyArgument = "UITestSeedThreadComposerLatency"
 
     @Published private(set) var connectionState: DaemonConnectionState = .notConfigured
     @Published var agents: [DaemonAgentSummary] = []
@@ -88,8 +89,8 @@ final class DaemonChatStore: ObservableObject {
         self.agentAvatarData = Self.loadAgentAvatarData(from: defaults)
         self.agentSettings = Self.loadAgentSettings(from: defaults)
 
-        if Self.isUITestAvatarLatencySeedEnabled {
-            configureUITestAvatarLatencySeed()
+        if Self.isUITestSeedEnabled {
+            configureUITestSeedIfNeeded()
             return
         }
 
@@ -101,7 +102,7 @@ final class DaemonChatStore: ObservableObject {
         guard !hasStarted else { return }
         hasStarted = true
 
-        if Self.isUITestAvatarLatencySeedEnabled {
+        if Self.isUITestSeedEnabled {
             return
         }
 
@@ -1454,12 +1455,38 @@ final class DaemonChatStore: ObservableObject {
         persistThreadState()
     }
 
-    private static var isUITestAvatarLatencySeedEnabled: Bool {
+    private static var isUITestSeedEnabled: Bool {
         ProcessInfo.processInfo.arguments.contains(uiTestAvatarLatencyArgument)
+            || ProcessInfo.processInfo.arguments.contains(uiTestThreadComposerLatencyArgument)
     }
 
-    private func configureUITestAvatarLatencySeed() {
-        let threadID = "thread-avatar-latency"
+    private func configureUITestSeedIfNeeded() {
+        if ProcessInfo.processInfo.arguments.contains(Self.uiTestThreadComposerLatencyArgument) {
+            configureUITestSeed(
+                threadID: "thread-composer-latency",
+                threadTitle: "Composer Latency Thread",
+                timelineEntryID: "composer-latency-assistant-turn",
+                timelineBody: "Seeded assistant turn for composer latency measurement."
+            )
+            return
+        }
+
+        if ProcessInfo.processInfo.arguments.contains(Self.uiTestAvatarLatencyArgument) {
+            configureUITestSeed(
+                threadID: "thread-avatar-latency",
+                threadTitle: "Avatar Latency Thread",
+                timelineEntryID: "avatar-latency-assistant-turn",
+                timelineBody: "Seeded assistant turn for avatar latency measurement."
+            )
+        }
+    }
+
+    private func configureUITestSeed(
+        threadID: String,
+        threadTitle: String,
+        timelineEntryID: String,
+        timelineBody: String
+    ) {
         let createdAtMS: UInt64 = 1_743_379_200_000
 
         let agent = DaemonAgentSummary(
@@ -1482,7 +1509,7 @@ final class DaemonChatStore: ObservableObject {
 
         let snapshot = DaemonThreadSnapshot(
             threadID: threadID,
-            title: "Avatar Latency Thread",
+            title: threadTitle,
             workingDir: ".",
             createdAtMS: createdAtMS,
             lastThreadSeq: 2,
@@ -1491,7 +1518,7 @@ final class DaemonChatStore: ObservableObject {
 
         let summary = DaemonThreadSummary(
             threadID: threadID,
-            title: "Avatar Latency Thread",
+            title: threadTitle,
             workingDir: ".",
             createdAtMS: createdAtMS,
             state: "idle",
@@ -1500,13 +1527,13 @@ final class DaemonChatStore: ObservableObject {
         )
 
         let timelineEntry = DaemonTimelineEntry(
-            id: "avatar-latency-assistant-turn",
+            id: timelineEntryID,
             sortThreadSeq: 2,
             lastThreadSeq: 2,
             kind: .assistantTurn,
             agentID: "codex",
             title: "Codex",
-            body: "Seeded assistant turn for avatar latency measurement.",
+            body: timelineBody,
             status: "completed",
             tintName: "green"
         )
