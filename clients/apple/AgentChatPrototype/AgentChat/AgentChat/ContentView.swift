@@ -604,8 +604,7 @@ struct ContentView: View {
                         items: timelineBubbleItems,
                         timelineScrollMarker: timelineScrollMarker,
                         connectionState: store.connectionState,
-                        connectionStatus: store.connectionStatus,
-                        onAgentAvatarTap: openAgentSettings
+                        connectionStatus: store.connectionStatus
                     )
                     .equatable()
                         .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
@@ -1090,14 +1089,6 @@ struct ContentView: View {
         }
     }
 
-    private func openAgentSettings(for agentID: String?) {
-        guard let agentID else { return }
-        UIPerformanceProbe.shared.beginAvatarSettingsSheet(agentID: agentID)
-        editingAgent = store.agents.first(where: { $0.agentID == agentID })
-            ?? store.activeThreadSnapshot?.participants
-                .first(where: { $0.agentID == agentID })
-                .flatMap(store.agentSummary(for:))
-    }
 }
 
 private struct ComposerSurfaceModifier: ViewModifier {
@@ -1196,7 +1187,7 @@ private struct ThreadTimelineView: View, Equatable {
     let timelineScrollMarker: String
     let connectionState: DaemonConnectionState
     let connectionStatus: String
-    let onAgentAvatarTap: (String?) -> Void
+    @State private var editingAgent: DaemonAgentSummary?
 
     static func == (lhs: ThreadTimelineView, rhs: ThreadTimelineView) -> Bool {
         lhs.snapshot == rhs.snapshot
@@ -1213,12 +1204,12 @@ private struct ThreadTimelineView: View, Equatable {
                     ThreadHeaderCard(
                         snapshot: snapshot,
                         store: store,
-                        onAgentAvatarTap: onAgentAvatarTap
+                        onAgentAvatarTap: openAgentSettings
                     )
                     TimelineEntriesSection(
                         snapshot: snapshot,
                         items: items,
-                        onAgentAvatarTap: onAgentAvatarTap
+                        onAgentAvatarTap: openAgentSettings
                     )
                 }
                 .frame(maxWidth: 760)
@@ -1239,7 +1230,27 @@ private struct ThreadTimelineView: View, Equatable {
                     }
                 }
             }
+            .sheet(item: $editingAgent) { agent in
+                AgentEditSheet(
+                    agent: agent,
+                    initialSettings: store.settings(for: agent.agentID)
+                ) { updatedAgent, settings in
+                    store.updateAgentDisplayName(agent.agentID, displayName: updatedAgent.customDisplayName)
+                    store.updateAgentAvatar(agent.agentID, imageData: updatedAgent.avatarImageData)
+                    store.updateAgentSettings(agent.agentID, settings: settings)
+                    editingAgent = nil
+                }
+            }
         }
+    }
+
+    private func openAgentSettings(for agentID: String?) {
+        guard let agentID else { return }
+        UIPerformanceProbe.shared.beginAvatarSettingsSheet(agentID: agentID)
+        editingAgent = store.agents.first(where: { $0.agentID == agentID })
+            ?? snapshot.participants
+                .first(where: { $0.agentID == agentID })
+                .flatMap(store.agentSummary(for:))
     }
 
     private func dismissKeyboard() {
