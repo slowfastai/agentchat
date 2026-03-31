@@ -10,6 +10,7 @@ struct ThreadParticipantChip: View {
     var customName: String? = nil
     var isSelected: Bool = true
     var isSelectable: Bool = false
+    var onAvatarTap: (() -> Void)? = nil
 
     private var trimmedCustomName: String? {
         guard let customName else { return nil }
@@ -23,14 +24,7 @@ struct ThreadParticipantChip: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            ThreadParticipantAvatarView(
-                color: color,
-                avatarData: avatarData,
-                avatarAssetName: participant.defaultAvatarAssetName,
-                initials: initials,
-                size: 30,
-                cornerRadius: 15
-            )
+            avatarButton
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 4) {
@@ -75,6 +69,39 @@ struct ThreadParticipantChip: View {
         let parts = displayName.split(separator: " ")
         let value = parts.prefix(2).compactMap { $0.first }.map(String.init).joined()
         return value.isEmpty ? "?" : value.uppercased()
+    }
+
+    @ViewBuilder
+    private var avatarButton: some View {
+        let avatar = ThreadParticipantAvatarView(
+            color: color,
+            avatarData: avatarData,
+            avatarAssetName: participant.defaultAvatarAssetName,
+            initials: initials,
+            size: 30,
+            cornerRadius: 15
+        )
+
+        if let onAvatarTap {
+            Button(action: onAvatarTap) {
+                avatar
+                    .overlay(alignment: .bottomTrailing) {
+                        ZStack {
+                            Circle()
+                                .fill(Color(uiColor: .systemBackground))
+                                .frame(width: 12, height: 12)
+
+                            Image(systemName: "slider.horizontal.3")
+                                .font(.system(size: 6, weight: .bold))
+                                .foregroundStyle(color)
+                        }
+                    }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open \(displayName) settings")
+        } else {
+            avatar
+        }
     }
 }
 

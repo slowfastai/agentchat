@@ -171,6 +171,145 @@ enum DaemonAgentFamily: String, Hashable {
     }
 }
 
+enum AgentReasoningEffort: String, Codable, CaseIterable, Hashable, Identifiable {
+    case low
+    case medium
+    case high
+
+    var id: String { rawValue }
+
+    var title: String {
+        rawValue.capitalized
+    }
+}
+
+enum AgentApprovalPolicy: String, Codable, CaseIterable, Hashable, Identifiable {
+    case automatic
+    case onRequest = "on_request"
+    case manual
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .automatic:
+            return "Automatic"
+        case .onRequest:
+            return "On Request"
+        case .manual:
+            return "Manual"
+        }
+    }
+}
+
+enum AgentThinkingMode: String, Codable, CaseIterable, Hashable, Identifiable {
+    case standard
+    case extended
+    case max
+
+    var id: String { rawValue }
+
+    var title: String {
+        rawValue.capitalized
+    }
+}
+
+enum PiResponseStyle: String, Codable, CaseIterable, Hashable, Identifiable {
+    case concise
+    case balanced
+    case coach
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .concise:
+            return "Concise"
+        case .balanced:
+            return "Balanced"
+        case .coach:
+            return "Coach"
+        }
+    }
+}
+
+struct AgentLocalSettings: Codable, Hashable {
+    var model: String?
+    var systemPrompt: String?
+    var codexReasoningEffort: AgentReasoningEffort?
+    var codexApprovalPolicy: AgentApprovalPolicy?
+    var claudeThinkingMode: AgentThinkingMode?
+    var claudeFallbackModel: String?
+    var piProfile: String?
+    var piQuietStartup: Bool?
+    var piResponseStyle: PiResponseStyle?
+    var openCodeProvider: String?
+    var openCodeExecutionMode: String?
+
+    nonisolated init(
+        model: String? = nil,
+        systemPrompt: String? = nil,
+        codexReasoningEffort: AgentReasoningEffort? = nil,
+        codexApprovalPolicy: AgentApprovalPolicy? = nil,
+        claudeThinkingMode: AgentThinkingMode? = nil,
+        claudeFallbackModel: String? = nil,
+        piProfile: String? = nil,
+        piQuietStartup: Bool? = nil,
+        piResponseStyle: PiResponseStyle? = nil,
+        openCodeProvider: String? = nil,
+        openCodeExecutionMode: String? = nil
+    ) {
+        self.model = model
+        self.systemPrompt = systemPrompt
+        self.codexReasoningEffort = codexReasoningEffort
+        self.codexApprovalPolicy = codexApprovalPolicy
+        self.claudeThinkingMode = claudeThinkingMode
+        self.claudeFallbackModel = claudeFallbackModel
+        self.piProfile = piProfile
+        self.piQuietStartup = piQuietStartup
+        self.piResponseStyle = piResponseStyle
+        self.openCodeProvider = openCodeProvider
+        self.openCodeExecutionMode = openCodeExecutionMode
+    }
+
+    nonisolated var normalized: Self {
+        Self(
+            model: Self.trimmedValue(model),
+            systemPrompt: Self.trimmedValue(systemPrompt),
+            codexReasoningEffort: codexReasoningEffort,
+            codexApprovalPolicy: codexApprovalPolicy,
+            claudeThinkingMode: claudeThinkingMode,
+            claudeFallbackModel: Self.trimmedValue(claudeFallbackModel),
+            piProfile: Self.trimmedValue(piProfile),
+            piQuietStartup: piQuietStartup,
+            piResponseStyle: piResponseStyle,
+            openCodeProvider: Self.trimmedValue(openCodeProvider),
+            openCodeExecutionMode: Self.trimmedValue(openCodeExecutionMode)
+        )
+    }
+
+    nonisolated var isEmpty: Bool {
+        let normalized = normalized
+        return normalized.model == nil
+            && normalized.systemPrompt == nil
+            && normalized.codexReasoningEffort == nil
+            && normalized.codexApprovalPolicy == nil
+            && normalized.claudeThinkingMode == nil
+            && normalized.claudeFallbackModel == nil
+            && normalized.piProfile == nil
+            && normalized.piQuietStartup == nil
+            && normalized.piResponseStyle == nil
+            && normalized.openCodeProvider == nil
+            && normalized.openCodeExecutionMode == nil
+    }
+
+    private nonisolated static func trimmedValue(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 func humanizeAgentIdentifier(_ value: String) -> String {
     let replaced = value
         .replacingOccurrences(of: "_", with: " ")

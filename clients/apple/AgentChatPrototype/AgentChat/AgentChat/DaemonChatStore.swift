@@ -13,6 +13,7 @@ final class DaemonChatStore: ObservableObject {
     private static let relayAppInstallationIDKey = "agentchat_relay_app_installation_id"
     private static let agentCustomNamesKey = "agentchat_agent_custom_names"
     private static let agentAvatarDataKey = "agentchat_agent_avatar_data"
+    private static let agentSettingsKey = "agentchat_agent_settings"
 
     @Published private(set) var connectionState: DaemonConnectionState = .notConfigured
     @Published var agents: [DaemonAgentSummary] = []
@@ -25,6 +26,7 @@ final class DaemonChatStore: ObservableObject {
     @Published var errorMessage: String?
     @Published var agentCustomNames: [String: String] = [:]
     @Published var agentAvatarData: [String: Data] = [:]
+    @Published var agentSettings: [String: AgentLocalSettings] = [:]
     @Published var connectingAgentIDs: Set<String> = []
 
     @AppStorage("agentchat_daemon_ws_url") private var daemonURLString = ""
@@ -81,6 +83,7 @@ final class DaemonChatStore: ObservableObject {
         self.selectedAgentIDs = Set(defaults.stringArray(forKey: Self.selectedAgentsKey) ?? [])
         self.agentCustomNames = Self.loadAgentCustomNames(from: defaults)
         self.agentAvatarData = Self.loadAgentAvatarData(from: defaults)
+        self.agentSettings = Self.loadAgentSettings(from: defaults)
         restorePersistedThreadState()
         refreshIdleConnectionStatus()
     }
@@ -235,20 +238,55 @@ final class DaemonChatStore: ObservableObject {
     func removeAgent(_ agentID: String) {
         agents.removeAll { $0.agentID == agentID }
         selectedAgentIDs.remove(agentID)
+        agentCustomNames.removeValue(forKey: agentID)
+        agentAvatarData.removeValue(forKey: agentID)
+        agentSettings.removeValue(forKey: agentID)
         persistKnownAgents()
         persistSelectedAgents()
+        persistAgentCustomNames()
+        persistAgentAvatarData()
+        persistAgentSettings()
     }
 
     func updateAgentDisplayName(_ agentID: String, displayName: String?) {
-        guard let index = agents.firstIndex(where: { $0.agentID == agentID }) else { return }
-        agents[index] = agents[index].withCustomDisplayName(displayName)
-        persistKnownAgents()
+        let trimmedName = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedName = trimmedName?.isEmpty == true ? nil : trimmedName
+
+        if let normalizedName {
+            agentCustomNames[agentID] = normalizedName
+        } else {
+            agentCustomNames.removeValue(forKey: agentID)
+        }
+        persistAgentCustomNames()
+
+        if let index = agents.firstIndex(where: { $0.agentID == agentID }) {
+            agents[index] = agents[index].withCustomDisplayName(normalizedName)
+            persistKnownAgents()
+        }
     }
 
     func updateAgentAvatar(_ agentID: String, imageData: Data?) {
-        guard let index = agents.firstIndex(where: { $0.agentID == agentID }) else { return }
-        agents[index] = agents[index].withAvatarImageData(imageData)
-        persistKnownAgents()
+        if let imageData {
+            agentAvatarData[agentID] = imageData
+        } else {
+            agentAvatarData.removeValue(forKey: agentID)
+        }
+        persistAgentAvatarData()
+
+        if let index = agents.firstIndex(where: { $0.agentID == agentID }) {
+            agents[index] = agents[index].withAvatarImageData(imageData)
+            persistKnownAgents()
+        }
+    }
+
+    func updateAgentSettings(_ agentID: String, settings: AgentLocalSettings?) {
+        let normalized = settings?.normalized
+        if let normalized, !normalized.isEmpty {
+            agentSettings[agentID] = normalized
+        } else {
+            agentSettings.removeValue(forKey: agentID)
+        }
+        persistAgentSettings()
     }
 
     func isSelectedParticipant(_ participantID: String) -> Bool {
@@ -1113,6 +1151,15 @@ final class DaemonChatStore: ObservableObject {
         return avatars
     }
 
+    private static func loadAgentSettings(from defaults: UserDefaults) -> [String: AgentLocalSettings] {
+        guard let data = defaults.data(forKey: Self.agentSettingsKey),
+              let settings = try? JSONDecoder().decode([String: AgentLocalSettings].self, from: data)
+        else {
+            return [:]
+        }
+        return settings
+    }
+
     private func persistAgentCustomNames() {
         guard let data = try? JSONEncoder().encode(agentCustomNames) else { return }
         defaults.set(data, forKey: Self.agentCustomNamesKey)
@@ -1123,7 +1170,12 @@ final class DaemonChatStore: ObservableObject {
         defaults.set(data, forKey: Self.agentAvatarDataKey)
     }
 
-    func updateAgent(id agentID: String, name: String?, avatarData: Data?) {
+    private func persistAgentSettings() {
+        guard let data = try? JSONEncoder().encode(agentSettings) else { return }
+        defaults.set(data, forKey: Self.agentSettingsKey)
+    }
+
+    func updateAgent(id agentID: String, name: String?, avatarData: Data?, settings: AgentLocalSettings? = nil) {
         if let name = name {
             agentCustomNames[agentID] = name
         } else {
@@ -1137,13 +1189,30 @@ final class DaemonChatStore: ObservableObject {
             agentAvatarData.removeValue(forKey: agentID)
         }
         persistAgentAvatarData()
+
+        let normalizedSettings = settings?.normalized
+        if let normalizedSettings, !normalizedSettings.isEmpty {
+            agentSettings[agentID] = normalizedSettings
+        } else if settings != nil {
+            agentSettings.removeValue(forKey: agentID)
+        }
+        persistAgentSettings()
+
+        if let index = agents.firstIndex(where: { $0.agentID == agentID }) {
+            agents[index] = agents[index]
+                .withCustomDisplayName(name)
+                .withAvatarImageData(avatarData)
+            persistKnownAgents()
+        }
     }
 
     func removeAgent(id agentID: String) {
         agentCustomNames.removeValue(forKey: agentID)
         agentAvatarData.removeValue(forKey: agentID)
+        agentSettings.removeValue(forKey: agentID)
         persistAgentCustomNames()
         persistAgentAvatarData()
+        persistAgentSettings()
 
         agents.removeAll { $0.agentID == agentID }
         selectedAgentIDs.remove(agentID)
@@ -1163,6 +1232,30 @@ final class DaemonChatStore: ObservableObject {
 
     func avatarData(for agentID: String) -> Data? {
         agentAvatarData[agentID]
+    }
+
+    func settings(for agentID: String) -> AgentLocalSettings {
+        agentSettings[agentID]?.normalized ?? AgentLocalSettings()
+    }
+
+    func agentSummary(for participant: DaemonThreadParticipant) -> DaemonAgentSummary? {
+        guard let agentID = participant.agentID else { return nil }
+
+        if let existing = agents.first(where: { $0.agentID == agentID }) {
+            return existing
+        }
+
+        return DaemonAgentSummary(
+            agentID: agentID,
+            name: participant.displayName,
+            mentionHandleOverride: participant.mentionHandleOverride,
+            kind: participant.kind,
+            status: participant.state,
+            defaultWorkingDir: nil,
+            capabilities: [],
+            customDisplayName: agentCustomNames[agentID],
+            avatarImageData: agentAvatarData[agentID]
+        )
     }
 
     func isConnecting(agentID: String) -> Bool {

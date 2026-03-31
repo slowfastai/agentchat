@@ -311,9 +311,13 @@ struct ContentView: View {
             }
         }
         .sheet(item: $editingAgent) { agent in
-            AgentEditSheet(agent: agent) { updatedAgent in
+            AgentEditSheet(
+                agent: agent,
+                initialSettings: store.settings(for: agent.agentID)
+            ) { updatedAgent, settings in
                 store.updateAgentDisplayName(agent.agentID, displayName: updatedAgent.customDisplayName)
                 store.updateAgentAvatar(agent.agentID, imageData: updatedAgent.avatarImageData)
+                store.updateAgentSettings(agent.agentID, settings: settings)
                 editingAgent = nil
             }
         }
@@ -806,7 +810,10 @@ struct ContentView: View {
                             participant: participant,
                             color: chipColor(for: participant),
                             avatarData: avatarData(for: participant),
-                            customName: customDisplayName(for: participant)
+                            customName: customDisplayName(for: participant),
+                            onAvatarTap: participant.isAgent ? {
+                                openAgentSettings(for: participant)
+                            } : nil
                         )
                     }
                 }
@@ -986,7 +993,7 @@ struct ContentView: View {
 
     private func avatarData(for participant: DaemonThreadParticipant) -> Data? {
         guard let agentID = participant.agentID else { return nil }
-        return store.agents.first { $0.agentID == agentID }?.avatarImageData
+        return store.avatarData(for: agentID)
     }
 
     private func avatarData(for agentID: String?) -> Data? {
@@ -996,7 +1003,11 @@ struct ContentView: View {
 
     private func customDisplayName(for participant: DaemonThreadParticipant) -> String? {
         guard let agentID = participant.agentID else { return nil }
-        return store.agents.first { $0.agentID == agentID }?.customDisplayName
+        return store.customName(for: agentID)
+    }
+
+    private func openAgentSettings(for participant: DaemonThreadParticipant) {
+        editingAgent = store.agentSummary(for: participant)
     }
 
     private func threadFeedAvatarItems(for threadID: String) -> [ThreadFeedAvatarItem] {
