@@ -198,6 +198,9 @@ struct AgentEditSheet: View {
                     }
                 }
             }
+            .onAppear {
+                UIPerformanceProbe.shared.finishAvatarSettingsSheet(agentID: agent.agentID)
+            }
             .sheet(isPresented: $showImagePicker) {
                 ImagePicker(image: $selectedImage)
             }

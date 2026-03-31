@@ -1,5 +1,111 @@
 import SwiftUI
 import UIKit
+import OSLog
+import QuartzCore
+
+@MainActor
+final class UIPerformanceProbe {
+    static let shared = UIPerformanceProbe()
+
+    private struct Trace {
+        let label: String
+        let startedAt: CFTimeInterval
+        let metadata: [String: String]
+    }
+
+    private let logger = Logger(subsystem: "dev.slowfast.AgentChat", category: "UIPerformance")
+    private var activeTraces: [String: Trace] = [:]
+
+    private init() {}
+
+    func beginAvatarSettingsSheet(agentID: String) {
+        begin(
+            key: "avatar_settings_sheet",
+            label: "avatar_tap_to_sheet",
+            metadata: ["agent_id": agentID]
+        )
+    }
+
+    func finishAvatarSettingsSheet(agentID: String) {
+        end(
+            key: "avatar_settings_sheet",
+            metadata: ["sheet_agent_id": agentID]
+        )
+    }
+
+    func beginSendMessage(threadID: String, baselineTimelineCount: Int, textLength: Int) {
+        begin(
+            key: "send_message",
+            label: "send_tap_to_timeline_update",
+            metadata: [
+                "thread_id": threadID,
+                "baseline_timeline_count": String(baselineTimelineCount),
+                "text_length": String(textLength)
+            ]
+        )
+    }
+
+    func finishSendMessage(timelineCount: Int, lastEntryID: String?, lastEntryKind: String?) {
+        end(
+            key: "send_message",
+            metadata: [
+                "timeline_count": String(timelineCount),
+                "last_entry_id": lastEntryID ?? "nil",
+                "last_entry_kind": lastEntryKind ?? "nil"
+            ]
+        )
+    }
+
+    func beginKeyboardPresentation(threadID: String) {
+        begin(
+            key: "keyboard_presentation",
+            label: "composer_focus_to_keyboard",
+            metadata: ["thread_id": threadID]
+        )
+    }
+
+    func finishKeyboardPresentation() {
+        end(key: "keyboard_presentation")
+    }
+
+    func cancelKeyboardPresentation(reason: String) {
+        cancel(key: "keyboard_presentation", reason: reason)
+    }
+
+    private func begin(key: String, label: String, metadata: [String: String]) {
+        #if DEBUG
+        activeTraces[key] = Trace(
+            label: label,
+            startedAt: CACurrentMediaTime(),
+            metadata: metadata
+        )
+        logger.info("[UITrace] START \(label, privacy: .public) \(Self.format(metadata), privacy: .public)")
+        #endif
+    }
+
+    private func end(key: String, metadata: [String: String] = [:]) {
+        #if DEBUG
+        guard let trace = activeTraces.removeValue(forKey: key) else { return }
+        let elapsedMS = (CACurrentMediaTime() - trace.startedAt) * 1000
+        let combinedMetadata = trace.metadata.merging(metadata) { _, latest in latest }
+        logger.info("[UITrace] END \(trace.label, privacy: .public) elapsed_ms=\(String(format: "%.2f", elapsedMS), privacy: .public) \(Self.format(combinedMetadata), privacy: .public)")
+        #endif
+    }
+
+    private func cancel(key: String, reason: String) {
+        #if DEBUG
+        guard let trace = activeTraces.removeValue(forKey: key) else { return }
+        logger.info("[UITrace] CANCEL \(trace.label, privacy: .public) reason=\(reason, privacy: .public)")
+        #endif
+    }
+
+    private static func format(_ metadata: [String: String]) -> String {
+        metadata
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: " ")
+    }
+}
 
 private enum AppTab: Hashable {
     case feed
@@ -252,9 +358,26 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             isKeyboardPresented = true
+            UIPerformanceProbe.shared.finishKeyboardPresentation()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             isKeyboardPresented = false
+            UIPerformanceProbe.shared.cancelKeyboardPresentation(reason: "keyboard_will_hide")
+        }
+        .onChange(of: isComposerFocused) { isFocused in
+            if isFocused,
+               let threadID = store.activeThreadID ?? store.activeThreadSnapshot?.threadID {
+                UIPerformanceProbe.shared.beginKeyboardPresentation(threadID: threadID)
+            } else if !isFocused {
+                UIPerformanceProbe.shared.cancelKeyboardPresentation(reason: "focus_cleared")
+            }
+        }
+        .onChange(of: timelineScrollMarker) { _ in
+            UIPerformanceProbe.shared.finishSendMessage(
+                timelineCount: store.timeline.count,
+                lastEntryID: store.timeline.last?.id,
+                lastEntryKind: store.timeline.last?.kind.rawValue
+            )
         }
         .confirmationDialog(
             "Close Thread?",
@@ -481,7 +604,8 @@ struct ContentView: View {
                         items: timelineBubbleItems,
                         timelineScrollMarker: timelineScrollMarker,
                         connectionState: store.connectionState,
-                        connectionStatus: store.connectionStatus
+                        connectionStatus: store.connectionStatus,
+                        onAgentAvatarTap: openAgentSettings
                     )
                     .equatable()
                         .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
@@ -692,6 +816,11 @@ struct ContentView: View {
     private func sendDraft(in snapshot: DaemonThreadSnapshot) {
         let message = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !message.isEmpty, canSend(in: snapshot) else { return }
+        UIPerformanceProbe.shared.beginSendMessage(
+            threadID: snapshot.threadID,
+            baselineTimelineCount: store.timeline.count,
+            textLength: message.count
+        )
         draft = ""
         store.sendCurrentMessage(message)
         isComposerFocused = false
@@ -960,6 +1089,15 @@ struct ContentView: View {
         default: return .indigo
         }
     }
+
+    private func openAgentSettings(for agentID: String?) {
+        guard let agentID else { return }
+        UIPerformanceProbe.shared.beginAvatarSettingsSheet(agentID: agentID)
+        editingAgent = store.agents.first(where: { $0.agentID == agentID })
+            ?? store.activeThreadSnapshot?.participants
+                .first(where: { $0.agentID == agentID })
+                .flatMap(store.agentSummary(for:))
+    }
 }
 
 private struct ComposerSurfaceModifier: ViewModifier {
@@ -1058,6 +1196,7 @@ private struct ThreadTimelineView: View, Equatable {
     let timelineScrollMarker: String
     let connectionState: DaemonConnectionState
     let connectionStatus: String
+    let onAgentAvatarTap: (String?) -> Void
 
     static func == (lhs: ThreadTimelineView, rhs: ThreadTimelineView) -> Bool {
         lhs.snapshot == rhs.snapshot
@@ -1071,10 +1210,15 @@ private struct ThreadTimelineView: View, Equatable {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    ThreadHeaderCard(snapshot: snapshot, store: store)
+                    ThreadHeaderCard(
+                        snapshot: snapshot,
+                        store: store,
+                        onAgentAvatarTap: onAgentAvatarTap
+                    )
                     TimelineEntriesSection(
                         snapshot: snapshot,
-                        items: items
+                        items: items,
+                        onAgentAvatarTap: onAgentAvatarTap
                     )
                 }
                 .frame(maxWidth: 760)
@@ -1108,7 +1252,7 @@ private struct ThreadTimelineView: View, Equatable {
 private struct ThreadHeaderCard: View {
     let snapshot: DaemonThreadSnapshot
     @ObservedObject var store: DaemonChatStore
-    @State private var editingAgent: DaemonAgentSummary?
+    let onAgentAvatarTap: (String?) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -1144,7 +1288,7 @@ private struct ThreadHeaderCard: View {
                             avatarData: avatarData(for: participant),
                             customName: customDisplayName(for: participant),
                             onAvatarTap: participant.isAgent ? {
-                                editingAgent = store.agentSummary(for: participant)
+                                onAgentAvatarTap(participant.agentID)
                             } : nil
                         )
                     }
@@ -1168,17 +1312,6 @@ private struct ThreadHeaderCard: View {
                 .stroke(Color(uiColor: .separator).opacity(0.18), lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(0.025), radius: 12, y: 4)
-        .sheet(item: $editingAgent) { agent in
-            AgentEditSheet(
-                agent: agent,
-                initialSettings: store.settings(for: agent.agentID)
-            ) { updatedAgent, settings in
-                store.updateAgentDisplayName(agent.agentID, displayName: updatedAgent.customDisplayName)
-                store.updateAgentAvatar(agent.agentID, imageData: updatedAgent.avatarImageData)
-                store.updateAgentSettings(agent.agentID, settings: settings)
-                editingAgent = nil
-            }
-        }
     }
 
     private func chipColor(for participant: DaemonThreadParticipant) -> Color {
@@ -1211,13 +1344,22 @@ private struct ThreadHeaderCard: View {
 private struct TimelineEntriesSection: View, Equatable {
     let snapshot: DaemonThreadSnapshot
     let items: [TimelineBubbleItem]
+    let onAgentAvatarTap: (String?) -> Void
+
+    static func == (lhs: TimelineEntriesSection, rhs: TimelineEntriesSection) -> Bool {
+        lhs.snapshot == rhs.snapshot
+            && lhs.items == rhs.items
+    }
 
     var body: some View {
         if items.isEmpty {
             EmptyThreadState(snapshot: snapshot)
         } else {
             ForEach(items) { item in
-                TimelineBubble(item: item)
+                TimelineBubble(
+                    item: item,
+                    onAgentAvatarTap: onAgentAvatarTap
+                )
                     .equatable()
                     .id(item.id)
             }
@@ -1234,14 +1376,16 @@ private struct TimelineBubble: View, Equatable {
     let entry: DaemonTimelineEntry
     let agentAvatarData: Data?
     let agentAvatarCacheID: String?
+    let onAgentAvatarTap: (String?) -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var isShowingExecutionDetails = false
 
-    init(item: TimelineBubbleItem) {
+    init(item: TimelineBubbleItem, onAgentAvatarTap: @escaping (String?) -> Void) {
         self.item = item
         self.entry = item.entry
         self.agentAvatarData = item.agentAvatarData
         self.agentAvatarCacheID = item.agentAvatarCacheID
+        self.onAgentAvatarTap = onAgentAvatarTap
     }
 
     private var theme: Theme {
@@ -1318,7 +1462,7 @@ private struct TimelineBubble: View, Equatable {
 
     private var assistantRow: some View {
         HStack(alignment: .top, spacing: 14) {
-            agentAvatarBadge
+            assistantAvatarButton
                 .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 14) {
@@ -1713,6 +1857,32 @@ private struct TimelineBubble: View, Equatable {
             )
         } else {
             iconBadge
+        }
+    }
+
+    @ViewBuilder
+    private var assistantAvatarButton: some View {
+        if entry.agentID != nil {
+            Button {
+                onAgentAvatarTap(entry.agentID)
+            } label: {
+                agentAvatarBadge
+                    .overlay(alignment: .bottomTrailing) {
+                        ZStack {
+                            Circle()
+                                .fill(Color(uiColor: .systemBackground))
+                                .frame(width: 14, height: 14)
+
+                            Image(systemName: "slider.horizontal.3")
+                                .font(.system(size: 7, weight: .bold))
+                                .foregroundStyle(typeColor)
+                        }
+                    }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open \(entry.title) settings")
+        } else {
+            agentAvatarBadge
         }
     }
 
