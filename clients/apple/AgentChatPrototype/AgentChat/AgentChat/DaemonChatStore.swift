@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import OSLog
 import SwiftUI
 
 @MainActor
@@ -15,6 +16,7 @@ final class DaemonChatStore: ObservableObject {
     private static let agentAvatarDataKey = "agentchat_agent_avatar_data"
     private static let agentSettingsKey = "agentchat_agent_settings"
     private static let uiTestAvatarLatencyArgument = "UITestSeedAvatarLatency"
+    private let logger = Logger(subsystem: "dev.slowfast.AgentChat", category: "DaemonConnection")
     private static let uiTestThreadComposerLatencyArgument = "UITestSeedThreadComposerLatency"
 
     @Published private(set) var connectionState: DaemonConnectionState = .notConfigured
@@ -377,11 +379,13 @@ final class DaemonChatStore: ObservableObject {
         }
 
         guard let connectionPayload = parseScannedDaemonConnectionPayload(from: trimmedConnection) else {
+            logger.warning("Rejecting invalid daemon connection link")
             connectionState = .badURL
             errorMessage = "Invalid daemon URL or relay link: \(trimmedConnection)"
             return
         }
 
+        logger.info("Starting daemon connection; reset_reconnect_attempt=\(resetReconnectAttempt, privacy: .public)")
         connectionState = .connecting
         connectionTask = Task { [weak self] in
             guard let self else { return }
@@ -400,16 +404,19 @@ final class DaemonChatStore: ObservableObject {
             switch connectionPayload {
             case .direct(let urlString, _):
                 guard let url = URL(string: urlString) else {
+                    logger.warning("Rejecting invalid direct daemon URL")
                     connectionState = .badURL
                     errorMessage = "Invalid daemon URL: \(urlString)"
                     return
                 }
 
+                logger.info("Opening direct daemon websocket to \(urlString, privacy: .public)")
                 let task = URLSession.shared.webSocketTask(with: url)
                 socketTask = task
                 task.resume()
                 try await bootstrapDirectConnection(using: task)
             case .relay(let relayPayload):
+                logger.info("Resolving relay daemon connection via \(relayPayload.wsURL, privacy: .public)")
                 connectionState = .pairingRelay
                 let resolvedRelay = try await relayPayload.resolve(
                     appInstallationID: relayAppInstallationID(),
@@ -423,11 +430,13 @@ final class DaemonChatStore: ObservableObject {
                 request.setValue("Bearer \(resolvedRelay.relayToken)", forHTTPHeaderField: "Authorization")
 
                 connectionState = .connectingRelay
+                logger.info("Opening relay websocket to \(resolvedRelay.wsURL.absoluteString, privacy: .public)")
                 let task = URLSession.shared.webSocketTask(with: request)
                 socketTask = task
                 task.resume()
 
                 connectionState = .securingRelay
+                logger.info("Securing relay channel")
                 relaySession = try await RelayAppSession.handshake(over: task, resolvedConnection: resolvedRelay)
                 guard socketTask === task else { return }
                 receiveTask = Task { [weak self] in
@@ -451,6 +460,7 @@ final class DaemonChatStore: ObservableObject {
 
     private func bootstrapDirectConnection(using task: URLSessionWebSocketTask) async throws {
         guard socketTask === task else { return }
+        logger.info("Direct daemon websocket connected; syncing daemon state")
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
         }
@@ -485,6 +495,7 @@ final class DaemonChatStore: ObservableObject {
                 }
             } catch {
                 guard socketTask === task else { break }
+                logger.warning("Daemon websocket receive loop ended: \(error.localizedDescription, privacy: .public)")
                 handleTransportLoss(message: nil)
                 break
             }
@@ -518,7 +529,13 @@ final class DaemonChatStore: ObservableObject {
 
         do {
             let envelope = try decoder.decode(DaemonEnvelope.self, from: data)
-            noteSuccessfulConnection()
+            let confirmsConnection = handledDaemonEventConfirmsConnection(envelope.type)
+            if confirmsConnection || envelope.type == "daemon_status" || envelope.type == "error" || isRecoveringConnectionState(connectionState) {
+                logger.debug(
+                    "Received daemon event \(envelope.type, privacy: .public) while state \(self.connectionState.statusText, privacy: .public)"
+                )
+            }
+
             switch envelope.type {
             case "daemon_status":
                 handleDaemonStatus(try decoder.decode(DaemonStatusEvent.self, from: data))
@@ -685,6 +702,10 @@ final class DaemonChatStore: ObservableObject {
                 errorMessage = "\(event.code): \(event.message)"
             default:
                 break
+            }
+
+            if confirmsConnection {
+                noteSuccessfulConnection(because: envelope.type)
             }
         } catch {
             errorMessage = "Failed to decode daemon event: \(error.localizedDescription)"
@@ -962,6 +983,9 @@ final class DaemonChatStore: ObservableObject {
     private func handleDaemonStatus(_ event: DaemonStatusEvent) {
         guard event.state == "stopping" else { return }
 
+        logger.warning(
+            "Daemon announced shutdown; reason=\((event.reason ?? event.message ?? "unknown"), privacy: .public)"
+        )
         suppressAutoReconnect = true
         cancelScheduledReconnect()
         connectionTask?.cancel()
@@ -978,6 +1002,10 @@ final class DaemonChatStore: ObservableObject {
     }
 
     private func handleTransportLoss(message: String?) {
+        let previousStatus = connectionState.statusText
+        logger.warning(
+            "Daemon transport lost while state \(previousStatus, privacy: .public); message=\((message ?? "none"), privacy: .public)"
+        )
         if let message {
             errorMessage = message
         }
@@ -1006,13 +1034,48 @@ final class DaemonChatStore: ObservableObject {
         handleTransportLoss(message: message)
     }
 
-    private func noteSuccessfulConnection() {
+    private func handledDaemonEventConfirmsConnection(_ eventType: String) -> Bool {
+        switch eventType {
+        case "agent_list",
+            "thread_created",
+            "thread_list",
+            "thread_attached",
+            "thread_snapshot",
+            "thread_closed",
+            "thread_replay_complete",
+            "thread_participant_added",
+            "thread_participant_removed",
+            "thread_message",
+            "thread_assistant_message",
+            "thread_agent_delta",
+            "thread_agent_tool_update",
+            "thread_agent_plan_update",
+            "thread_agent_turn_end":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func isRecoveringConnectionState(_ state: DaemonConnectionState) -> Bool {
+        switch state {
+        case .connecting, .pairingRelay, .connectingRelay, .securingRelay, .syncing, .reconnecting:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func noteSuccessfulConnection(because eventType: String) {
         cancelScheduledReconnect(resetAttempt: true)
 
         switch connectionState {
         case .online, .attached, .stoppedByServer:
             return
         default:
+            logger.info(
+                "Confirmed daemon connection from \(eventType, privacy: .public) while state \(self.connectionState.statusText, privacy: .public)"
+            )
             connectionState = .online
         }
     }
@@ -1092,6 +1155,7 @@ final class DaemonChatStore: ObservableObject {
         guard !isReconnecting, hasConfiguredDaemonURL else { return }
         guard !suppressAutoReconnect else { return }
         guard reconnectAttempt < Self.maxReconnectAttempts else {
+            logger.error("Daemon reconnect exhausted after \(Self.maxReconnectAttempts, privacy: .public) attempts")
             reconnectAttempt = 0
             connectionState = .unavailable
             errorMessage = "Daemon unavailable. Tap Reconnect to try again."
@@ -1106,6 +1170,9 @@ final class DaemonChatStore: ObservableObject {
             Self.maxReconnectDelaySeconds
         )
 
+        logger.info(
+            "Scheduling daemon reconnect attempt \(self.reconnectAttempt, privacy: .public) in \(delay, privacy: .public)s"
+        )
         connectionState = .reconnecting(attempt: reconnectAttempt)
 
         reconnectTask?.cancel()
