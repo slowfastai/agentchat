@@ -257,7 +257,7 @@ final class DaemonChatStore: ObservableObject {
 
     func reconnectNow() {
         suppressAutoReconnect = false
-        connect()
+        connect(resetReconnectAttempt: true)
     }
 
     func updateDaemonURL(_ newValue: String) {
@@ -275,7 +275,7 @@ final class DaemonChatStore: ObservableObject {
         }
         daemonURLString = trimmed
         errorMessage = nil
-        connect()
+        connect(resetReconnectAttempt: true)
     }
 
     func disconnect() {
@@ -307,9 +307,9 @@ final class DaemonChatStore: ObservableObject {
         updateDaemonURL(trimmed)
     }
 
-    private func connect() {
+    private func connect(resetReconnectAttempt: Bool = true) {
         suppressAutoReconnect = false
-        cancelScheduledReconnect()
+        cancelScheduledReconnect(resetAttempt: resetReconnectAttempt)
         connectionTask?.cancel()
         connectionTask = nil
         receiveTask?.cancel()
@@ -382,9 +382,9 @@ final class DaemonChatStore: ObservableObject {
                 receiveTask = Task { [weak self] in
                     await self?.receiveLoop()
                 }
-                connectionState = .online
+                connectionState = .syncing
                 connectingAgentIDs.removeAll()
-                await refreshDaemonState()
+                _ = await refreshDaemonState()
             }
         } catch {
             guard !Task.isCancelled else { return }
@@ -403,9 +403,9 @@ final class DaemonChatStore: ObservableObject {
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
         }
-        connectionState = .online
+        connectionState = .syncing
         connectingAgentIDs.removeAll()
-        await refreshDaemonState()
+        _ = await refreshDaemonState()
     }
 
     private func receiveLoop() async {
@@ -467,6 +467,7 @@ final class DaemonChatStore: ObservableObject {
 
         do {
             let envelope = try decoder.decode(DaemonEnvelope.self, from: data)
+            noteSuccessfulConnection()
             switch envelope.type {
             case "daemon_status":
                 handleDaemonStatus(try decoder.decode(DaemonStatusEvent.self, from: data))
@@ -841,12 +842,18 @@ final class DaemonChatStore: ObservableObject {
         return humanizeAgentIdentifier(agentID)
     }
 
-    private func refreshDaemonState() async {
-        await send(ListAgentsRequest())
-        await send(ListThreadsRequest())
+    @discardableResult
+    private func refreshDaemonState() async -> Bool {
+        guard await send(ListAgentsRequest()) else { return false }
+        guard await send(ListThreadsRequest()) else { return false }
         if let activeThreadID {
-            await send(AttachThreadRequest(threadID: activeThreadID, afterSeq: cursorByThread[activeThreadID]))
+            guard await send(
+                AttachThreadRequest(threadID: activeThreadID, afterSeq: cursorByThread[activeThreadID])
+            ) else {
+                return false
+            }
         }
+        return true
     }
 
     private func performInitialNetworkWarmupIfNeeded() {
@@ -948,6 +955,17 @@ final class DaemonChatStore: ObservableObject {
         handleTransportLoss(message: message)
     }
 
+    private func noteSuccessfulConnection() {
+        cancelScheduledReconnect(resetAttempt: true)
+
+        switch connectionState {
+        case .online, .attached, .stoppedByServer:
+            return
+        default:
+            connectionState = .online
+        }
+    }
+
     private func connectionFailureMessage(
         for error: Error,
         connectionPayload: ScannedDaemonConnectionPayload,
@@ -1047,17 +1065,19 @@ final class DaemonChatStore: ObservableObject {
                 guard let self else { return }
                 self.isReconnecting = false
                 if !self.hasActiveConnection {
-                    self.connect()
+                    self.connect(resetReconnectAttempt: false)
                 }
             }
         }
     }
 
-    private func cancelScheduledReconnect() {
+    private func cancelScheduledReconnect(resetAttempt: Bool = true) {
         reconnectTask?.cancel()
         reconnectTask = nil
-        reconnectAttempt = 0
         isReconnecting = false
+        if resetAttempt {
+            reconnectAttempt = 0
+        }
     }
 
     private var hasActiveConnection: Bool {
@@ -1169,23 +1189,24 @@ final class DaemonChatStore: ObservableObject {
         connectingAgentIDs.contains(agentID)
     }
 
+    @discardableResult
     private func send<Request: Encodable>(
         _ request: Request,
         reportFailureToUser: Bool = false
-    ) async {
+    ) async -> Bool {
         guard let socketTask else {
             markAgentsOffline()
-            refreshIdleConnectionStatus()
+            preserveRecoveryStateOrRefreshIdleStatus()
             if reportFailureToUser {
                 errorMessage = hasConfiguredDaemonURL
                     ? "Not connected to a daemon. Tap Reconnect, scan a QR code, or enter a URL first."
                     : "No daemon URL configured. Scan a QR code or enter a URL first."
             }
-            return
+            return false
         }
         do {
             let data = try JSONEncoder().encode(request)
-            guard let text = String(data: data, encoding: .utf8) else { return }
+            guard let text = String(data: data, encoding: .utf8) else { return false }
             let outboundText: String
             if var relaySession {
                 outboundText = try relaySession.encryptJSONString(text)
@@ -1194,6 +1215,7 @@ final class DaemonChatStore: ObservableObject {
                 outboundText = text
             }
             try await socketTask.send(.string(outboundText))
+            return true
         } catch {
             if reportFailureToUser {
                 handleConnectionFailure(message: "Send failed: \(error.localizedDescription)")
@@ -1201,6 +1223,18 @@ final class DaemonChatStore: ObservableObject {
                 socketTask.cancel(with: .goingAway, reason: nil)
                 handleTransportLoss(message: nil)
             }
+            return false
+        }
+    }
+
+    private func preserveRecoveryStateOrRefreshIdleStatus() {
+        switch connectionState {
+        case .connecting, .pairingRelay, .connectingRelay, .securingRelay, .syncing, .reconnecting:
+            return
+        case .stoppedByServer:
+            return
+        default:
+            refreshIdleConnectionStatus()
         }
     }
 
@@ -1321,3 +1355,36 @@ enum AgentRoster {
         }
     }
 }
+
+#if DEBUG
+extension DaemonChatStore {
+    func testingHandleIncomingText(_ text: String) {
+        handle(text: text)
+    }
+
+    func testingSetConnectionState(_ state: DaemonConnectionState) {
+        connectionState = state
+    }
+
+    func testingSetReconnectAttempt(_ attempt: Int, isReconnecting: Bool) {
+        reconnectAttempt = attempt
+        self.isReconnecting = isReconnecting
+    }
+
+    func testingSetConfiguredDaemonURL(_ value: String) {
+        daemonURLString = value
+    }
+
+    @discardableResult
+    func testingSendWithoutSocket<Request: Encodable>(
+        _ request: Request,
+        reportFailureToUser: Bool = false
+    ) async -> Bool {
+        await send(request, reportFailureToUser: reportFailureToUser)
+    }
+
+    var testingReconnectAttempt: Int {
+        reconnectAttempt
+    }
+}
+#endif
