@@ -209,6 +209,50 @@ struct AgentChatTests {
         #expect(store.testingReconnectAttempt == 0)
     }
 
+    @Test @MainActor func daemonChatStoreDoesNotConfirmConnectionFromDaemonErrorEvent() async throws {
+        let suiteName = "AgentChatTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            Issue.record("Failed to create isolated UserDefaults suite")
+            return
+        }
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let store = DaemonChatStore(defaults: defaults)
+        store.testingSetConfiguredDaemonURL("ws://192.168.1.8:9390")
+        store.testingSetConnectionState(.syncing)
+        store.testingSetReconnectAttempt(3, isReconnecting: true)
+
+        store.testingHandleIncomingText(#"{"type":"error","code":"daemon_unavailable","message":"daemon is offline"}"#)
+
+        #expect(store.connectionState == .syncing)
+        #expect(store.testingReconnectAttempt == 3)
+        #expect(store.errorMessage == "daemon_unavailable: daemon is offline")
+    }
+
+    @Test @MainActor func daemonChatStoreDoesNotConfirmConnectionFromMalformedDaemonEvent() async throws {
+        let suiteName = "AgentChatTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            Issue.record("Failed to create isolated UserDefaults suite")
+            return
+        }
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let store = DaemonChatStore(defaults: defaults)
+        store.testingSetConfiguredDaemonURL("ws://192.168.1.8:9390")
+        store.testingSetConnectionState(.syncing)
+        store.testingSetReconnectAttempt(3, isReconnecting: true)
+
+        store.testingHandleIncomingText(#"{"type":"agent_list"}"#)
+
+        #expect(store.connectionState == .syncing)
+        #expect(store.testingReconnectAttempt == 3)
+        #expect(store.errorMessage?.contains("Failed to decode daemon event") == true)
+    }
+
     @Test @MainActor func daemonChatStorePreservesReconnectStateWhenBootstrapSendFindsNoSocket() async throws {
         let suiteName = "AgentChatTests.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
