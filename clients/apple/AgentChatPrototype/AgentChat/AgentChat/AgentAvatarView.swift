@@ -3,6 +3,31 @@ import SwiftUI
 import UIKit
 #endif
 
+#if os(iOS)
+enum AgentAvatarImageCache {
+    private static let cache = NSCache<NSString, UIImage>()
+
+    static func decodedImage(from data: Data, cacheID: String) -> UIImage? {
+        let key = "\(cacheID)-\(data.agentAvatarFingerprint)" as NSString
+        if let cachedImage = cache.object(forKey: key) {
+            return cachedImage
+        }
+
+        guard let image = UIImage(data: data) else { return nil }
+        cache.setObject(image, forKey: key)
+        return image
+    }
+}
+
+private extension Data {
+    var agentAvatarFingerprint: String {
+        let prefixBytes = prefix(8).map { String(format: "%02x", $0) }.joined()
+        let suffixBytes = suffix(8).map { String(format: "%02x", $0) }.joined()
+        return "\(count)-\(prefixBytes)-\(suffixBytes)"
+    }
+}
+#endif
+
 enum AgentAvatarPalette {
     static func tintColor(named tintName: String) -> Color {
         switch tintName {
@@ -24,7 +49,10 @@ struct AgentAvatarView: View {
     var body: some View {
         ZStack {
             if let imageData = agent.avatarImageData,
-               let uiImage = UIImage(data: imageData) {
+               let uiImage = AgentAvatarImageCache.decodedImage(
+                   from: imageData,
+                   cacheID: "agent-\(agent.agentID)"
+               ) {
                 Image(uiImage: uiImage)
                     .resizable()
                     .aspectRatio(contentMode: .fill)

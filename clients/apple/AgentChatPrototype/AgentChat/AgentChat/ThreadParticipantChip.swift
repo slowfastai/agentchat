@@ -76,6 +76,7 @@ struct ThreadParticipantChip: View {
         let avatar = ThreadParticipantAvatarView(
             color: color,
             avatarData: avatarData,
+            avatarCacheID: participant.agentID.map { "agent-\($0)" },
             avatarAssetName: participant.defaultAvatarAssetName,
             initials: initials,
             size: 30,
@@ -126,6 +127,7 @@ struct MentionSuggestionRow: View {
             ThreadParticipantAvatarView(
                 color: color,
                 avatarData: avatarData,
+                avatarCacheID: participant.agentID.map { "agent-\($0)" },
                 avatarAssetName: participant.defaultAvatarAssetName,
                 initials: initials,
                 size: 32,
@@ -179,6 +181,7 @@ struct MentionSuggestionRow: View {
 private struct ThreadParticipantAvatarView: View {
     let color: Color
     let avatarData: Data?
+    let avatarCacheID: String?
     let avatarAssetName: String?
     let initials: String
     let size: CGFloat
@@ -186,7 +189,17 @@ private struct ThreadParticipantAvatarView: View {
 
     var body: some View {
         Group {
-            if let avatarData, let image = UIImage(data: avatarData) {
+            if let avatarData,
+               let avatarCacheID,
+               let image = AgentAvatarImageCache.decodedImage(
+                   from: avatarData,
+                   cacheID: avatarCacheID
+               ) {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .clipShape(Circle())
+            } else if let avatarData, let image = UIImage(data: avatarData) {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
