@@ -292,7 +292,7 @@ struct ContentView: View {
     @State private var draft = ""
     @FocusState private var isComposerFocused: Bool
     @State private var isScannerPresented = false
-    @State private var compactPresentedThreadID: String?
+    @State private var compactNavigationPath = NavigationPath()
     @State private var pendingCloseThread: DaemonThreadSummary?
     @State private var selectedTab: AppTab = .feed
     @State private var editingAgent: DaemonAgentSummary?
@@ -358,18 +358,6 @@ struct ContentView: View {
         .sheet(isPresented: $isScannerPresented) {
             DaemonQRCodeScannerSheet { payload in
                 store.applyScannedConnectionPayload(payload)
-            }
-        }
-        .sheet(item: compactPresentedThreadSheetBinding) { _ in
-            NavigationStack {
-                detail
-                    .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button("Done") {
-                                compactPresentedThreadID = nil
-                            }
-                        }
-                }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
@@ -473,8 +461,11 @@ struct ContentView: View {
     @ViewBuilder
     private var feedRoot: some View {
         if horizontalSizeClass == .compact {
-            NavigationStack {
+            NavigationStack(path: $compactNavigationPath) {
                 feedList
+                    .navigationDestination(for: CompactPresentedThread.self) { _ in
+                        detail
+                    }
             }
         } else {
             NavigationSplitView {
@@ -1034,21 +1025,10 @@ struct ContentView: View {
         .modifier(ComposerSurfaceModifier(theme: theme))
     }
 
-    private var compactPresentedThreadSheetBinding: Binding<CompactPresentedThread?> {
-        Binding<CompactPresentedThread?>(
-            get: {
-                compactPresentedThreadID.map { CompactPresentedThread(id: $0) }
-            },
-            set: { newValue in
-                compactPresentedThreadID = newValue?.id
-            }
-        )
-    }
-
     private func openThread(_ threadID: String) {
         store.attachThread(threadID)
         if horizontalSizeClass == .compact {
-            compactPresentedThreadID = threadID
+            compactNavigationPath.append(CompactPresentedThread(id: threadID))
         }
     }
 
@@ -1205,7 +1185,7 @@ private func isMentionLeadingBoundary(_ character: Character?) -> Bool {
     }
 }
 
-private struct CompactPresentedThread: Identifiable {
+private struct CompactPresentedThread: Identifiable, Hashable {
     let id: String
 }
 
