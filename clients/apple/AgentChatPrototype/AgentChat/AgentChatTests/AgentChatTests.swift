@@ -179,11 +179,56 @@ struct AgentChatTests {
     }
 
     @Test func daemonConnectionStateExposesStoppedAndUnavailableStatusText() async throws {
+        #expect(DaemonConnectionState.syncing.statusText == "Syncing…")
         #expect(DaemonConnectionState.unavailable.statusText == "Daemon unavailable")
         #expect(DaemonConnectionState.stoppedByServer(reason: "user_shutdown").statusText == "Daemon stopped")
         #expect(DaemonConnectionState.online.isOnline)
         #expect(DaemonConnectionState.attached(threadID: "thread-1").isOnline)
+        #expect(!DaemonConnectionState.syncing.isOnline)
         #expect(!DaemonConnectionState.reconnecting(attempt: 1).isOnline)
+    }
+
+    @Test @MainActor func daemonChatStoreConfirmsConnectionFromFirstDaemonEvent() async throws {
+        let suiteName = "AgentChatTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            Issue.record("Failed to create isolated UserDefaults suite")
+            return
+        }
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let store = DaemonChatStore(defaults: defaults)
+        store.testingSetConfiguredDaemonURL("ws://192.168.1.8:9390")
+        store.testingSetConnectionState(.syncing)
+        store.testingSetReconnectAttempt(3, isReconnecting: true)
+
+        store.testingHandleIncomingText(#"{"type":"agent_list","agents":[]}"#)
+
+        #expect(store.connectionState == .online)
+        #expect(store.testingReconnectAttempt == 0)
+    }
+
+    @Test @MainActor func daemonChatStorePreservesReconnectStateWhenBootstrapSendFindsNoSocket() async throws {
+        let suiteName = "AgentChatTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            Issue.record("Failed to create isolated UserDefaults suite")
+            return
+        }
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let store = DaemonChatStore(defaults: defaults)
+        store.testingSetConfiguredDaemonURL("ws://192.168.1.8:9390")
+        store.testingSetReconnectAttempt(2, isReconnecting: true)
+        store.testingSetConnectionState(.reconnecting(attempt: 2))
+
+        let sent = await store.testingSendWithoutSocket(ListThreadsRequest())
+
+        #expect(!sent)
+        #expect(store.connectionState == .reconnecting(attempt: 2))
+        #expect(store.connectionStatus == "Reconnecting (2)…")
     }
 
     @Test func daemonStatusEventDecodesShutdownReason() async throws {

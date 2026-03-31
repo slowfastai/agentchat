@@ -465,6 +465,7 @@ enum DaemonConnectionState: Equatable {
     case pairingRelay
     case connectingRelay
     case securingRelay
+    case syncing
     case online
     case attached(threadID: String)
     case reconnecting(attempt: Int)
@@ -485,6 +486,8 @@ enum DaemonConnectionState: Equatable {
             return "Connecting to relay…"
         case .securingRelay:
             return "Securing relay channel…"
+        case .syncing:
+            return "Syncing…"
         case .online:
             return "Online"
         case .attached(let threadID):
