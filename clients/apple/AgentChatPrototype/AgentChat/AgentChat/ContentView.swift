@@ -774,6 +774,7 @@ struct ContentView: View {
                 .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
             }
         }
+        .toolbar(store.activeThreadID != nil ? .hidden : .visible, for: .tabBar)
     }
 
     @ViewBuilder
