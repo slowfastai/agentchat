@@ -13,6 +13,36 @@ final class AgentChatUITests: XCTestCase {
         case local
     }
 
+    private func elapsedMS(for label: String, in traceLog: String) -> String? {
+        let pattern = #"\[UITrace\] END "# + NSRegularExpression.escapedPattern(for: label) + #" elapsed_ms=([0-9]+(?:\.[0-9]+)?)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return nil
+        }
+
+        let nsRange = NSRange(traceLog.startIndex..., in: traceLog)
+        guard let match = regex.firstMatch(in: traceLog, options: [], range: nsRange),
+              let valueRange = Range(match.range(at: 1), in: traceLog) else {
+            return nil
+        }
+
+        return String(traceLog[valueRange])
+    }
+
+    private func traceSummary(from traceLog: String) -> String {
+        [
+            "thread_tap_to_detail_visible",
+            "thread_tap_to_composer_ready",
+            "composer_tap_to_focus",
+            "composer_tap_to_keyboard",
+            "composer_focus_to_keyboard"
+        ]
+        .map { label in
+            let elapsed = elapsedMS(for: label, in: traceLog) ?? "missing"
+            return "\(label)=\(elapsed)ms"
+        }
+        .joined(separator: "\n")
+    }
+
     override func setUpWithError() throws {
         // Put setup code here. This method is called before the invocation of each test method in the class.
 
@@ -70,5 +100,45 @@ final class AgentChatUITests: XCTestCase {
 
         let settingsTitle = app.navigationBars["Agent Settings"]
         XCTAssertTrue(settingsTitle.waitForExistence(timeout: 5), "Agent settings sheet should appear")
+    }
+
+    @MainActor
+    func testThreadComposerLatencyProbe() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["UITestSeedThreadComposerLatency", "UITestExposePerformanceProbe"]
+        app.launch()
+
+        let probeLog = app.staticTexts["UIPerformanceProbeLog"]
+        XCTAssertTrue(probeLog.waitForExistence(timeout: 5), "Performance probe log should exist")
+
+        let threadButton = app.buttons.containing(.staticText, identifier: "Composer Latency Thread").firstMatch
+        XCTAssertTrue(threadButton.waitForExistence(timeout: 5), "Seeded thread row should exist")
+        threadButton.tap()
+
+        let composerTextView = app.textViews["Message"].firstMatch
+        let composerTextField = app.textFields["Message"].firstMatch
+        let composer = composerTextView.waitForExistence(timeout: 3) ? composerTextView : composerTextField
+        XCTAssertTrue(composer.waitForExistence(timeout: 5), "Composer text input should appear")
+        composer.tap()
+
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "Keyboard should appear")
+
+        let hasKeyboardTrace = NSPredicate(format: "label CONTAINS %@", "composer_tap_to_keyboard")
+        expectation(for: hasKeyboardTrace, evaluatedWith: probeLog)
+        waitForExpectations(timeout: 5)
+
+        let traceLog = probeLog.label
+        let summary = traceSummary(from: traceLog)
+        let attachment = XCTAttachment(string: traceLog + "\n\n" + summary)
+        attachment.name = "ThreadComposerLatencyTrace"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        print(summary)
+
+        XCTAssertTrue(traceLog.contains("thread_tap_to_detail_visible"))
+        XCTAssertTrue(traceLog.contains("thread_tap_to_composer_ready"))
+        XCTAssertTrue(traceLog.contains("composer_tap_to_focus"))
+        XCTAssertTrue(traceLog.contains("composer_tap_to_keyboard"))
+        XCTAssertTrue(traceLog.contains("composer_focus_to_keyboard"))
     }
 }
