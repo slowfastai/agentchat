@@ -8,6 +8,10 @@
 import XCTest
 
 final class AgentChatUITests: XCTestCase {
+    private enum AvatarSettingsHostMode: String {
+        case root
+        case local
+    }
 
     override func setUpWithError() throws {
         // Put setup code here. This method is called before the invocation of each test method in the class.
@@ -40,5 +44,31 @@ final class AgentChatUITests: XCTestCase {
         measure(metrics: [XCTApplicationLaunchMetric()]) {
             XCUIApplication().launch()
         }
+    }
+
+    @MainActor
+    func testAvatarSettingsSheetLatencyProbe() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["UITestSeedAvatarLatency"]
+
+        let hostMode = ProcessInfo.processInfo.environment["AGENTCHAT_AVATAR_SETTINGS_HOST_MODE"]
+            .flatMap(AvatarSettingsHostMode.init(rawValue:))
+            ?? .local
+        if hostMode == .root {
+            app.launchArguments += ["UITestAvatarSettingsHostRoot"]
+        }
+
+        app.launch()
+
+        let threadButton = app.buttons.containing(.staticText, identifier: "Avatar Latency Thread").firstMatch
+        XCTAssertTrue(threadButton.waitForExistence(timeout: 5), "Seeded thread row should exist")
+        threadButton.tap()
+
+        let avatarButton = app.buttons["Open Codex settings"]
+        XCTAssertTrue(avatarButton.waitForExistence(timeout: 5), "Codex avatar button should exist")
+        avatarButton.tap()
+
+        let settingsTitle = app.navigationBars["Agent Settings"]
+        XCTAssertTrue(settingsTitle.waitForExistence(timeout: 5), "Agent settings sheet should appear")
     }
 }

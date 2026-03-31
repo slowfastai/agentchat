@@ -3,6 +3,42 @@ import SwiftUI
 import UIKit
 #endif
 
+#if os(iOS)
+private enum AgentMarkdownRenderCache {
+    private static let cache = NSCache<NSString, NSAttributedString>()
+
+    static func renderedText(
+        for content: String,
+        preferredSyntax: AttributedString.MarkdownParsingOptions.InterpretedSyntax,
+        textStyle: UIFont.TextStyle,
+        textColor: UIColor,
+        lineSpacing: CGFloat
+    ) -> NSAttributedString {
+        let cacheKey = [
+            String(describing: preferredSyntax),
+            textStyle.rawValue,
+            String(describing: textColor),
+            String(format: "%.2f", lineSpacing),
+            content
+        ].joined(separator: "|") as NSString
+
+        if let cachedText = cache.object(forKey: cacheKey) {
+            return cachedText
+        }
+
+        let renderedText = AgentMarkdownText.makeRenderedAttributedText(
+            content: content,
+            preferredSyntax: preferredSyntax,
+            textStyle: textStyle,
+            textColor: textColor,
+            lineSpacing: lineSpacing
+        )
+        cache.setObject(renderedText, forKey: cacheKey)
+        return renderedText
+    }
+}
+#endif
+
 struct AgentMarkdownText: View {
     let content: String
     var preferredSyntax: AttributedString.MarkdownParsingOptions.InterpretedSyntax = .full
@@ -31,6 +67,13 @@ struct AgentMarkdownText: View {
     }
 
     private var parsedContent: AttributedString? {
+        Self.makeParsedContent(content: content, preferredSyntax: preferredSyntax)
+    }
+
+    fileprivate static func makeParsedContent(
+        content: String,
+        preferredSyntax: AttributedString.MarkdownParsingOptions.InterpretedSyntax
+    ) -> AttributedString? {
         guard #available(iOS 15.0, *) else {
             return nil
         }
@@ -52,7 +95,23 @@ struct AgentMarkdownText: View {
 
     #if os(iOS)
     private var renderedAttributedText: NSAttributedString {
-        if let parsedContent {
+        AgentMarkdownRenderCache.renderedText(
+            for: content,
+            preferredSyntax: preferredSyntax,
+            textStyle: textStyle,
+            textColor: textColor,
+            lineSpacing: lineSpacing
+        )
+    }
+
+    fileprivate static func makeRenderedAttributedText(
+        content: String,
+        preferredSyntax: AttributedString.MarkdownParsingOptions.InterpretedSyntax,
+        textStyle: UIFont.TextStyle,
+        textColor: UIColor,
+        lineSpacing: CGFloat
+    ) -> NSAttributedString {
+        if let parsedContent = makeParsedContent(content: content, preferredSyntax: preferredSyntax) {
             return AgentSelectableText.styledMarkdown(
                 parsedContent,
                 fallbackTextStyle: textStyle,
