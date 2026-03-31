@@ -280,6 +280,11 @@ struct Theme {
 }
 
 struct ContentView: View {
+    private enum AvatarSettingsHostMode {
+        case root
+        case local
+    }
+
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.colorScheme) private var colorScheme
 
@@ -298,6 +303,17 @@ struct ContentView: View {
 
     private var theme: Theme {
         Theme(colorScheme: colorScheme)
+    }
+
+    private var avatarSettingsHostMode: AvatarSettingsHostMode {
+        ProcessInfo.processInfo.arguments.contains("UITestAvatarSettingsHostRoot") ? .root : .local
+    }
+
+    private var threadAvatarTapHandler: ((String?) -> Void)? {
+        guard avatarSettingsHostMode == .root else { return nil }
+        return { agentID in
+            openAgentSettings(for: agentID)
+        }
     }
 
     var body: some View {
@@ -604,7 +620,8 @@ struct ContentView: View {
                         items: timelineBubbleItems,
                         timelineScrollMarker: timelineScrollMarker,
                         connectionState: store.connectionState,
-                        connectionStatus: store.connectionStatus
+                        connectionStatus: store.connectionStatus,
+                        onAgentAvatarTap: threadAvatarTapHandler
                     )
                     .equatable()
                         .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
@@ -1089,6 +1106,15 @@ struct ContentView: View {
         }
     }
 
+    private func openAgentSettings(for agentID: String?) {
+        guard let agentID else { return }
+        UIPerformanceProbe.shared.beginAvatarSettingsSheet(agentID: agentID)
+        editingAgent = store.agents.first(where: { $0.agentID == agentID })
+            ?? store.activeThreadSnapshot?.participants
+                .first(where: { $0.agentID == agentID })
+                .flatMap(store.agentSummary(for:))
+    }
+
 }
 
 private struct ComposerSurfaceModifier: ViewModifier {
@@ -1187,6 +1213,7 @@ private struct ThreadTimelineView: View, Equatable {
     let timelineScrollMarker: String
     let connectionState: DaemonConnectionState
     let connectionStatus: String
+    let onAgentAvatarTap: ((String?) -> Void)?
     @State private var editingAgent: DaemonAgentSummary?
 
     static func == (lhs: ThreadTimelineView, rhs: ThreadTimelineView) -> Bool {
@@ -1204,12 +1231,12 @@ private struct ThreadTimelineView: View, Equatable {
                     ThreadHeaderCard(
                         snapshot: snapshot,
                         store: store,
-                        onAgentAvatarTap: openAgentSettings
+                        onAgentAvatarTap: handleAgentAvatarTap
                     )
                     TimelineEntriesSection(
                         snapshot: snapshot,
                         items: items,
-                        onAgentAvatarTap: openAgentSettings
+                        onAgentAvatarTap: handleAgentAvatarTap
                     )
                 }
                 .frame(maxWidth: 760)
@@ -1251,6 +1278,14 @@ private struct ThreadTimelineView: View, Equatable {
             ?? snapshot.participants
                 .first(where: { $0.agentID == agentID })
                 .flatMap(store.agentSummary(for:))
+    }
+
+    private func handleAgentAvatarTap(_ agentID: String?) {
+        if let onAgentAvatarTap {
+            onAgentAvatarTap(agentID)
+        } else {
+            openAgentSettings(for: agentID)
+        }
     }
 
     private func dismissKeyboard() {

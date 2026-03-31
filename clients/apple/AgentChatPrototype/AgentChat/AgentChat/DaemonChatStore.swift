@@ -14,6 +14,7 @@ final class DaemonChatStore: ObservableObject {
     private static let agentCustomNamesKey = "agentchat_agent_custom_names"
     private static let agentAvatarDataKey = "agentchat_agent_avatar_data"
     private static let agentSettingsKey = "agentchat_agent_settings"
+    private static let uiTestAvatarLatencyArgument = "UITestSeedAvatarLatency"
 
     @Published private(set) var connectionState: DaemonConnectionState = .notConfigured
     @Published var agents: [DaemonAgentSummary] = []
@@ -84,6 +85,12 @@ final class DaemonChatStore: ObservableObject {
         self.agentCustomNames = Self.loadAgentCustomNames(from: defaults)
         self.agentAvatarData = Self.loadAgentAvatarData(from: defaults)
         self.agentSettings = Self.loadAgentSettings(from: defaults)
+
+        if Self.isUITestAvatarLatencySeedEnabled {
+            configureUITestAvatarLatencySeed()
+            return
+        }
+
         restorePersistedThreadState()
         refreshIdleConnectionStatus()
     }
@@ -91,6 +98,11 @@ final class DaemonChatStore: ObservableObject {
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
+
+        if Self.isUITestAvatarLatencySeedEnabled {
+            return
+        }
+
         refreshIdleConnectionStatus()
         performInitialNetworkWarmupIfNeeded()
     }
@@ -1339,6 +1351,75 @@ final class DaemonChatStore: ObservableObject {
             activeThreadSnapshot?.participants.filter(\.isAgent).map(\.participantID) ?? []
         )
         persistThreadState()
+    }
+
+    private static var isUITestAvatarLatencySeedEnabled: Bool {
+        ProcessInfo.processInfo.arguments.contains(uiTestAvatarLatencyArgument)
+    }
+
+    private func configureUITestAvatarLatencySeed() {
+        let threadID = "thread-avatar-latency"
+        let createdAtMS: UInt64 = 1_743_379_200_000
+
+        let agent = DaemonAgentSummary(
+            agentID: "codex",
+            name: "Codex",
+            kind: "codex_app_server",
+            status: "online",
+            defaultWorkingDir: ".",
+            capabilities: ["session", "prompt", "cancel"]
+        )
+
+        let participant = DaemonThreadParticipant(
+            participantID: "participant-codex",
+            kind: "agent",
+            displayName: "Codex",
+            agentID: "codex",
+            sessionID: "session-codex",
+            state: "idle"
+        )
+
+        let snapshot = DaemonThreadSnapshot(
+            threadID: threadID,
+            title: "Avatar Latency Thread",
+            workingDir: ".",
+            createdAtMS: createdAtMS,
+            lastThreadSeq: 2,
+            participants: [participant]
+        )
+
+        let summary = DaemonThreadSummary(
+            threadID: threadID,
+            title: "Avatar Latency Thread",
+            workingDir: ".",
+            createdAtMS: createdAtMS,
+            state: "idle",
+            participantCount: 1,
+            lastThreadSeq: 2
+        )
+
+        let timelineEntry = DaemonTimelineEntry(
+            id: "avatar-latency-assistant-turn",
+            sortThreadSeq: 2,
+            lastThreadSeq: 2,
+            kind: .assistantTurn,
+            agentID: "codex",
+            title: "Codex",
+            body: "Seeded assistant turn for avatar latency measurement.",
+            status: "completed",
+            tintName: "green"
+        )
+
+        agents = [agent]
+        selectedAgentIDs = [agent.agentID]
+        allThreads = [summary]
+        threads = [summary]
+        snapshotsByThread = [threadID: snapshot]
+        timelineByThread = [threadID: [timelineEntry]]
+        cursorByThread = [threadID: 2]
+        connectionState = .online
+        errorMessage = nil
+        setActiveThreadLocally(nil)
     }
 
     private func mergeThreadSummaries(_ incoming: [DaemonThreadSummary]) {
