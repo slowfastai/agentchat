@@ -601,6 +601,7 @@ struct ContentView: View {
             .disabled(store.activeThreadID == nil || store.agents.filter(\.isOnline).isEmpty)
 
             Button {
+                prepareForSheetPresentation()
                 isScannerPresented = true
             } label: {
                 Label("Scan", systemImage: "qrcode.viewfinder")
@@ -608,6 +609,9 @@ struct ContentView: View {
         } label: {
             Image(systemName: "plus.circle.fill")
         }
+        .simultaneousGesture(TapGesture().onEnded {
+            prepareForSheetPresentation()
+        })
     }
 
     private var detail: some View {
@@ -737,7 +741,14 @@ struct ContentView: View {
         return nil
     }
 
+    private func prepareForSheetPresentation() {
+        guard isComposerFocused || isKeyboardPresented else { return }
+        isComposerFocused = false
+        dismissKeyboard()
+    }
+
     private func presentAgentPicker(_ mode: AgentPickerMode) {
+        prepareForSheetPresentation()
         draftAgentSelection = defaultAgentSelection(for: mode)
         agentPickerMode = mode
     }
