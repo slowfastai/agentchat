@@ -102,7 +102,7 @@ struct AgentChatDesktopTests {
         #expect(store.desktopSortedThreads.map(\.threadID) == ["thread-3", "thread-2", "thread-1"])
     }
 
-    @Test @MainActor func directAndRelayLinksStillParseForDesktop() {
+    @Test func directAndRelayLinksStillParseForDesktop() {
         #expect(parseScannedDaemonConnectionPayload(from: "ws://127.0.0.1:9390") == .direct(url: "ws://127.0.0.1:9390", agentIDs: []))
 
         let relay = parseScannedDaemonConnectionPayload(
@@ -120,5 +120,80 @@ struct AgentChatDesktopTests {
                 agentIDs: []
             )
         ))
+    }
+
+    @Test @MainActor func agentUpdatePersistsDisplayNameAndAvatar() {
+        let suiteName = "AgentChatDesktopTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = DaemonChatStore(defaults: defaults)
+        let agentID = "codex"
+        let customName = "My Codex"
+        let avatarData = Data([0x89, 0x50, 0x4E, 0x47])
+
+        store.updateAgentDisplayName(agentID, displayName: customName)
+        store.updateAgentAvatar(agentID, imageData: avatarData)
+
+        #expect(store.agentCustomNames[agentID] == customName)
+        #expect(store.agentAvatarData[agentID] == avatarData)
+    }
+
+    @Test @MainActor func agentUpdateRemovesNameAndAvatarWhenNil() {
+        let suiteName = "AgentChatDesktopTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = DaemonChatStore(defaults: defaults)
+        let agentID = "codex"
+
+        store.updateAgentDisplayName(agentID, displayName: "Custom")
+        store.updateAgentAvatar(agentID, imageData: Data([0x89]))
+
+        store.updateAgentDisplayName(agentID, displayName: nil)
+        store.updateAgentAvatar(agentID, imageData: nil)
+
+        #expect(store.agentCustomNames[agentID] == nil)
+        #expect(store.agentAvatarData[agentID] == nil)
+    }
+
+    @Test @MainActor func agentSettingsPersistsModelAndSystemPrompt() {
+        let suiteName = "AgentChatDesktopTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = DaemonChatStore(defaults: defaults)
+        let agentID = "codex"
+        let settings = AgentLocalSettings(
+            model: "gpt-5",
+            systemPrompt: "You are a helpful coding assistant."
+        )
+
+        store.updateAgentSettings(agentID, settings: settings)
+
+        #expect(store.agentSettings[agentID]?.model == "gpt-5")
+        #expect(store.agentSettings[agentID]?.systemPrompt == "You are a helpful coding assistant.")
+    }
+
+    @Test @MainActor func threadPinAndHideOperationsWork() {
+        let suiteName = "AgentChatDesktopTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = DaemonChatStore(defaults: defaults)
+        let threadID = "thread-1"
+
+        store.threads = [
+            DaemonThreadSummary(threadID: threadID, title: "Test", workingDir: ".", createdAtMS: 1, state: "idle", participantCount: 1, lastThreadSeq: 1),
+        ]
+
+        #expect(!store.isPinnedThread(threadID))
+        store.togglePinnedThread(threadID)
+        #expect(store.isPinnedThread(threadID))
+        store.togglePinnedThread(threadID)
+        #expect(!store.isPinnedThread(threadID))
+
+        store.hideThread(threadID)
+        #expect(store.desktopSortedThreads.isEmpty)
     }
 }
