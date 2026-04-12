@@ -75,6 +75,8 @@ private struct InspectorFactRow: View {
 
 struct ConnectionStatusCard: View {
     @EnvironmentObject private var store: DaemonChatStore
+    @State private var quickConnectURL = ""
+    @State private var showQuickConnect = false
 
     private var presentation: AgentChatDesktopConnectionPresentation {
         AgentChatDesktopConnectionPresentation(state: store.connectionState)
@@ -82,6 +84,15 @@ struct ConnectionStatusCard: View {
 
     private var tint: Color {
         desktopTintColor(named: presentation.tintName)
+    }
+
+    private var canPasteFromClipboard: Bool {
+        if let clipboardString = NSPasteboard.general.string(forType: .string) {
+            return clipboardString.contains("agentchat://") ||
+                   clipboardString.contains("ws://") ||
+                   clipboardString.contains("wss://")
+        }
+        return false
     }
 
     var body: some View {
@@ -121,7 +132,9 @@ struct ConnectionStatusCard: View {
                     }
                 }
 
-                if !store.daemonURL.isEmpty {
+                if showQuickConnect && !store.connectionState.isOnline {
+                    quickConnectSection
+                } else if !store.daemonURL.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Endpoint")
                             .font(.caption2.weight(.semibold))
@@ -160,6 +173,15 @@ struct ConnectionStatusCard: View {
                 }
 
                 HStack(spacing: 8) {
+                    if !store.connectionState.isOnline {
+                        Button(showQuickConnect ? "Hide" : "Connect") {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showQuickConnect.toggle()
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
                     Button("Reconnect") {
                         store.reconnectNow()
                     }
@@ -174,6 +196,62 @@ struct ConnectionStatusCard: View {
                 }
             }
         }
+    }
+
+    private var quickConnectSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("ws://127.0.0.1:9390 or agentchat://...", text: $quickConnectURL)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+                .onSubmit {
+                    connectWithURL()
+                }
+
+            HStack(spacing: 8) {
+                Button("Paste & Connect") {
+                    if let clipboardString = NSPasteboard.general.string(forType: .string) {
+                        quickConnectURL = clipboardString.trimmingCharacters(in: .whitespacesAndNewlines)
+                        connectWithURL()
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(!canPasteFromClipboard)
+                .help("Paste URL from clipboard")
+
+                Button("Apply") {
+                    connectWithURL()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(quickConnectURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                Spacer()
+
+                Text("Press Enter to connect")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Text("Supports ws://, wss://, or agentchat://connect? links")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(8)
+        .background(Color.black.opacity(0.03), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onAppear {
+            if let clipboardString = NSPasteboard.general.string(forType: .string),
+               canPasteFromClipboard {
+                quickConnectURL = clipboardString.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+    }
+
+    private func connectWithURL() {
+        let trimmedURL = quickConnectURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedURL.isEmpty else { return }
+
+        store.updateDaemonURL(trimmedURL)
+        quickConnectURL = ""
+        showQuickConnect = false
     }
 }
 
