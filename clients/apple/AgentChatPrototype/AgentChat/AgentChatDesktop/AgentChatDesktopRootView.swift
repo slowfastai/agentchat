@@ -247,6 +247,9 @@ struct AgentChatDesktopRootView: View {
                                 if selectedThreadID == thread.threadID {
                                     selectedThreadID = nil
                                 }
+                            },
+                            onOpenInNewWindow: {
+                                openThreadInNewWindow(thread)
                             }
                         )
                         .tag(Optional(thread.threadID))
@@ -372,5 +375,10 @@ struct AgentChatDesktopRootView: View {
         DispatchQueue.main.async {
             isComposerFocused = true
         }
+    }
+
+    private func openThreadInNewWindow(_ thread: DaemonThreadSummary) {
+        store.attachThread(thread.threadID)
+        NSWorkspace.shared.open(URL(string: "agentchat://thread/\(thread.threadID)")!)
     }
 }

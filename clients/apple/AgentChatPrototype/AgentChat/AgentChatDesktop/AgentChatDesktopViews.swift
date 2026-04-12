@@ -460,6 +460,7 @@ struct ThreadSidebarRow: View {
     let onPin: () -> Void
     let onHide: () -> Void
     let onClose: () -> Void
+    let onOpenInNewWindow: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -501,6 +502,12 @@ struct ThreadSidebarRow: View {
                 .fill(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
         )
         .contextMenu {
+            Button {
+                onOpenInNewWindow()
+            } label: {
+                Label("Open in New Window", systemImage: "macwindow")
+            }
+
             Button {
                 onPin()
             } label: {
