@@ -1,5 +1,201 @@
 import SwiftUI
 
+struct CommandPaletteView: View {
+    @Binding var isPresented: Bool
+    @EnvironmentObject private var store: DaemonChatStore
+    @FocusState private var isSearchFocused: Bool
+    @State private var searchText = ""
+    @State private var selectedIndex = 0
+
+    let showNewThreadSheet: () -> Void
+    let showAddAgentsSheet: () -> Void
+    let toggleInspector: () -> Void
+    let focusComposer: () -> Void
+    let connectAction: () -> Void
+
+    private var commands: [CommandItem] {
+        let allCommands: [CommandItem] = [
+            CommandItem(title: "New Thread", shortcut: "⌘N", icon: "plus.bubble") { [self] in
+                showNewThreadSheet()
+                dismiss()
+            },
+            CommandItem(title: "Add Agents to Thread", shortcut: "⇧⌘A", icon: "person.badge.plus", requiresThread: true) { [self] in
+                showAddAgentsSheet()
+                dismiss()
+            },
+            CommandItem(title: "Reconnect", shortcut: "⇧⌘R", icon: "arrow.clockwise") { [self] in
+                store.reconnectNow()
+                dismiss()
+            },
+            CommandItem(title: "Disconnect", shortcut: "", icon: "xmark.circle") { [self] in
+                store.disconnect()
+                dismiss()
+            },
+            CommandItem(title: "Toggle Inspector", shortcut: "⌥⌘I", icon: "sidebar.right") { [self] in
+                toggleInspector()
+                dismiss()
+            },
+            CommandItem(title: "Focus Composer", shortcut: "⇧⌘L", icon: "text.bubble", requiresThread: true) { [self] in
+                focusComposer()
+                dismiss()
+            },
+            CommandItem(title: "Connect", shortcut: "", icon: "link") { [self] in
+                connectAction()
+                dismiss()
+            },
+        ]
+
+        if searchText.isEmpty {
+            return allCommands
+        }
+
+        return allCommands.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.4)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    dismiss()
+                }
+
+            VStack(spacing: 0) {
+                Spacer()
+
+                VStack(spacing: 0) {
+                    Text("Command Palette")
+                        .font(.headline)
+                        .padding()
+
+                    TextField("Type a command...", text: $searchText)
+                        .textFieldStyle(.roundedBorder)
+                        .padding(.horizontal)
+                        .focused($isSearchFocused)
+
+                    Divider()
+                        .padding(.top, 8)
+
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(commands.enumerated()), id: \.offset) { index, command in
+                                CommandRow(
+                                    command: command,
+                                    isSelected: index == selectedIndex,
+                                    hasThread: store.activeThreadID != nil
+                                ) {
+                                    command.action()
+                                }
+                                .onTapGesture {
+                                    if command.requiresThread && store.activeThreadID == nil {
+                                        return
+                                    }
+                                    command.action()
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 300)
+                }
+                .background(Color(nsColor: .windowBackgroundColor))
+                .cornerRadius(12)
+                .shadow(radius: 20)
+                .padding(.horizontal, 100)
+                .padding(.bottom, 100)
+            }
+        }
+        .onAppear {
+            isSearchFocused = true
+        }
+        .onKeyPress(.upArrow) {
+            if selectedIndex > 0 {
+                selectedIndex -= 1
+            }
+            return .handled
+        }
+        .onKeyPress(.downArrow) {
+            if selectedIndex < commands.count - 1 {
+                selectedIndex += 1
+            }
+            return .handled
+        }
+        .onKeyPress(.return) {
+            if selectedIndex < commands.count {
+                let command = commands[selectedIndex]
+                if !command.requiresThread || store.activeThreadID != nil {
+                    command.action()
+                }
+            }
+            return .handled
+        }
+        .onKeyPress(.escape) {
+            dismiss()
+            return .handled
+        }
+        .onChange(of: searchText) { _, _ in
+            selectedIndex = 0
+        }
+    }
+
+    private func dismiss() {
+        searchText = ""
+        isPresented = false
+    }
+}
+
+private struct CommandItem: Identifiable {
+    let id = UUID()
+    let title: String
+    let shortcut: String
+    let icon: String
+    var requiresThread: Bool = false
+    let action: () -> Void
+}
+
+private struct CommandRow: View {
+    let command: CommandItem
+    let isSelected: Bool
+    let hasThread: Bool
+    let onSelect: () -> Void
+
+    private var isDisabled: Bool {
+        command.requiresThread && !hasThread
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: command.icon)
+                .font(.body)
+                .frame(width: 24)
+                .foregroundStyle(isDisabled ? .secondary : .primary)
+
+            Text(command.title)
+                .font(.body)
+                .foregroundStyle(isDisabled ? .secondary : .primary)
+
+            Spacer()
+
+            if !command.shortcut.isEmpty {
+                Text(command.shortcut)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if !isDisabled {
+                onSelect()
+            }
+        }
+    }
+}
+
 func desktopTintColor(named name: String) -> Color {
     switch name {
     case "blue":

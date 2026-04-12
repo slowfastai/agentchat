@@ -12,6 +12,7 @@ struct AgentChatDesktopRootView: View {
     @State private var showAddAgentsSheet = false
     @State private var showAgentEditSheet = false
     @State private var editingAgent: DaemonAgentSummary?
+    @State private var showCommandPalette = false
     @FocusState private var isComposerFocused: Bool
 
     private var filteredThreads: [DaemonThreadSummary] {
@@ -104,6 +105,14 @@ struct AgentChatDesktopRootView: View {
                 endPoint: .bottomTrailing
             )
         )
+        .toolbar {
+            ToolbarItem(placement: .keyboard) {
+                Button("Command Palette") {
+                    showCommandPalette = true
+                }
+                .keyboardShortcut("k", modifiers: [.command])
+            }
+        }
         .sheet(isPresented: $showNewThreadSheet) {
             AgentSelectionSheet(
                 title: "Start New Thread",
@@ -138,6 +147,19 @@ struct AgentChatDesktopRootView: View {
                     store.updateAgentAvatar(agent.agentID, imageData: avatarData)
                     store.updateAgentSettings(agent.agentID, settings: settings)
                 }
+            }
+        }
+        .overlay {
+            if showCommandPalette {
+                CommandPaletteView(
+                    isPresented: $showCommandPalette,
+                    showNewThreadSheet: { showNewThreadSheet = true },
+                    showAddAgentsSheet: { showAddAgentsSheet = true },
+                    toggleInspector: { showInspector.toggle() },
+                    focusComposer: { scheduleComposerFocus() },
+                    connectAction: { /* Quick connect handled in sidebar */ }
+                )
+                .environmentObject(store)
             }
         }
         .onAppear {
