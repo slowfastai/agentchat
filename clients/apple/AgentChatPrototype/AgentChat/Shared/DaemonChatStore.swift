@@ -5,6 +5,7 @@ import SwiftUI
 
 @MainActor
 final class DaemonChatStore: ObservableObject {
+    private static let daemonWSURLKey = "agentchat_daemon_ws_url"
     private static let pinnedThreadsKey = "agentchat_pinned_thread_ids"
     private static let hiddenThreadsKey = "agentchat_hidden_thread_ids"
     private static let knownAgentsKey = "agentchat_known_agents"
@@ -33,7 +34,7 @@ final class DaemonChatStore: ObservableObject {
     @Published var agentSettings: [String: AgentLocalSettings] = [:]
     @Published var connectingAgentIDs: Set<String> = []
 
-    @AppStorage("agentchat_daemon_ws_url") private var daemonURLString = ""
+    private var daemonURLString: String
 
     var daemonURL: String {
         daemonURLString
@@ -81,6 +82,7 @@ final class DaemonChatStore: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        self.daemonURLString = defaults.string(forKey: Self.daemonWSURLKey) ?? ""
         self.pinnedThreadIDs = Set(defaults.stringArray(forKey: Self.pinnedThreadsKey) ?? [])
         self.hiddenThreadIDs = Set(defaults.stringArray(forKey: Self.hiddenThreadsKey) ?? [])
         self.agents = Self.loadKnownAgents(from: defaults)
@@ -107,6 +109,9 @@ final class DaemonChatStore: ObservableObject {
         }
 
         refreshIdleConnectionStatus()
+        if hasConfiguredDaemonURL {
+            connect(resetReconnectAttempt: true)
+        }
         performInitialNetworkWarmupIfNeeded()
     }
 
@@ -199,24 +204,25 @@ final class DaemonChatStore: ObservableObject {
         }
     }
 
-    func sendCurrentMessage(_ text: String) {
+    @discardableResult
+    func sendCurrentMessage(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let threadID = activeThreadID else { return }
+        guard !trimmed.isEmpty, let threadID = activeThreadID else { return false }
         let agentParticipants = activeThreadSnapshot?.participants.filter(\.isAgent) ?? []
         guard !agentParticipants.isEmpty else {
             errorMessage = "Add at least one agent to this thread before sending a message."
-            return
+            return false
         }
 
         let allAgentIDs = Set(agentParticipants.map(\.participantID))
         let targets = Set(selectedParticipantIDs).intersection(allAgentIDs)
         guard !targets.isEmpty else {
-            selectedParticipantIDs = allAgentIDs
-            let resetTargets = Set(selectedParticipantIDs).intersection(allAgentIDs)
-            guard !resetTargets.isEmpty else {
-                errorMessage = "Add at least one agent to this thread before sending a message."
-                return
+            if participantSelectionWasCustomized {
+                errorMessage = "Choose at least one target agent before sending."
+                return false
             }
+
+            selectedParticipantIDs = allAgentIDs
             errorMessage = nil
             Task {
                 await send(
@@ -228,7 +234,7 @@ final class DaemonChatStore: ObservableObject {
                     reportFailureToUser: true
                 )
             }
-            return
+            return true
         }
         let targetList: [String]? = targets == allAgentIDs ? nil : targets.sorted()
         errorMessage = nil
@@ -243,6 +249,7 @@ final class DaemonChatStore: ObservableObject {
                 reportFailureToUser: true
             )
         }
+        return true
     }
 
     func rememberSelectedAgents(_ agentIDs: [String]) {
@@ -308,6 +315,14 @@ final class DaemonChatStore: ObservableObject {
         selectedParticipantIDs.contains(participantID)
     }
 
+    func updateSelectedParticipants(_ participantIDs: Set<String>, for snapshot: DaemonThreadSnapshot?) {
+        let allParticipants = Set((snapshot?.participants ?? []).filter(\.isAgent).map(\.participantID))
+        let sanitizedSelection = participantIDs.intersection(allParticipants)
+
+        selectedParticipantIDs = sanitizedSelection
+        participantSelectionWasCustomized = !allParticipants.isEmpty && sanitizedSelection != allParticipants
+    }
+
     func reconnectNow() {
         suppressAutoReconnect = false
         connect(resetReconnectAttempt: true)
@@ -326,7 +341,7 @@ final class DaemonChatStore: ObservableObject {
             errorMessage = nil
             return
         }
-        daemonURLString = trimmed
+        setDaemonURLString(trimmed)
         errorMessage = nil
         connect(resetReconnectAttempt: true)
     }
@@ -897,6 +912,11 @@ final class DaemonChatStore: ObservableObject {
 
     private func persistSelectedAgents() {
         defaults.set(Array(selectedAgentIDs).sorted(), forKey: Self.selectedAgentsKey)
+    }
+
+    private func setDaemonURLString(_ value: String) {
+        daemonURLString = value
+        defaults.set(value, forKey: Self.daemonWSURLKey)
     }
 
     func tintName(for agentID: String?) -> String {
@@ -1640,7 +1660,7 @@ extension DaemonChatStore {
     }
 
     func testingSetConfiguredDaemonURL(_ value: String) {
-        daemonURLString = value
+        setDaemonURLString(value)
     }
 
     @discardableResult
