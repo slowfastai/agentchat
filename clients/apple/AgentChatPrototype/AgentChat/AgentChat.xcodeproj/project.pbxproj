@@ -21,12 +21,21 @@
 			remoteGlobalIDString = 2AC82F792F7226DE00AE6F49;
 			remoteInfo = AgentChat;
 		};
+		9D1111112F7226DF00AE6F49 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 2AC82F722F7226DE00AE6F49 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9D1111102F7226DF00AE6F49;
+			remoteInfo = AgentChatDesktop;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		2AC82F7A2F7226DE00AE6F49 /* AgentChat.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AgentChat.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2AC82F892F7226DF00AE6F49 /* AgentChatTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AgentChatTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		2AC82F932F7226DF00AE6F49 /* AgentChatUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AgentChatUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		9D1111122F7226DF00AE6F49 /* AgentChatDesktop.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AgentChatDesktop.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		9D1111132F7226DF00AE6F49 /* AgentChatDesktopTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AgentChatDesktopTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -43,6 +52,21 @@
 		2AC82F962F7226DF00AE6F49 /* AgentChatUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = AgentChatUITests;
+			sourceTree = "<group>";
+		};
+		9D1111142F7226DF00AE6F49 /* Shared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		9D1111152F7226DF00AE6F49 /* AgentChatDesktop */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = AgentChatDesktop;
+			sourceTree = "<group>";
+		};
+		9D1111162F7226DF00AE6F49 /* AgentChatDesktopTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = AgentChatDesktopTests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -69,6 +93,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		9D1111172F7226DF00AE6F49 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9D1111182F7226DF00AE6F49 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -76,8 +114,11 @@
 			isa = PBXGroup;
 			children = (
 				2AC82F7C2F7226DE00AE6F49 /* AgentChat */,
+				9D1111142F7226DF00AE6F49 /* Shared */,
 				2AC82F8C2F7226DF00AE6F49 /* AgentChatTests */,
 				2AC82F962F7226DF00AE6F49 /* AgentChatUITests */,
+				9D1111152F7226DF00AE6F49 /* AgentChatDesktop */,
+				9D1111162F7226DF00AE6F49 /* AgentChatDesktopTests */,
 				2AC82F7B2F7226DE00AE6F49 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -88,6 +129,8 @@
 				2AC82F7A2F7226DE00AE6F49 /* AgentChat.app */,
 				2AC82F892F7226DF00AE6F49 /* AgentChatTests.xctest */,
 				2AC82F932F7226DF00AE6F49 /* AgentChatUITests.xctest */,
+				9D1111122F7226DF00AE6F49 /* AgentChatDesktop.app */,
+				9D1111132F7226DF00AE6F49 /* AgentChatDesktopTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -109,6 +152,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				2AC82F7C2F7226DE00AE6F49 /* AgentChat */,
+				9D1111142F7226DF00AE6F49 /* Shared */,
 			);
 			name = AgentChat;
 			packageProductDependencies = (
@@ -163,6 +207,52 @@
 			productReference = 2AC82F932F7226DF00AE6F49 /* AgentChatUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		9D1111102F7226DF00AE6F49 /* AgentChatDesktop */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 9D11111B2F7226DF00AE6F49 /* Build configuration list for PBXNativeTarget "AgentChatDesktop" */;
+			buildPhases = (
+				9D1111192F7226DF00AE6F49 /* Sources */,
+				9D1111172F7226DF00AE6F49 /* Frameworks */,
+				9D11111A2F7226DF00AE6F49 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				9D1111152F7226DF00AE6F49 /* AgentChatDesktop */,
+				9D1111142F7226DF00AE6F49 /* Shared */,
+			);
+			name = AgentChatDesktop;
+			packageProductDependencies = (
+			);
+			productName = AgentChatDesktop;
+			productReference = 9D1111122F7226DF00AE6F49 /* AgentChatDesktop.app */;
+			productType = "com.apple.product-type.application";
+		};
+		9D11111C2F7226DF00AE6F49 /* AgentChatDesktopTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 9D11111F2F7226DF00AE6F49 /* Build configuration list for PBXNativeTarget "AgentChatDesktopTests" */;
+			buildPhases = (
+				9D11111D2F7226DF00AE6F49 /* Sources */,
+				9D1111182F7226DF00AE6F49 /* Frameworks */,
+				9D11111E2F7226DF00AE6F49 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				9D1111202F7226DF00AE6F49 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				9D1111162F7226DF00AE6F49 /* AgentChatDesktopTests */,
+			);
+			name = AgentChatDesktopTests;
+			packageProductDependencies = (
+			);
+			productName = AgentChatDesktopTests;
+			productReference = 9D1111132F7226DF00AE6F49 /* AgentChatDesktopTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -184,6 +274,13 @@
 						CreatedOnToolsVersion = 26.3;
 						TestTargetID = 2AC82F792F7226DE00AE6F49;
 					};
+					9D1111102F7226DF00AE6F49 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					9D11111C2F7226DF00AE6F49 = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = 9D1111102F7226DF00AE6F49;
+					};
 				};
 			};
 			buildConfigurationList = 2AC82F752F7226DE00AE6F49 /* Build configuration list for PBXProject "AgentChat" */;
@@ -203,6 +300,8 @@
 				2AC82F792F7226DE00AE6F49 /* AgentChat */,
 				2AC82F882F7226DF00AE6F49 /* AgentChatTests */,
 				2AC82F922F7226DF00AE6F49 /* AgentChatUITests */,
+				9D1111102F7226DF00AE6F49 /* AgentChatDesktop */,
+				9D11111C2F7226DF00AE6F49 /* AgentChatDesktopTests */,
 			);
 		};
 /* End PBXProject section */
@@ -223,6 +322,20 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		2AC82F912F7226DF00AE6F49 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9D11111A2F7226DF00AE6F49 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9D11111E2F7226DF00AE6F49 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -253,6 +366,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		9D1111192F7226DF00AE6F49 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9D11111D2F7226DF00AE6F49 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -265,6 +392,11 @@
 			isa = PBXTargetDependency;
 			target = 2AC82F792F7226DE00AE6F49 /* AgentChat */;
 			targetProxy = 2AC82F942F7226DF00AE6F49 /* PBXContainerItemProxy */;
+		};
+		9D1111202F7226DF00AE6F49 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9D1111102F7226DF00AE6F49 /* AgentChatDesktop */;
+			targetProxy = 9D1111112F7226DF00AE6F49 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -544,6 +676,114 @@
 			};
 			name = Release;
 		};
+		9D1111212F7226DF00AE6F49 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9RN3YNYN27;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.slowfast.AgentChatDesktop;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		9D1111222F7226DF00AE6F49 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9RN3YNYN27;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.slowfast.AgentChatDesktop;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		9D1111232F7226DF00AE6F49 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9RN3YNYN27;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.slowfast.AgentChatDesktopTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AgentChatDesktop.app/Contents/MacOS/AgentChatDesktop";
+			};
+			name = Debug;
+		};
+		9D1111242F7226DF00AE6F49 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9RN3YNYN27;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.slowfast.AgentChatDesktopTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AgentChatDesktop.app/Contents/MacOS/AgentChatDesktop";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -579,6 +819,24 @@
 			buildConfigurations = (
 				2AC82FA42F7226DF00AE6F49 /* Debug */,
 				2AC82FA52F7226DF00AE6F49 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		9D11111B2F7226DF00AE6F49 /* Build configuration list for PBXNativeTarget "AgentChatDesktop" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9D1111212F7226DF00AE6F49 /* Debug */,
+				9D1111222F7226DF00AE6F49 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		9D11111F2F7226DF00AE6F49 /* Build configuration list for PBXNativeTarget "AgentChatDesktopTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9D1111232F7226DF00AE6F49 /* Debug */,
+				9D1111242F7226DF00AE6F49 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

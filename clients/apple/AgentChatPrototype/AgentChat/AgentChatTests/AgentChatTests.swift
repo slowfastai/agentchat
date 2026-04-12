@@ -231,6 +231,60 @@ struct AgentChatTests {
         #expect(store.errorMessage == "daemon_unavailable: daemon is offline")
     }
 
+    @Test @MainActor func daemonChatStoreDropsStaleActiveThreadWhenAuthoritativeThreadListIsEmpty() async throws {
+        let suiteName = "AgentChatTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            Issue.record("Failed to create isolated UserDefaults suite")
+            return
+        }
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let store = DaemonChatStore(defaults: defaults)
+        store.testingSetConfiguredDaemonURL("ws://192.168.1.8:9390")
+        store.testingSetConnectionState(.syncing)
+        store.testingHandleIncomingText(
+            #"{"type":"thread_list","threads":[{"thread_id":"thread-1","title":"Stale","working_dir":".","created_at_ms":1,"state":"idle","participant_count":1,"last_thread_seq":3}]}"#
+        )
+
+        #expect(store.activeThreadID == "thread-1")
+
+        store.testingHandleIncomingText(#"{"type":"thread_list","threads":[]}"#)
+
+        #expect(store.activeThreadID == nil)
+        #expect(store.threads.isEmpty)
+        #expect(store.timeline.isEmpty)
+        #expect(store.connectionState == .online)
+    }
+
+    @Test @MainActor func daemonChatStoreRecoversFromThreadNotFoundAfterStaleThreadIsPruned() async throws {
+        let suiteName = "AgentChatTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            Issue.record("Failed to create isolated UserDefaults suite")
+            return
+        }
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let store = DaemonChatStore(defaults: defaults)
+        store.testingSetConfiguredDaemonURL("ws://192.168.1.8:9390")
+        store.testingSetConnectionState(.syncing)
+        store.testingSetReconnectAttempt(2, isReconnecting: true)
+        store.testingHandleIncomingText(
+            #"{"type":"thread_list","threads":[{"thread_id":"thread-1","title":"Stale","working_dir":".","created_at_ms":1,"state":"idle","participant_count":1,"last_thread_seq":3}]}"#
+        )
+        store.testingHandleIncomingText(#"{"type":"thread_list","threads":[]}"#)
+
+        store.testingHandleIncomingText(#"{"type":"error","code":"thread_not_found","message":"no live thread with this id"}"#)
+
+        #expect(store.activeThreadID == nil)
+        #expect(store.connectionState == .online)
+        #expect(store.testingReconnectAttempt == 0)
+        #expect(store.errorMessage == "Previously open thread is no longer available on this daemon.")
+    }
+
     @Test @MainActor func daemonChatStoreDoesNotConfirmConnectionFromMalformedDaemonEvent() async throws {
         let suiteName = "AgentChatTests.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {

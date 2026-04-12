@@ -5,6 +5,7 @@ import SwiftUI
 
 @MainActor
 final class DaemonChatStore: ObservableObject {
+    private static let daemonWSURLKey = "agentchat_daemon_ws_url"
     private static let pinnedThreadsKey = "agentchat_pinned_thread_ids"
     private static let hiddenThreadsKey = "agentchat_hidden_thread_ids"
     private static let knownAgentsKey = "agentchat_known_agents"
@@ -18,6 +19,7 @@ final class DaemonChatStore: ObservableObject {
     private static let uiTestAvatarLatencyArgument = "UITestSeedAvatarLatency"
     private let logger = Logger(subsystem: "dev.slowfast.AgentChat", category: "DaemonConnection")
     private static let uiTestThreadComposerLatencyArgument = "UITestSeedThreadComposerLatency"
+    private static let staleThreadRecoveryMessage = "Previously open thread is no longer available on this daemon."
 
     @Published private(set) var connectionState: DaemonConnectionState = .notConfigured
     @Published var agents: [DaemonAgentSummary] = []
@@ -33,7 +35,7 @@ final class DaemonChatStore: ObservableObject {
     @Published var agentSettings: [String: AgentLocalSettings] = [:]
     @Published var connectingAgentIDs: Set<String> = []
 
-    @AppStorage("agentchat_daemon_ws_url") private var daemonURLString = ""
+    private var daemonURLString: String
 
     var daemonURL: String {
         daemonURLString
@@ -66,6 +68,7 @@ final class DaemonChatStore: ObservableObject {
     private var reconnectTask: Task<Void, Never>?
     private var isReconnecting = false
     private var suppressAutoReconnect = false
+    private var pendingStaleThreadRecovery = false
 
     private static let maxReconnectAttempts = 4
     private static let baseReconnectDelaySeconds: Double = 1.0
@@ -81,6 +84,7 @@ final class DaemonChatStore: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        self.daemonURLString = defaults.string(forKey: Self.daemonWSURLKey) ?? ""
         self.pinnedThreadIDs = Set(defaults.stringArray(forKey: Self.pinnedThreadsKey) ?? [])
         self.hiddenThreadIDs = Set(defaults.stringArray(forKey: Self.hiddenThreadsKey) ?? [])
         self.agents = Self.loadKnownAgents(from: defaults)
@@ -107,6 +111,9 @@ final class DaemonChatStore: ObservableObject {
         }
 
         refreshIdleConnectionStatus()
+        if hasConfiguredDaemonURL {
+            connect(resetReconnectAttempt: true)
+        }
         performInitialNetworkWarmupIfNeeded()
     }
 
@@ -199,24 +206,25 @@ final class DaemonChatStore: ObservableObject {
         }
     }
 
-    func sendCurrentMessage(_ text: String) {
+    @discardableResult
+    func sendCurrentMessage(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let threadID = activeThreadID else { return }
+        guard !trimmed.isEmpty, let threadID = activeThreadID else { return false }
         let agentParticipants = activeThreadSnapshot?.participants.filter(\.isAgent) ?? []
         guard !agentParticipants.isEmpty else {
             errorMessage = "Add at least one agent to this thread before sending a message."
-            return
+            return false
         }
 
         let allAgentIDs = Set(agentParticipants.map(\.participantID))
         let targets = Set(selectedParticipantIDs).intersection(allAgentIDs)
         guard !targets.isEmpty else {
-            selectedParticipantIDs = allAgentIDs
-            let resetTargets = Set(selectedParticipantIDs).intersection(allAgentIDs)
-            guard !resetTargets.isEmpty else {
-                errorMessage = "Add at least one agent to this thread before sending a message."
-                return
+            if participantSelectionWasCustomized {
+                errorMessage = "Choose at least one target agent before sending."
+                return false
             }
+
+            selectedParticipantIDs = allAgentIDs
             errorMessage = nil
             Task {
                 await send(
@@ -228,7 +236,7 @@ final class DaemonChatStore: ObservableObject {
                     reportFailureToUser: true
                 )
             }
-            return
+            return true
         }
         let targetList: [String]? = targets == allAgentIDs ? nil : targets.sorted()
         errorMessage = nil
@@ -243,6 +251,7 @@ final class DaemonChatStore: ObservableObject {
                 reportFailureToUser: true
             )
         }
+        return true
     }
 
     func rememberSelectedAgents(_ agentIDs: [String]) {
@@ -308,6 +317,14 @@ final class DaemonChatStore: ObservableObject {
         selectedParticipantIDs.contains(participantID)
     }
 
+    func updateSelectedParticipants(_ participantIDs: Set<String>, for snapshot: DaemonThreadSnapshot?) {
+        let allParticipants = Set((snapshot?.participants ?? []).filter(\.isAgent).map(\.participantID))
+        let sanitizedSelection = participantIDs.intersection(allParticipants)
+
+        selectedParticipantIDs = sanitizedSelection
+        participantSelectionWasCustomized = !allParticipants.isEmpty && sanitizedSelection != allParticipants
+    }
+
     func reconnectNow() {
         suppressAutoReconnect = false
         connect(resetReconnectAttempt: true)
@@ -326,7 +343,7 @@ final class DaemonChatStore: ObservableObject {
             errorMessage = nil
             return
         }
-        daemonURLString = trimmed
+        setDaemonURLString(trimmed)
         errorMessage = nil
         connect(resetReconnectAttempt: true)
     }
@@ -571,10 +588,12 @@ final class DaemonChatStore: ObservableObject {
                     await send(AttachThreadRequest(threadID: event.threadID, afterSeq: nil))
                 }
             case "thread_list":
-                mergeThreadSummaries(try decoder.decode(ThreadListEvent.self, from: data).threads)
+                reconcileThreadSummaries(try decoder.decode(ThreadListEvent.self, from: data).threads)
                 applyThreadPresentation()
-                if activeThreadID == nil, let firstThread = threads.first {
-                    attachThread(firstThread.threadID)
+                let candidateThreadID = activeThreadID ?? threads.first?.threadID
+                if let candidateThreadID,
+                   activeThreadSnapshot?.threadID != candidateThreadID || isRecoveringConnectionState(connectionState) {
+                    attachThread(candidateThreadID)
                 }
             case "thread_attached":
                 let event = try decoder.decode(ThreadAttachedEvent.self, from: data)
@@ -699,7 +718,7 @@ final class DaemonChatStore: ObservableObject {
                 touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
             case "error":
                 let event = try decoder.decode(ErrorEvent.self, from: data)
-                errorMessage = "\(event.code): \(event.message)"
+                handleDaemonError(event)
             default:
                 break
             }
@@ -899,6 +918,11 @@ final class DaemonChatStore: ObservableObject {
         defaults.set(Array(selectedAgentIDs).sorted(), forKey: Self.selectedAgentsKey)
     }
 
+    private func setDaemonURLString(_ value: String) {
+        daemonURLString = value
+        defaults.set(value, forKey: Self.daemonWSURLKey)
+    }
+
     func tintName(for agentID: String?) -> String {
         guard let agentID else { return "indigo" }
         if let summary = agents.first(where: { $0.agentID == agentID }) {
@@ -918,13 +942,6 @@ final class DaemonChatStore: ObservableObject {
     private func refreshDaemonState() async -> Bool {
         guard await send(ListAgentsRequest()) else { return false }
         guard await send(ListThreadsRequest()) else { return false }
-        if let activeThreadID {
-            guard await send(
-                AttachThreadRequest(threadID: activeThreadID, afterSeq: cursorByThread[activeThreadID])
-            ) else {
-                return false
-            }
-        }
         return true
     }
 
@@ -999,6 +1016,57 @@ final class DaemonChatStore: ObservableObject {
         connectingAgentIDs.removeAll()
         connectionState = .stoppedByServer(reason: event.reason ?? event.message)
         errorMessage = nil
+    }
+
+    private func handleDaemonError(_ event: ErrorEvent) {
+        if event.code == "thread_not_found" {
+            if pendingStaleThreadRecovery {
+                pendingStaleThreadRecovery = false
+                cancelScheduledReconnect(resetAttempt: true)
+                if hasActiveConnection {
+                    connectionState = .online
+                }
+                errorMessage = Self.staleThreadRecoveryMessage
+                return
+            }
+            recoverFromMissingActiveThread(message: event.message)
+            return
+        }
+
+        errorMessage = "\(event.code): \(event.message)"
+    }
+
+    private func recoverFromMissingActiveThread(message: String) {
+        guard let staleThreadID = activeThreadID else {
+            if hasActiveConnection {
+                connectionState = .online
+            }
+            errorMessage = errorMessage ?? (threads.isEmpty ? nil : "Previously selected thread is no longer available.")
+            return
+        }
+
+        let hasAuthoritativeThread = allThreads.contains { $0.threadID == staleThreadID }
+        if hasAuthoritativeThread {
+            errorMessage = "thread_not_found: \(message)"
+            return
+        }
+
+        pinnedThreadIDs.remove(staleThreadID)
+        hiddenThreadIDs.remove(staleThreadID)
+        persistThreadPreferences()
+        removeThreadFromLocalState(staleThreadID)
+        cancelScheduledReconnect(resetAttempt: true)
+
+        if hasActiveConnection {
+            connectionState = .online
+        }
+
+        if let replacementThreadID = activeThreadID ?? threads.first?.threadID {
+            errorMessage = Self.staleThreadRecoveryMessage
+            attachThread(replacementThreadID)
+        } else {
+            errorMessage = Self.staleThreadRecoveryMessage
+        }
     }
 
     private func handleTransportLoss(message: String?) {
@@ -1556,6 +1624,49 @@ final class DaemonChatStore: ObservableObject {
         }
     }
 
+    private func reconcileThreadSummaries(_ incoming: [DaemonThreadSummary]) {
+        let incomingByID = Dictionary(uniqueKeysWithValues: incoming.map { ($0.threadID, $0) })
+        let removedThreadIDs = Set(allThreads.map(\.threadID)).subtracting(incomingByID.keys)
+        let removedActiveThreadID = activeThreadID.flatMap { removedThreadIDs.contains($0) ? $0 : nil }
+
+        for removedThreadID in removedThreadIDs {
+            snapshotsByThread.removeValue(forKey: removedThreadID)
+            timelineByThread.removeValue(forKey: removedThreadID)
+            cursorByThread.removeValue(forKey: removedThreadID)
+            assistantTurns.removeStates(for: removedThreadID)
+            pinnedThreadIDs.remove(removedThreadID)
+            hiddenThreadIDs.remove(removedThreadID)
+        }
+
+        let existingByID = Dictionary(uniqueKeysWithValues: allThreads.map { ($0.threadID, $0) })
+        allThreads = incoming.map { incomingSummary in
+            guard let existing = existingByID[incomingSummary.threadID] else {
+                return incomingSummary
+            }
+
+            return DaemonThreadSummary(
+                threadID: incomingSummary.threadID,
+                title: incomingSummary.title ?? existing.title,
+                workingDir: incomingSummary.workingDir,
+                createdAtMS: incomingSummary.createdAtMS,
+                state: incomingSummary.state,
+                participantCount: incomingSummary.participantCount,
+                lastThreadSeq: max(existing.lastThreadSeq, incomingSummary.lastThreadSeq)
+            )
+        }
+
+        if !removedThreadIDs.isEmpty {
+            persistThreadPreferences()
+        }
+
+        if removedActiveThreadID != nil {
+            pendingStaleThreadRecovery = true
+            errorMessage = Self.staleThreadRecoveryMessage
+        } else if pendingStaleThreadRecovery, activeThreadID != nil {
+            pendingStaleThreadRecovery = false
+        }
+    }
+
     private func mergeThreadSummary(_ incoming: DaemonThreadSummary) {
         if let index = allThreads.firstIndex(where: { $0.threadID == incoming.threadID }) {
             let existing = allThreads[index]
@@ -1640,7 +1751,7 @@ extension DaemonChatStore {
     }
 
     func testingSetConfiguredDaemonURL(_ value: String) {
-        daemonURLString = value
+        setDaemonURLString(value)
     }
 
     @discardableResult
