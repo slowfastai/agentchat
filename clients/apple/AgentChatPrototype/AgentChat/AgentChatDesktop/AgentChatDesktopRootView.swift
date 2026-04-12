@@ -10,6 +10,8 @@ struct AgentChatDesktopRootView: View {
     @State private var showInspector = true
     @State private var showNewThreadSheet = false
     @State private var showAddAgentsSheet = false
+    @State private var showAgentEditSheet = false
+    @State private var editingAgent: DaemonAgentSummary?
     @FocusState private var isComposerFocused: Bool
 
     private var filteredThreads: [DaemonThreadSummary] {
@@ -126,6 +128,18 @@ struct AgentChatDesktopRootView: View {
             }
             .environmentObject(store)
         }
+        .sheet(isPresented: $showAgentEditSheet) {
+            if let agent = editingAgent {
+                AgentEditSheet(
+                    agent: agent,
+                    initialSettings: store.agentSettings[agent.agentID] ?? AgentLocalSettings()
+                ) { name, avatarData, settings in
+                    store.updateAgentDisplayName(agent.agentID, displayName: name)
+                    store.updateAgentAvatar(agent.agentID, imageData: avatarData)
+                    store.updateAgentSettings(agent.agentID, settings: settings)
+                }
+            }
+        }
         .onAppear {
             synchronizeSelection()
             restoreComposerDraft(for: selectedThreadID ?? store.activeThreadID)
@@ -213,6 +227,19 @@ struct AgentChatDesktopRootView: View {
                             store.connectToAgent(id: agent.agentID)
                         }
                         .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                        .contextMenu {
+                            Button {
+                                editingAgent = agent
+                                showAgentEditSheet = true
+                            } label: {
+                                Label("Edit Agent", systemImage: "pencil")
+                            }
+                            Button {
+                                store.connectToAgent(id: agent.agentID)
+                            } label: {
+                                Label("Connect", systemImage: "link")
+                            }
+                        }
                     }
                 }
             }
