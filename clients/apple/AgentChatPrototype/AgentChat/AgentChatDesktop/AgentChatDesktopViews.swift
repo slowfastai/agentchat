@@ -182,6 +182,10 @@ struct ThreadSidebarRow: View {
     let title: String
     let isSelected: Bool
     let isActive: Bool
+    let isPinned: Bool
+    let onPin: () -> Void
+    let onHide: () -> Void
+    let onClose: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -195,6 +199,12 @@ struct ThreadSidebarRow: View {
                     .lineLimit(1)
 
                 Spacer()
+
+                if isPinned {
+                    Image(systemName: "pin.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
 
                 DesktopStatusPill(label: thread.state.capitalized, tint: isActive ? .green : .secondary)
             }
@@ -216,6 +226,27 @@ struct ThreadSidebarRow: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
         )
+        .contextMenu {
+            Button {
+                onPin()
+            } label: {
+                Label(isPinned ? "Unpin" : "Pin", systemImage: isPinned ? "pin.slash" : "pin")
+            }
+
+            Button {
+                onHide()
+            } label: {
+                Label("Hide", systemImage: "eye.slash")
+            }
+
+            Divider()
+
+            Button(role: .destructive) {
+                onClose()
+            } label: {
+                Label("Close Thread", systemImage: "xmark.circle")
+            }
+        }
     }
 }
 

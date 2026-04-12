@@ -209,7 +209,23 @@ struct AgentChatDesktopRootView: View {
                             thread: thread,
                             title: store.effectiveThreadTitle(for: thread),
                             isSelected: selectedThreadID == thread.threadID,
-                            isActive: store.activeThreadID == thread.threadID
+                            isActive: store.activeThreadID == thread.threadID,
+                            isPinned: store.isPinnedThread(thread.threadID),
+                            onPin: {
+                                store.togglePinnedThread(thread.threadID)
+                            },
+                            onHide: {
+                                store.hideThread(thread.threadID)
+                                if selectedThreadID == thread.threadID {
+                                    selectedThreadID = nil
+                                }
+                            },
+                            onClose: {
+                                store.closeThread(thread.threadID)
+                                if selectedThreadID == thread.threadID {
+                                    selectedThreadID = nil
+                                }
+                            }
                         )
                         .tag(Optional(thread.threadID))
                     }
