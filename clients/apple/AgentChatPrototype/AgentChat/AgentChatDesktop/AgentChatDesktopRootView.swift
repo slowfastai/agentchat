@@ -27,8 +27,8 @@ struct AgentChatDesktopRootView: View {
                 thread.threadID,
                 thread.workingDir,
             ]
-                .joined(separator: " ")
-                .lowercased()
+            .joined(separator: " ")
+            .lowercased()
             return searchable.contains(query)
         }
     }
@@ -94,6 +94,13 @@ struct AgentChatDesktopRootView: View {
                     Label("Settings", systemImage: "gearshape")
                 }
             }
+
+            ToolbarItem(placement: .keyboard) {
+                Button("Command Palette") {
+                    showCommandPalette = true
+                }
+                .keyboardShortcut("k", modifiers: [.command])
+            }
         }
         .background(
             LinearGradient(
@@ -105,14 +112,6 @@ struct AgentChatDesktopRootView: View {
                 endPoint: .bottomTrailing
             )
         )
-        .toolbar {
-            ToolbarItem(placement: .keyboard) {
-                Button("Command Palette") {
-                    showCommandPalette = true
-                }
-                .keyboardShortcut("k", modifiers: [.command])
-            }
-        }
         .sheet(isPresented: $showNewThreadSheet) {
             AgentSelectionSheet(
                 title: "Start New Thread",
@@ -157,7 +156,7 @@ struct AgentChatDesktopRootView: View {
                     showAddAgentsSheet: { showAddAgentsSheet = true },
                     toggleInspector: { showInspector.toggle() },
                     focusComposer: { scheduleComposerFocus() },
-                    connectAction: { /* Quick connect handled in sidebar */ }
+                    connectAction: { }
                 )
                 .environmentObject(store)
             }
@@ -171,9 +170,6 @@ struct AgentChatDesktopRootView: View {
             if selectedThreadID == nil || selectedThreadID != newValue {
                 selectedThreadID = newValue
             }
-        }
-        .onChange(of: store.desktopSortedThreads.map(\.threadID)) { _, _ in
-            synchronizeSelection()
         }
         .onChange(of: selectedThreadID) { oldValue, newValue in
             persistComposerDraft(for: oldValue)

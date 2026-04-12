@@ -11,6 +11,9 @@ struct AgentChatDesktopApp: App {
                 .environmentObject(store)
                 .onAppear {
                     store.start()
+                    Task {
+                        await NotificationHelper.requestAuthorization()
+                    }
                 }
                 .onOpenURL { url in
                     store.applyScannedConnectionPayload(url.absoluteString)
