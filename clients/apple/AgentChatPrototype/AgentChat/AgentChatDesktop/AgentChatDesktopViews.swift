@@ -2171,9 +2171,10 @@ struct AgentSelectionSheet: View {
     let agents: [DaemonAgentSummary]
     let initiallySelected: Set<String>
     let confirmLabel: String
-    let onConfirm: ([String]) -> Void
+    let onConfirm: ([String], String) -> Void
 
     @State private var selection: Set<String> = []
+    @State private var selectedDirectory: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -2181,6 +2182,22 @@ struct AgentSelectionSheet: View {
                 .font(.title2.weight(.bold))
             Text(subtitle)
                 .foregroundStyle(.secondary)
+
+            HStack(spacing: 12) {
+                Text("Directory:")
+                    .font(.body.weight(.medium))
+                Text(selectedDirectory.isEmpty ? "." : selectedDirectory)
+                    .font(.body.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Button {
+                    selectDirectory()
+                } label: {
+                    Image(systemName: "folder")
+                }
+                .buttonStyle(.bordered)
+            }
 
             List {
                 ForEach(agents, id: \.agentID) { agent in
@@ -2215,7 +2232,7 @@ struct AgentSelectionSheet: View {
                     .buttonStyle(.plain)
                 }
             }
-            .frame(minHeight: 280)
+            .frame(minHeight: 200)
 
             HStack {
                 Button("Cancel", role: .cancel) {
@@ -2223,7 +2240,9 @@ struct AgentSelectionSheet: View {
                 }
                 Spacer()
                 Button(confirmLabel) {
-                    onConfirm(Array(selection).sorted())
+                    let dir = selectedDirectory.isEmpty ? "." : selectedDirectory
+                    store.lastUsedWorkingDirectory = dir
+                    onConfirm(Array(selection).sorted(), dir)
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
@@ -2231,9 +2250,23 @@ struct AgentSelectionSheet: View {
             }
         }
         .padding(24)
-        .frame(width: 520, height: 480)
+        .frame(width: 520, height: 520)
         .onAppear {
             selection = initiallySelected.intersection(Set(agents.map(\.agentID)))
+            selectedDirectory = store.lastUsedWorkingDirectory
+        }
+    }
+
+    private func selectDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = store.lastUsedWorkingDirectory.isEmpty ? nil : URL(fileURLWithPath: store.lastUsedWorkingDirectory)
+
+        if panel.runModal() == .OK, let url = panel.url {
+            selectedDirectory = url.path
         }
     }
 }

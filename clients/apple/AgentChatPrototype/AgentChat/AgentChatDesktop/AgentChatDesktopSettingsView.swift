@@ -41,7 +41,7 @@ struct AgentChatDesktopSettingsView: View {
 
                     HStack(spacing: 10) {
                         Image(systemName: presentation.systemImage)
-                            .foregroundStyle(desktopTintColor(named: presentation.tintName))
+                            .foregroundStyle(AgentAvatarPalette.tintColor(named: presentation.tintName))
                         VStack(alignment: .leading, spacing: 2) {
                             Text(presentation.title)
                                 .font(.body.weight(.medium))
