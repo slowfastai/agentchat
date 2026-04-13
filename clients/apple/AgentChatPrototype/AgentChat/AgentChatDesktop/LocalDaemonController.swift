@@ -53,6 +53,14 @@ final class LocalDaemonController {
             return
         }
 
+        guard !isStarting else {
+            return
+        }
+
+        if let daemonProcess, daemonProcess.isRunning {
+            return
+        }
+
         guard let launchCommand = Self.resolvedLaunchCommand() else {
             logger.error("Unable to resolve a local agentchat-daemon launch command")
             return
