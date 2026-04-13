@@ -257,7 +257,6 @@ private struct DesktopHeroSurface<Content: View>: View {
                         LinearGradient(
                             colors: [
                                 tint.opacity(0.16),
-                                Color.white.opacity(0.04),
                                 Color.clear,
                             ],
                             startPoint: .topLeading,
@@ -328,7 +327,7 @@ struct SidebarOverviewCard: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
-        .background(Color.white.opacity(0.18), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.18), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 
@@ -356,7 +355,7 @@ struct OnlineAgentsPanel: View {
                         .foregroundStyle(.secondary)
                 } else {
                     VStack(spacing: 8) {
-                        ForEach(agents.prefix(5)) { agent in
+                        ForEach(agents) { agent in
                             HStack(spacing: 10) {
                                 ZStack {
                                     RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -504,7 +503,7 @@ struct WorkspaceStartView: View {
             Spacer(minLength: 0)
         }
         .padding(12)
-        .background(Color.white.opacity(0.18), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.18), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     private func suggestionCard(_ text: String) -> some View {
@@ -512,7 +511,7 @@ struct WorkspaceStartView: View {
             .font(.callout)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(14)
-            .background(Color.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.16), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
 
@@ -975,7 +974,7 @@ struct ThreadSidebarRow: View {
     }
 
     private var rowBackground: Color {
-        isSelected ? Color.accentColor.opacity(0.14) : Color.white.opacity(0.14)
+        isSelected ? Color.accentColor.opacity(0.14) : Color(nsColor: .controlBackgroundColor).opacity(0.14)
     }
 
     private var rowStroke: Color {
@@ -1772,7 +1771,7 @@ struct TimelineEntryCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.white.opacity(0.72))
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.8))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)

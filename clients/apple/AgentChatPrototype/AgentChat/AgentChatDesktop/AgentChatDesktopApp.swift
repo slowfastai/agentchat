@@ -45,16 +45,21 @@ final class AgentChatDesktopAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func resolveViewMenu(in mainMenu: NSMenu) -> NSMenu {
-        if let viewMenuItem = mainMenu.items.first(where: { $0.title == "View" }),
-           let submenu = viewMenuItem.submenu {
-            return submenu
+        for item in mainMenu.items {
+            if let submenu = item.submenu {
+                for subItem in submenu.items {
+                    if subItem.action == #selector(NSWindow.toggleFullScreen(_:)) {
+                        return submenu
+                    }
+                }
+            }
         }
 
         let viewMenu = NSMenu(title: "View")
         let viewMenuItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
         viewMenuItem.submenu = viewMenu
 
-        if let windowMenuIndex = mainMenu.items.firstIndex(where: { $0.title == "Window" }) {
+        if let windowMenuIndex = mainMenu.items.firstIndex(where: { $0.title == NSLocalizedString("Window", comment: "") }) {
             mainMenu.insertItem(viewMenuItem, at: windowMenuIndex)
         } else {
             mainMenu.addItem(viewMenuItem)

@@ -74,8 +74,12 @@ final class DaemonChatStore: ObservableObject {
     private static let baseReconnectDelaySeconds: Double = 1.0
     private static let maxReconnectDelaySeconds: Double = 30.0
 
+    private static let compactPreviewMaxLength = 5000
+
     private static func compactPreviewText(_ text: String) -> String {
-        text
+        let truncated = text.count > compactPreviewMaxLength ?
+            String(text.prefix(compactPreviewMaxLength)) : text
+        return truncated
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")

@@ -16,8 +16,28 @@ struct AgentChatDesktopRootView: View {
     @State private var editingAgent: DaemonAgentSummary?
     @State private var showCommandPalette = false
     @State private var showQuickConnect = false
+    @AppStorage("agentchat.desktop.seenThreadSequences") private var seenThreadSequencesJSON: String = "{}"
     @State private var seenThreadSequences: [String: UInt64] = [:]
     @FocusState private var isComposerFocused: Bool
+
+    private func loadSeenThreadSequences() -> [String: UInt64] {
+        guard let data = seenThreadSequencesJSON.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode([String: UInt64].self, from: data) else {
+            return [:]
+        }
+        return decoded
+    }
+
+    private func saveSeenThreadSequences(_ sequences: [String: UInt64]) {
+        if let encoded = try? JSONEncoder().encode(sequences),
+           let jsonString = String(data: encoded, encoding: .utf8) {
+            seenThreadSequencesJSON = jsonString
+        }
+    }
+
+    private func syncSeenThreadSequences() {
+        seenThreadSequences = loadSeenThreadSequences()
+    }
 
     private var filteredThreads: [DaemonThreadSummary] {
         guard !sidebarSearchText.isEmpty else {
@@ -73,11 +93,9 @@ struct AgentChatDesktopRootView: View {
             if showSidebar {
                 sidebar
                     .frame(minWidth: 320, idealWidth: 340, maxWidth: 520)
-
-                detailPane
-            } else {
-                detailPane
             }
+
+            detailPane
         }
         .toolbar {
             ToolbarItem(placement: .navigation) {
@@ -144,7 +162,9 @@ struct AgentChatDesktopRootView: View {
                 .keyboardShortcut("k", modifiers: [.command])
             }
         }
-        .background(AgentChatDesktopSidebarShortcutBridge())
+        .agentChatDesktopSidebarShortcut { [self] in
+            toggleSidebar()
+        }
         .background(
             LinearGradient(
                 colors: [
@@ -496,16 +516,21 @@ struct AgentChatDesktopRootView: View {
     }
 
     private func seedSeenThreadSequencesIfNeeded() {
-        if seenThreadSequences.isEmpty {
-            seenThreadSequences = Dictionary(
+        var current = loadSeenThreadSequences()
+        if current.isEmpty {
+            current = Dictionary(
                 uniqueKeysWithValues: store.desktopSortedThreads.map { ($0.threadID, $0.lastThreadSeq) }
             )
+            saveSeenThreadSequences(current)
+            seenThreadSequences = current
             return
         }
 
-        for thread in store.desktopSortedThreads where seenThreadSequences[thread.threadID] == nil {
-            seenThreadSequences[thread.threadID] = 0
+        for thread in store.desktopSortedThreads where current[thread.threadID] == nil {
+            current[thread.threadID] = 0
         }
+        saveSeenThreadSequences(current)
+        seenThreadSequences = current
     }
 
     private func markThreadAsSeen(threadID: String?) {
@@ -514,12 +539,18 @@ struct AgentChatDesktopRootView: View {
         else {
             return
         }
-        seenThreadSequences[threadID] = max(seenThreadSequences[threadID] ?? 0, summary.lastThreadSeq)
+        var current = seenThreadSequences
+        current[threadID] = max(current[threadID] ?? 0, summary.lastThreadSeq)
+        seenThreadSequences = current
+        saveSeenThreadSequences(current)
     }
 
     private func markActiveThreadAsSeen() {
         if let snapshot = activeThreadSnapshot {
-            seenThreadSequences[snapshot.threadID] = max(seenThreadSequences[snapshot.threadID] ?? 0, snapshot.lastThreadSeq)
+            var current = seenThreadSequences
+            current[snapshot.threadID] = max(current[snapshot.threadID] ?? 0, snapshot.lastThreadSeq)
+            seenThreadSequences = current
+            saveSeenThreadSequences(current)
             return
         }
 
@@ -542,16 +573,49 @@ struct AgentChatDesktopRootView: View {
     }
 }
 
-private struct AgentChatDesktopSidebarShortcutBridge: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        SidebarShortcutResponderView(frame: .zero)
+private struct AgentChatDesktopSidebarShortcutBridge: ViewModifier {
+    let toggleSidebar: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .background(ShortcutResponderViewRepresentable(toggleSidebar: toggleSidebar))
+            .onReceive(NotificationCenter.default.publisher(for: .agentChatDesktopToggleSidebar)) { notification in
+                if let sender = notification.object as? NSWindow, sender.isKeyWindow {
+                    toggleSidebar()
+                } else if notification.object == nil {
+                    toggleSidebar()
+                }
+            }
+    }
+}
+
+extension View {
+    func agentChatDesktopSidebarShortcut(toggleSidebar: @escaping () -> Void) -> some View {
+        modifier(AgentChatDesktopSidebarShortcutBridge(toggleSidebar: toggleSidebar))
+    }
+}
+
+private struct ShortcutResponderViewRepresentable: NSViewRepresentable {
+    let toggleSidebar: () -> Void
+
+    func makeNSView(context: Context) -> SidebarShortcutResponderView {
+        let view = SidebarShortcutResponderView(frame: .zero)
+        view.toggleAction = toggleSidebar
+        return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    func updateNSView(_ nsView: SidebarShortcutResponderView, context: Context) {
+        nsView.toggleAction = toggleSidebar
+    }
 }
 
 private final class SidebarShortcutResponderView: NSView {
+    var toggleAction: (() -> Void)?
+
     @objc override func agentChatToggleSidebar(_ sender: Any?) {
-        NotificationCenter.default.post(name: .agentChatDesktopToggleSidebar, object: nil)
+        NotificationCenter.default.post(
+            name: .agentChatDesktopToggleSidebar,
+            object: NSApp.keyWindow
+        )
     }
 }
