@@ -4,12 +4,18 @@ import AppKit
 struct AgentChatDesktopRootView: View {
     @EnvironmentObject private var store: DaemonChatStore
     @SceneStorage("agentchat.desktop.showSidebar") private var showSidebar = true
+    @SceneStorage("agentchat.desktop.selectedTab") private var selectedTab: String = DesktopTab.chats.rawValue
 
     @State private var selectedThreadID: String?
+
+    private enum DesktopTab: String {
+        case chats = "chats"
+        case agents = "agents"
+        case settings = "settings"
+    }
     @State private var sidebarSearchText = ""
     @State private var composerText = ""
     @State private var draftsByThreadID: [String: String] = [:]
-    @State private var showInspector = false
     @State private var showNewThreadSheet = false
     @State private var showAddAgentsSheet = false
     @State private var showAgentEditSheet = false
@@ -81,6 +87,17 @@ struct AgentChatDesktopRootView: View {
         return nil
     }
 
+    private func threadSnapshot(for thread: DaemonThreadSummary) -> DaemonThreadSnapshot? {
+        if store.activeThreadSnapshot?.threadID == thread.threadID {
+            return store.activeThreadSnapshot
+        }
+        return nil
+    }
+
+    private func threadParticipants(for thread: DaemonThreadSummary) -> [DaemonThreadParticipant] {
+        threadSnapshot(for: thread)?.participants ?? []
+    }
+
     private var selectedParticipantIDs: Binding<Set<String>> {
         Binding(
             get: { store.desktopSuggestedParticipantIDs(for: activeThreadSnapshot) },
@@ -89,13 +106,16 @@ struct AgentChatDesktopRootView: View {
     }
 
     var body: some View {
-        HSplitView {
-            if showSidebar {
-                sidebar
-                    .frame(minWidth: 320, idealWidth: 340, maxWidth: 520)
-            }
+        HStack(spacing: 0) {
+            DesktopVerticalTabRail(selectedTab: $selectedTab)
+            Divider()
+            HSplitView {
+                if showSidebar {
+                    sidebarContent
+                }
 
-            detailPane
+                detailPane
+            }
         }
         .toolbar {
             ToolbarItem(placement: .navigation) {
@@ -138,20 +158,6 @@ struct AgentChatDesktopRootView: View {
                     }
                 } label: {
                     Label("Workspace", systemImage: "slider.horizontal.3")
-                }
-
-                if activeThreadSummary != nil {
-                    Button {
-                        showInspector.toggle()
-                    } label: {
-                        Label(showInspector ? "Hide Inspector" : "Show Inspector", systemImage: "sidebar.right")
-                    }
-                }
-            }
-
-            ToolbarItem(placement: .automatic) {
-                SettingsLink {
-                    Label("Settings", systemImage: "gearshape")
                 }
             }
 
@@ -217,7 +223,6 @@ struct AgentChatDesktopRootView: View {
                     isPresented: $showCommandPalette,
                     showNewThreadSheet: { showNewThreadSheet = true },
                     showAddAgentsSheet: { showAddAgentsSheet = true },
-                    toggleInspector: { showInspector.toggle() },
                     focusComposer: { scheduleComposerFocus() },
                     connectAction: { showQuickConnect = true }
                 )
@@ -268,13 +273,17 @@ struct AgentChatDesktopRootView: View {
             seedSeenThreadSequencesIfNeeded()
             scheduleComposerFocus()
         }
+        .onChange(of: selectedTab) { _, newValue in
+            if newValue == DesktopTab.settings.rawValue && !showSidebar {
+                showSidebar = true
+            }
+        }
         .focusedSceneValue(
             \.agentChatDesktopActions,
             AgentChatDesktopActions(
                 showNewThreadSheet: { showNewThreadSheet = true },
                 showAddAgentsSheet: { showAddAgentsSheet = true },
                 toggleSidebar: { toggleSidebar() },
-                toggleInspector: { showInspector.toggle() },
                 focusComposer: { scheduleComposerFocus() }
             )
         )
@@ -283,13 +292,72 @@ struct AgentChatDesktopRootView: View {
         }
     }
 
+    @ViewBuilder
+    private var detail: some View {
+        if let thread = activeThreadSummary {
+            ThreadDetailView(
+                thread: thread,
+                snapshot: activeThreadSnapshot,
+                timeline: store.timeline,
+                connectionState: store.connectionState,
+                isLoadingThreadContent: store.desktopIsLoadingThreadContent(
+                    for: thread.threadID,
+                    snapshot: activeThreadSnapshot
+                ),
+                composerText: $composerText,
+                selectedParticipantIDs: selectedParticipantIDs,
+                isComposerFocused: $isComposerFocused,
+                onSend: sendCurrentMessage
+            )
+        } else {
+            ContentUnavailableView(
+                "Select a Thread",
+                systemImage: "message.badge.circle",
+                description: Text("Open an existing thread or start a new conversation from the toolbar.")
+            )
+        }
+    }
+
     private var detailPane: some View {
         detail
             .frame(minWidth: 720, maxWidth: .infinity, maxHeight: .infinity)
-            .inspector(isPresented: $showInspector) {
-                inspector
-                    .inspectorColumnWidth(min: 270, ideal: 320, max: 420)
+    }
+
+    @ViewBuilder
+    private var sidebarContent: some View {
+        switch DesktopTab(rawValue: selectedTab) ?? .chats {
+        case .chats:
+            sidebar
+                .frame(minWidth: 320, idealWidth: 340, maxWidth: 520)
+        case .agents:
+            agentsSidebarPanel
+                .frame(minWidth: 280, idealWidth: 320, maxWidth: 480)
+        case .settings:
+            DesktopSettingsSidebarPanel()
+                .frame(minWidth: 280, idealWidth: 320, maxWidth: 480)
+        }
+    }
+
+    private var agentsSidebarPanel: some View {
+        List {
+            Section("Online Agents") {
+                if store.desktopOnlineAgents.isEmpty {
+                    ContentUnavailableView(
+                        "No Agents Online",
+                        systemImage: "person.2",
+                        description: Text("Reconnect to your daemon to load available agents.")
+                    )
+                } else {
+                    ForEach(store.desktopOnlineAgents) { agent in
+                        AgentSidebarRow(agent: agent) {
+                            store.connectToAgent(id: agent.agentID)
+                        }
+                    }
+                }
             }
+        }
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
     }
 
     private var sidebar: some View {
@@ -355,6 +423,15 @@ struct AgentChatDesktopRootView: View {
                             },
                             onOpenInNewWindow: {
                                 openThreadInNewWindow(thread)
+                            },
+                            snapshot: threadSnapshot(for: thread),
+                            participants: threadParticipants(for: thread),
+                            onShowAddAgents: {
+                                selectedThreadID = thread.threadID
+                                if store.activeThreadID != thread.threadID {
+                                    store.attachThread(thread.threadID)
+                                }
+                                showAddAgentsSheet = true
                             }
                         )
                         .tag(Optional(thread.threadID))
@@ -364,7 +441,7 @@ struct AgentChatDesktopRootView: View {
 
             if !recentThreads.isEmpty {
                 Section("Recent") {
-                    ForEach(recentThreads) { thread in
+ForEach(recentThreads) { thread in
                         ThreadSidebarRow(
                             thread: thread,
                             title: store.effectiveThreadTitle(for: thread),
@@ -390,71 +467,22 @@ struct AgentChatDesktopRootView: View {
                             },
                             onOpenInNewWindow: {
                                 openThreadInNewWindow(thread)
+                            },
+                            snapshot: threadSnapshot(for: thread),
+                            participants: threadParticipants(for: thread),
+                            onShowAddAgents: {
+                                selectedThreadID = thread.threadID
+                                if store.activeThreadID != thread.threadID {
+                                    store.attachThread(thread.threadID)
+                                }
+                                showAddAgentsSheet = true
                             }
                         )
                         .tag(Optional(thread.threadID))
                     }
                 }
             }
-
-            Section {
-                OnlineAgentsPanel(
-                    agents: store.desktopOnlineAgents,
-                    onConnect: { agent in
-                        store.connectToAgent(id: agent.agentID)
-                    },
-                    onEdit: { agent in
-                        editingAgent = agent
-                        showAgentEditSheet = true
-                    }
-                )
-                .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
-                .listRowBackground(Color.clear)
-            }
         }
-        .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
-        .searchable(text: $sidebarSearchText, prompt: "Search threads or paths")
-    }
-
-    @ViewBuilder
-    private var detail: some View {
-        if let thread = activeThreadSummary {
-            ThreadDetailView(
-                thread: thread,
-                snapshot: activeThreadSnapshot,
-                timeline: store.timeline,
-                connectionState: store.connectionState,
-                isLoadingThreadContent: store.desktopIsLoadingThreadContent(
-                    for: thread.threadID,
-                    snapshot: activeThreadSnapshot
-                ),
-                composerText: $composerText,
-                selectedParticipantIDs: selectedParticipantIDs,
-                isComposerFocused: $isComposerFocused,
-                onSend: sendCurrentMessage
-            )
-        } else {
-            WorkspaceStartView(
-                connectionState: store.connectionState,
-                hasConfiguredDaemonURL: store.hasConfiguredDaemonURL,
-                onlineAgentCount: store.desktopOnlineAgents.count,
-                threadCount: store.desktopSortedThreads.count,
-                onNewThread: { showNewThreadSheet = true },
-                onReconnect: { store.reconnectNow() },
-                onConnect: { showQuickConnect = true }
-            )
-        }
-    }
-
-    private var inspector: some View {
-        ThreadInspectorView(
-            thread: activeThreadSummary,
-            snapshot: activeThreadSnapshot,
-            participants: activeThreadSnapshot?.participants ?? [],
-            selectedParticipantIDs: store.desktopSuggestedParticipantIDs(for: activeThreadSnapshot),
-            showAddAgentsSheet: $showAddAgentsSheet
-        )
     }
 
     private func synchronizeSelection() {
