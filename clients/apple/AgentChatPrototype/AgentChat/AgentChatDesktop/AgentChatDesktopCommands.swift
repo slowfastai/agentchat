@@ -3,6 +3,7 @@ import SwiftUI
 struct AgentChatDesktopActions {
     let showNewThreadSheet: () -> Void
     let showAddAgentsSheet: () -> Void
+    let toggleSidebar: () -> Void
     let toggleInspector: () -> Void
     let focusComposer: () -> Void
 }
@@ -49,6 +50,10 @@ struct AgentChatDesktopCommands: Commands {
             .disabled(!store.hasConfiguredDaemonURL)
 
             Divider()
+
+            Button("Toggle Sidebar") {
+                actions?.toggleSidebar()
+            }
 
             Button("Toggle Inspector") {
                 actions?.toggleInspector()

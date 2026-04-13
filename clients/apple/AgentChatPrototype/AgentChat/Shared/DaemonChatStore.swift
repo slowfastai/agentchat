@@ -74,6 +74,13 @@ final class DaemonChatStore: ObservableObject {
     private static let baseReconnectDelaySeconds: Double = 1.0
     private static let maxReconnectDelaySeconds: Double = 30.0
 
+    private static func compactPreviewText(_ text: String) -> String {
+        text
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
     private struct PersistedThreadState: Codable {
         let allThreads: [DaemonThreadSummary]
         let snapshotsByThread: [String: DaemonThreadSnapshot]
@@ -138,6 +145,44 @@ final class DaemonChatStore: ObservableObject {
 
     func participants(for threadID: String) -> [DaemonThreadParticipant] {
         snapshotsByThread[threadID]?.participants ?? []
+    }
+
+    func threadPreview(for threadID: String) -> String? {
+        if let entry = timelineByThread[threadID]?.last {
+            let primaryBody = entry.body.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !primaryBody.isEmpty {
+                return Self.compactPreviewText(primaryBody)
+            }
+
+            if let planBody = entry.planBody?.trimmingCharacters(in: .whitespacesAndNewlines), !planBody.isEmpty {
+                return "Plan: " + Self.compactPreviewText(planBody)
+            }
+
+            if let thinkingBody = entry.thinkingBody?.trimmingCharacters(in: .whitespacesAndNewlines), !thinkingBody.isEmpty {
+                return "Thinking: " + Self.compactPreviewText(thinkingBody)
+            }
+
+            let trimmedTitle = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedTitle.isEmpty {
+                return trimmedTitle
+            }
+        }
+
+        if let snapshot = snapshotsByThread[threadID] {
+            let participantNames = snapshot.participants
+                .filter(\.isAgent)
+                .map(\.displayName)
+            if !participantNames.isEmpty {
+                return participantNames.joined(separator: " · ")
+            }
+
+            let workingDirName = URL(fileURLWithPath: snapshot.workingDir).lastPathComponent
+            if !workingDirName.isEmpty {
+                return workingDirName
+            }
+        }
+
+        return nil
     }
 
     func togglePinnedThread(_ threadID: String) {

@@ -1,7 +1,72 @@
 import SwiftUI
+import AppKit
+
+extension Notification.Name {
+    static let agentChatDesktopToggleSidebar = Notification.Name("agentchat.desktop.toggleSidebar")
+}
+
+extension NSResponder {
+    @objc func agentChatToggleSidebar(_ sender: Any?) {
+        nextResponder?.tryToPerform(#selector(agentChatToggleSidebar(_:)), with: sender)
+    }
+}
+
+@MainActor
+final class AgentChatDesktopAppDelegate: NSObject, NSApplicationDelegate {
+    private let toggleSidebarMenuItemTag = 4_207
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            self?.installToggleSidebarMenuItemIfNeeded()
+        }
+    }
+
+    private func installToggleSidebarMenuItemIfNeeded() {
+        guard let mainMenu = NSApp.mainMenu else { return }
+        let targetMenu = resolveViewMenu(in: mainMenu)
+
+        for existingItem in targetMenu.items where existingItem.tag == toggleSidebarMenuItemTag {
+            targetMenu.removeItem(existingItem)
+        }
+
+        if let lastItem = targetMenu.items.last, !lastItem.isSeparatorItem {
+            targetMenu.addItem(.separator())
+        }
+
+        let item = NSMenuItem(
+            title: "Toggle Sidebar",
+            action: #selector(NSResponder.agentChatToggleSidebar(_:)),
+            keyEquivalent: "b"
+        )
+        item.tag = toggleSidebarMenuItemTag
+        item.keyEquivalentModifierMask = [.command]
+        item.target = nil
+        targetMenu.addItem(item)
+    }
+
+    private func resolveViewMenu(in mainMenu: NSMenu) -> NSMenu {
+        if let viewMenuItem = mainMenu.items.first(where: { $0.title == "View" }),
+           let submenu = viewMenuItem.submenu {
+            return submenu
+        }
+
+        let viewMenu = NSMenu(title: "View")
+        let viewMenuItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
+        viewMenuItem.submenu = viewMenu
+
+        if let windowMenuIndex = mainMenu.items.firstIndex(where: { $0.title == "Window" }) {
+            mainMenu.insertItem(viewMenuItem, at: windowMenuIndex)
+        } else {
+            mainMenu.addItem(viewMenuItem)
+        }
+
+        return viewMenu
+    }
+}
 
 @main
 struct AgentChatDesktopApp: App {
+    @NSApplicationDelegateAdaptor(AgentChatDesktopAppDelegate.self) private var appDelegate
     @StateObject private var store = DaemonChatStore()
     @State private var openWindows: [UUID: WindowProxy] = [:]
 
