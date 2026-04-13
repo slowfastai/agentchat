@@ -1,6 +1,4 @@
 import SwiftUI
-
-#if os(macOS)
 import AppKit
 
 final class AgentAvatarImageCache {
@@ -25,7 +23,6 @@ private extension Data {
         return "\(count)-\(prefixBytes)-\(suffixBytes)"
     }
 }
-#endif
 
 enum AgentAvatarPalette {
     static func tintColor(named tintName: String) -> Color {
@@ -47,7 +44,6 @@ struct AgentAvatarView: View {
 
     var body: some View {
         ZStack {
-            #if os(macOS)
             if let imageData = agent.avatarImageData,
                let nsImage = AgentAvatarImageCache.decodedImage(
                    from: imageData,
@@ -75,35 +71,6 @@ struct AgentAvatarView: View {
                 }
                 .frame(width: size, height: size)
             }
-            #else
-            if let imageData = agent.avatarImageData,
-               let uiImage = AgentAvatarImageCache.decodedImage(
-                   from: imageData,
-                   cacheID: "agent-\(agent.agentID)"
-               ) {
-                Image(uiImage: uiImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: size, height: size)
-                    .clipShape(Circle())
-            } else if let assetName = agent.defaultAvatarAssetName {
-                AgentDefaultAvatarArtwork(
-                    assetName: assetName,
-                    size: size,
-                    shape: .circle
-                )
-            } else {
-                ZStack {
-                    Circle()
-                        .fill(AgentAvatarPalette.tintColor(named: agent.tintName).opacity(0.14))
-
-                    Image(systemName: agent.symbolName)
-                        .font(.system(size: size * 0.45, weight: .semibold))
-                        .foregroundStyle(AgentAvatarPalette.tintColor(named: agent.tintName))
-                }
-                .frame(width: size, height: size)
-            }
-            #endif
         }
     }
 }

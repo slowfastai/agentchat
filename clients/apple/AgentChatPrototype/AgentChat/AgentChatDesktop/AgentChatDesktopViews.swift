@@ -14,7 +14,7 @@ struct CommandPaletteView: View {
     let connectAction: () -> Void
 
     private var commands: [CommandItem] {
-        let allCommands: [CommandItem] = [
+        var allCommands: [CommandItem] = [
             CommandItem(title: "New Thread", shortcut: "⌘N", icon: "plus.bubble") { [self] in
                 showNewThreadSheet()
                 dismiss()
@@ -39,11 +39,16 @@ struct CommandPaletteView: View {
                 focusComposer()
                 dismiss()
             },
-            CommandItem(title: "Connect", shortcut: "", icon: "link") { [self] in
+        ]
+
+        if !store.connectionState.isOnline {
+            allCommands.append(
+                CommandItem(title: "Connect", shortcut: "", icon: "link") { [self] in
                 connectAction()
                 dismiss()
-            },
-        ]
+                }
+            )
+        }
 
         if searchText.isEmpty {
             return allCommands
@@ -271,8 +276,8 @@ private struct InspectorFactRow: View {
 
 struct ConnectionStatusCard: View {
     @EnvironmentObject private var store: DaemonChatStore
+    @Binding var showQuickConnect: Bool
     @State private var quickConnectURL = ""
-    @State private var showQuickConnect = false
 
     private var presentation: AgentChatDesktopConnectionPresentation {
         AgentChatDesktopConnectionPresentation(state: store.connectionState)

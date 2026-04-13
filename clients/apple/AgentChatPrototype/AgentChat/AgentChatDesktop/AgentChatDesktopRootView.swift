@@ -13,6 +13,7 @@ struct AgentChatDesktopRootView: View {
     @State private var showAgentEditSheet = false
     @State private var editingAgent: DaemonAgentSummary?
     @State private var showCommandPalette = false
+    @State private var showQuickConnect = false
     @FocusState private var isComposerFocused: Bool
 
     private var filteredThreads: [DaemonThreadSummary] {
@@ -156,7 +157,7 @@ struct AgentChatDesktopRootView: View {
                     showAddAgentsSheet: { showAddAgentsSheet = true },
                     toggleInspector: { showInspector.toggle() },
                     focusComposer: { scheduleComposerFocus() },
-                    connectAction: { }
+                    connectAction: { showQuickConnect = true }
                 )
                 .environmentObject(store)
             }
@@ -208,7 +209,7 @@ struct AgentChatDesktopRootView: View {
     private var sidebar: some View {
         List(selection: $selectedThreadID) {
             Section {
-                ConnectionStatusCard()
+                ConnectionStatusCard(showQuickConnect: $showQuickConnect)
                     .listRowInsets(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
                     .listRowBackground(Color.clear)
             }
@@ -375,6 +376,11 @@ struct AgentChatDesktopRootView: View {
 
     private func openThreadInNewWindow(_ thread: DaemonThreadSummary) {
         store.attachThread(thread.threadID)
-        NSWorkspace.shared.open(URL(string: "agentchat://thread/\(thread.threadID)")!)
+        guard let url = AgentChatDesktopURL.threadLink(for: thread.threadID) else {
+            store.errorMessage = "Couldn't create a desktop thread link for \(thread.threadID)."
+            return
+        }
+
+        NSWorkspace.shared.open(url)
     }
 }
