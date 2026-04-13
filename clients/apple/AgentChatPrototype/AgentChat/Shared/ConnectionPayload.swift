@@ -1,15 +1,15 @@
 import Foundation
 
-enum RelayPairingMode: String, Codable, Equatable {
+nonisolated enum RelayPairingMode: String, Codable, Equatable {
     case dev
     case claim
 }
 
-enum RelayCryptoMode: String, Codable, Equatable {
+nonisolated enum RelayCryptoMode: String, Codable, Equatable {
     case dev
 }
 
-struct RelayConnectionPayload: Codable, Equatable {
+nonisolated struct RelayConnectionPayload: Codable, Equatable {
     let wsURL: String
     let deviceID: String?
     let relayToken: String?
@@ -19,7 +19,7 @@ struct RelayConnectionPayload: Codable, Equatable {
     let agentIDs: [String]
 }
 
-enum ScannedDaemonConnectionPayload: Equatable {
+nonisolated enum ScannedDaemonConnectionPayload: Equatable {
     case direct(url: String, agentIDs: [String])
     case relay(RelayConnectionPayload)
 
@@ -33,7 +33,7 @@ enum ScannedDaemonConnectionPayload: Equatable {
     }
 }
 
-func parseScannedDaemonConnectionPayload(from payload: String) -> ScannedDaemonConnectionPayload? {
+nonisolated func parseScannedDaemonConnectionPayload(from payload: String) -> ScannedDaemonConnectionPayload? {
     let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else {
         return nil
@@ -128,7 +128,7 @@ func parseScannedDaemonConnectionPayload(from payload: String) -> ScannedDaemonC
 }
 
 private extension String {
-    var trimmedNonEmpty: String? {
+    nonisolated var trimmedNonEmpty: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }

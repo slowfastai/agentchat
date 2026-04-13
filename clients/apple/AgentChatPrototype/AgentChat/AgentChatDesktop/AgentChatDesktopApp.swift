@@ -21,6 +21,10 @@ final class AgentChatDesktopAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        LocalDaemonController.shared.stopManagedDaemonIfNeeded()
+    }
+
     private func installToggleSidebarMenuItemIfNeeded() {
         guard let mainMenu = NSApp.mainMenu else { return }
         let targetMenu = resolveViewMenu(in: mainMenu)
@@ -75,15 +79,25 @@ struct AgentChatDesktopApp: App {
     @StateObject private var store = DaemonChatStore()
     @State private var openWindows: [UUID: WindowProxy] = [:]
 
+    private func ensureLocalDaemonIfNeeded() {
+        Task {
+            await LocalDaemonController.shared.ensureRunning(for: store.daemonURL)
+        }
+    }
+
     var body: some Scene {
         WindowGroup("AgentChat Desktop") {
             AgentChatDesktopRootView()
                 .environmentObject(store)
                 .onAppear {
+                    ensureLocalDaemonIfNeeded()
                     store.start()
                     Task {
                         await NotificationHelper.requestAuthorization()
                     }
+                }
+                .onChange(of: store.daemonURL) { _, _ in
+                    ensureLocalDaemonIfNeeded()
                 }
                 .onOpenURL { url in
                     if let threadID = AgentChatDesktopURL.threadID(from: url) {
