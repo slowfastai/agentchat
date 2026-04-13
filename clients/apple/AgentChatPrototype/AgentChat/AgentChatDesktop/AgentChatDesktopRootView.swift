@@ -1,20 +1,43 @@
 import SwiftUI
+import AppKit
 
 struct AgentChatDesktopRootView: View {
     @EnvironmentObject private var store: DaemonChatStore
+    @SceneStorage("agentchat.desktop.showSidebar") private var showSidebar = true
 
     @State private var selectedThreadID: String?
     @State private var sidebarSearchText = ""
     @State private var composerText = ""
     @State private var draftsByThreadID: [String: String] = [:]
-    @State private var showInspector = true
+    @State private var showInspector = false
     @State private var showNewThreadSheet = false
     @State private var showAddAgentsSheet = false
     @State private var showAgentEditSheet = false
     @State private var editingAgent: DaemonAgentSummary?
     @State private var showCommandPalette = false
     @State private var showQuickConnect = false
+    @AppStorage("agentchat.desktop.seenThreadSequences") private var seenThreadSequencesJSON: String = "{}"
+    @State private var seenThreadSequences: [String: UInt64] = [:]
     @FocusState private var isComposerFocused: Bool
+
+    private func loadSeenThreadSequences() -> [String: UInt64] {
+        guard let data = seenThreadSequencesJSON.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode([String: UInt64].self, from: data) else {
+            return [:]
+        }
+        return decoded
+    }
+
+    private func saveSeenThreadSequences(_ sequences: [String: UInt64]) {
+        if let encoded = try? JSONEncoder().encode(sequences),
+           let jsonString = String(data: encoded, encoding: .utf8) {
+            seenThreadSequencesJSON = jsonString
+        }
+    }
+
+    private func syncSeenThreadSequences() {
+        seenThreadSequences = loadSeenThreadSequences()
+    }
 
     private var filteredThreads: [DaemonThreadSummary] {
         guard !sidebarSearchText.isEmpty else {
@@ -32,6 +55,14 @@ struct AgentChatDesktopRootView: View {
             .lowercased()
             return searchable.contains(query)
         }
+    }
+
+    private var pinnedThreads: [DaemonThreadSummary] {
+        filteredThreads.filter { store.isPinnedThread($0.threadID) }
+    }
+
+    private var recentThreads: [DaemonThreadSummary] {
+        filteredThreads.filter { !store.isPinnedThread($0.threadID) }
     }
 
     private var activeThreadSummary: DaemonThreadSummary? {
@@ -58,35 +89,63 @@ struct AgentChatDesktopRootView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-        } detail: {
-            detail
-                .inspector(isPresented: $showInspector) {
-                    inspector
-                        .inspectorColumnWidth(min: 270, ideal: 320, max: 420)
-                }
+        HSplitView {
+            if showSidebar {
+                sidebar
+                    .frame(minWidth: 320, idealWidth: 340, maxWidth: 520)
+            }
+
+            detailPane
         }
-        .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 380)
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    toggleSidebar()
+                } label: {
+                    Image(systemName: showSidebar ? "sidebar.left" : "sidebar.right")
+                }
+                .help(showSidebar ? "Hide Sidebar (Command-B)" : "Show Sidebar (Command-B)")
+            }
+
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     showNewThreadSheet = true
                 } label: {
                     Label("New Thread", systemImage: "square.and.pencil")
                 }
+                .buttonStyle(.borderedProminent)
 
-                Button {
-                    store.reconnectNow()
+                Menu {
+                    Button {
+                        store.reconnectNow()
+                    } label: {
+                        Label("Reconnect", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(!store.hasConfiguredDaemonURL)
+
+                    Button {
+                        showQuickConnect = true
+                    } label: {
+                        Label("Connect", systemImage: "link")
+                    }
+
+                    Divider()
+
+                    Button {
+                        showCommandPalette = true
+                    } label: {
+                        Label("Command Palette", systemImage: "command")
+                    }
                 } label: {
-                    Label("Reconnect", systemImage: "arrow.clockwise")
+                    Label("Workspace", systemImage: "slider.horizontal.3")
                 }
-                .disabled(!store.hasConfiguredDaemonURL)
 
-                Button {
-                    showInspector.toggle()
-                } label: {
-                    Label(showInspector ? "Hide Inspector" : "Show Inspector", systemImage: "sidebar.right")
+                if activeThreadSummary != nil {
+                    Button {
+                        showInspector.toggle()
+                    } label: {
+                        Label(showInspector ? "Hide Inspector" : "Show Inspector", systemImage: "sidebar.right")
+                    }
                 }
             }
 
@@ -103,11 +162,14 @@ struct AgentChatDesktopRootView: View {
                 .keyboardShortcut("k", modifiers: [.command])
             }
         }
+        .agentChatDesktopSidebarShortcut { [self] in
+            toggleSidebar()
+        }
         .background(
             LinearGradient(
                 colors: [
-                    Color(red: 0.95, green: 0.95, blue: 0.93),
-                    Color(red: 0.90, green: 0.90, blue: 0.87),
+                    Color(red: 0.972, green: 0.968, blue: 0.948),
+                    Color(red: 0.942, green: 0.934, blue: 0.904),
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
@@ -164,8 +226,10 @@ struct AgentChatDesktopRootView: View {
         }
         .onAppear {
             synchronizeSelection()
+            seedSeenThreadSequencesIfNeeded()
             restoreComposerDraft(for: selectedThreadID ?? store.activeThreadID)
             scheduleComposerFocus()
+            markActiveThreadAsSeen()
         }
         .onChange(of: store.activeThreadID) { _, newValue in
             if selectedThreadID == nil || selectedThreadID != newValue {
@@ -175,6 +239,7 @@ struct AgentChatDesktopRootView: View {
         .onChange(of: selectedThreadID) { oldValue, newValue in
             persistComposerDraft(for: oldValue)
             restoreComposerDraft(for: newValue)
+            markThreadAsSeen(threadID: newValue)
 
             guard let newValue, store.activeThreadID != newValue else {
                 scheduleComposerFocus()
@@ -193,6 +258,14 @@ struct AgentChatDesktopRootView: View {
             }
         }
         .onChange(of: activeThreadSnapshot?.threadID) { _, _ in
+            markActiveThreadAsSeen()
+            scheduleComposerFocus()
+        }
+        .onChange(of: activeThreadSnapshot?.lastThreadSeq) { _, _ in
+            markActiveThreadAsSeen()
+        }
+        .onChange(of: store.threads) { _, _ in
+            seedSeenThreadSequencesIfNeeded()
             scheduleComposerFocus()
         }
         .focusedSceneValue(
@@ -200,35 +273,70 @@ struct AgentChatDesktopRootView: View {
             AgentChatDesktopActions(
                 showNewThreadSheet: { showNewThreadSheet = true },
                 showAddAgentsSheet: { showAddAgentsSheet = true },
+                toggleSidebar: { toggleSidebar() },
                 toggleInspector: { showInspector.toggle() },
                 focusComposer: { scheduleComposerFocus() }
             )
         )
+        .onReceive(NotificationCenter.default.publisher(for: .agentChatDesktopToggleSidebar)) { _ in
+            toggleSidebar()
+        }
+    }
+
+    private var detailPane: some View {
+        detail
+            .frame(minWidth: 720, maxWidth: .infinity, maxHeight: .infinity)
+            .inspector(isPresented: $showInspector) {
+                inspector
+                    .inspectorColumnWidth(min: 270, ideal: 320, max: 420)
+            }
     }
 
     private var sidebar: some View {
         List(selection: $selectedThreadID) {
             Section {
+                SidebarOverviewCard(
+                    threadCount: store.desktopSortedThreads.count,
+                    onlineAgentCount: store.desktopOnlineAgents.count,
+                    isOnline: store.connectionState.isOnline
+                )
+                .listRowInsets(EdgeInsets(top: 12, leading: 12, bottom: 6, trailing: 12))
+                .listRowBackground(Color.clear)
+
                 ConnectionStatusCard(showQuickConnect: $showQuickConnect)
-                    .listRowInsets(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
+                    .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 10, trailing: 12))
                     .listRowBackground(Color.clear)
             }
 
-            Section("Threads") {
+            Section("Pinned") {
                 if filteredThreads.isEmpty {
                     ContentUnavailableView(
                         "No Threads",
                         systemImage: "ellipsis.message",
                         description: Text("Create a thread or reconnect to your daemon to load conversations.")
                     )
+                    .overlay(alignment: .bottom) {
+                        Button("New Thread") {
+                            showNewThreadSheet = true
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .padding(.bottom, 10)
+                    }
                     .listRowBackground(Color.clear)
+                } else if pinnedThreads.isEmpty {
+                    Text("Pin important threads to keep them at the top.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .listRowBackground(Color.clear)
                 } else {
-                    ForEach(filteredThreads) { thread in
+                    ForEach(pinnedThreads) { thread in
                         ThreadSidebarRow(
                             thread: thread,
                             title: store.effectiveThreadTitle(for: thread),
+                            preview: store.threadPreview(for: thread.threadID),
                             isSelected: selectedThreadID == thread.threadID,
                             isActive: store.activeThreadID == thread.threadID,
+                            isUnread: isThreadUnread(thread),
                             isPinned: store.isPinnedThread(thread.threadID),
                             onPin: {
                                 store.togglePinnedThread(thread.threadID)
@@ -254,36 +362,59 @@ struct AgentChatDesktopRootView: View {
                 }
             }
 
-            Section("Online Agents") {
-                if store.desktopOnlineAgents.isEmpty {
-                    Text("Reconnect to load available agents.")
-                        .foregroundStyle(.secondary)
-                        .listRowBackground(Color.clear)
-                } else {
-                    ForEach(store.desktopOnlineAgents) { agent in
-                        AgentSidebarRow(agent: agent) {
-                            store.connectToAgent(id: agent.agentID)
-                        }
-                        .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
-                        .contextMenu {
-                            Button {
-                                editingAgent = agent
-                                showAgentEditSheet = true
-                            } label: {
-                                Label("Edit Agent", systemImage: "pencil")
+            if !recentThreads.isEmpty {
+                Section("Recent") {
+                    ForEach(recentThreads) { thread in
+                        ThreadSidebarRow(
+                            thread: thread,
+                            title: store.effectiveThreadTitle(for: thread),
+                            preview: store.threadPreview(for: thread.threadID),
+                            isSelected: selectedThreadID == thread.threadID,
+                            isActive: store.activeThreadID == thread.threadID,
+                            isUnread: isThreadUnread(thread),
+                            isPinned: store.isPinnedThread(thread.threadID),
+                            onPin: {
+                                store.togglePinnedThread(thread.threadID)
+                            },
+                            onHide: {
+                                store.hideThread(thread.threadID)
+                                if selectedThreadID == thread.threadID {
+                                    selectedThreadID = nil
+                                }
+                            },
+                            onClose: {
+                                store.closeThread(thread.threadID)
+                                if selectedThreadID == thread.threadID {
+                                    selectedThreadID = nil
+                                }
+                            },
+                            onOpenInNewWindow: {
+                                openThreadInNewWindow(thread)
                             }
-                            Button {
-                                store.connectToAgent(id: agent.agentID)
-                            } label: {
-                                Label("Connect", systemImage: "link")
-                            }
-                        }
+                        )
+                        .tag(Optional(thread.threadID))
                     }
                 }
             }
+
+            Section {
+                OnlineAgentsPanel(
+                    agents: store.desktopOnlineAgents,
+                    onConnect: { agent in
+                        store.connectToAgent(id: agent.agentID)
+                    },
+                    onEdit: { agent in
+                        editingAgent = agent
+                        showAgentEditSheet = true
+                    }
+                )
+                .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                .listRowBackground(Color.clear)
+            }
         }
+        .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
-        .searchable(text: $sidebarSearchText, prompt: "Search threads")
+        .searchable(text: $sidebarSearchText, prompt: "Search threads or paths")
     }
 
     @ViewBuilder
@@ -304,10 +435,14 @@ struct AgentChatDesktopRootView: View {
                 onSend: sendCurrentMessage
             )
         } else {
-            ContentUnavailableView(
-                "Select a Thread",
-                systemImage: "message.badge.circle",
-                description: Text("Open an existing thread or start a new conversation from the toolbar.")
+            WorkspaceStartView(
+                connectionState: store.connectionState,
+                hasConfiguredDaemonURL: store.hasConfiguredDaemonURL,
+                onlineAgentCount: store.desktopOnlineAgents.count,
+                threadCount: store.desktopSortedThreads.count,
+                onNewThread: { showNewThreadSheet = true },
+                onReconnect: { store.reconnectNow() },
+                onConnect: { showQuickConnect = true }
             )
         }
     }
@@ -374,6 +509,59 @@ struct AgentChatDesktopRootView: View {
         }
     }
 
+    private func toggleSidebar() {
+        withAnimation(.easeInOut(duration: 0.16)) {
+            showSidebar.toggle()
+        }
+    }
+
+    private func seedSeenThreadSequencesIfNeeded() {
+        var current = loadSeenThreadSequences()
+        if current.isEmpty {
+            current = Dictionary(
+                uniqueKeysWithValues: store.desktopSortedThreads.map { ($0.threadID, $0.lastThreadSeq) }
+            )
+            saveSeenThreadSequences(current)
+            seenThreadSequences = current
+            return
+        }
+
+        for thread in store.desktopSortedThreads where current[thread.threadID] == nil {
+            current[thread.threadID] = 0
+        }
+        saveSeenThreadSequences(current)
+        seenThreadSequences = current
+    }
+
+    private func markThreadAsSeen(threadID: String?) {
+        guard let threadID,
+              let summary = store.desktopSortedThreads.first(where: { $0.threadID == threadID })
+        else {
+            return
+        }
+        var current = seenThreadSequences
+        current[threadID] = max(current[threadID] ?? 0, summary.lastThreadSeq)
+        seenThreadSequences = current
+        saveSeenThreadSequences(current)
+    }
+
+    private func markActiveThreadAsSeen() {
+        if let snapshot = activeThreadSnapshot {
+            var current = seenThreadSequences
+            current[snapshot.threadID] = max(current[snapshot.threadID] ?? 0, snapshot.lastThreadSeq)
+            seenThreadSequences = current
+            saveSeenThreadSequences(current)
+            return
+        }
+
+        markThreadAsSeen(threadID: activeThreadSummary?.threadID)
+    }
+
+    private func isThreadUnread(_ thread: DaemonThreadSummary) -> Bool {
+        guard selectedThreadID != thread.threadID else { return false }
+        return thread.lastThreadSeq > (seenThreadSequences[thread.threadID] ?? 0)
+    }
+
     private func openThreadInNewWindow(_ thread: DaemonThreadSummary) {
         store.attachThread(thread.threadID)
         guard let url = AgentChatDesktopURL.threadLink(for: thread.threadID) else {
@@ -382,5 +570,52 @@ struct AgentChatDesktopRootView: View {
         }
 
         NSWorkspace.shared.open(url)
+    }
+}
+
+private struct AgentChatDesktopSidebarShortcutBridge: ViewModifier {
+    let toggleSidebar: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .background(ShortcutResponderViewRepresentable(toggleSidebar: toggleSidebar))
+            .onReceive(NotificationCenter.default.publisher(for: .agentChatDesktopToggleSidebar)) { notification in
+                if let sender = notification.object as? NSWindow, sender.isKeyWindow {
+                    toggleSidebar()
+                } else if notification.object == nil {
+                    toggleSidebar()
+                }
+            }
+    }
+}
+
+extension View {
+    func agentChatDesktopSidebarShortcut(toggleSidebar: @escaping () -> Void) -> some View {
+        modifier(AgentChatDesktopSidebarShortcutBridge(toggleSidebar: toggleSidebar))
+    }
+}
+
+private struct ShortcutResponderViewRepresentable: NSViewRepresentable {
+    let toggleSidebar: () -> Void
+
+    func makeNSView(context: Context) -> SidebarShortcutResponderView {
+        let view = SidebarShortcutResponderView(frame: .zero)
+        view.toggleAction = toggleSidebar
+        return view
+    }
+
+    func updateNSView(_ nsView: SidebarShortcutResponderView, context: Context) {
+        nsView.toggleAction = toggleSidebar
+    }
+}
+
+private final class SidebarShortcutResponderView: NSView {
+    var toggleAction: (() -> Void)?
+
+    @objc override func agentChatToggleSidebar(_ sender: Any?) {
+        NotificationCenter.default.post(
+            name: .agentChatDesktopToggleSidebar,
+            object: NSApp.keyWindow
+        )
     }
 }
