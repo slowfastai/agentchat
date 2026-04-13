@@ -10,6 +10,10 @@ struct AgentChatDesktopRootView: View {
     @State private var showInspector = true
     @State private var showNewThreadSheet = false
     @State private var showAddAgentsSheet = false
+    @State private var showAgentEditSheet = false
+    @State private var editingAgent: DaemonAgentSummary?
+    @State private var showCommandPalette = false
+    @State private var showQuickConnect = false
     @FocusState private var isComposerFocused: Bool
 
     private var filteredThreads: [DaemonThreadSummary] {
@@ -24,8 +28,8 @@ struct AgentChatDesktopRootView: View {
                 thread.threadID,
                 thread.workingDir,
             ]
-                .joined(separator: " ")
-                .lowercased()
+            .joined(separator: " ")
+            .lowercased()
             return searchable.contains(query)
         }
     }
@@ -91,6 +95,13 @@ struct AgentChatDesktopRootView: View {
                     Label("Settings", systemImage: "gearshape")
                 }
             }
+
+            ToolbarItem(placement: .keyboard) {
+                Button("Command Palette") {
+                    showCommandPalette = true
+                }
+                .keyboardShortcut("k", modifiers: [.command])
+            }
         }
         .background(
             LinearGradient(
@@ -126,6 +137,31 @@ struct AgentChatDesktopRootView: View {
             }
             .environmentObject(store)
         }
+        .sheet(isPresented: $showAgentEditSheet) {
+            if let agent = editingAgent {
+                AgentEditSheet(
+                    agent: agent,
+                    initialSettings: store.agentSettings[agent.agentID] ?? AgentLocalSettings()
+                ) { name, avatarData, settings in
+                    store.updateAgentDisplayName(agent.agentID, displayName: name)
+                    store.updateAgentAvatar(agent.agentID, imageData: avatarData)
+                    store.updateAgentSettings(agent.agentID, settings: settings)
+                }
+            }
+        }
+        .overlay {
+            if showCommandPalette {
+                CommandPaletteView(
+                    isPresented: $showCommandPalette,
+                    showNewThreadSheet: { showNewThreadSheet = true },
+                    showAddAgentsSheet: { showAddAgentsSheet = true },
+                    toggleInspector: { showInspector.toggle() },
+                    focusComposer: { scheduleComposerFocus() },
+                    connectAction: { showQuickConnect = true }
+                )
+                .environmentObject(store)
+            }
+        }
         .onAppear {
             synchronizeSelection()
             restoreComposerDraft(for: selectedThreadID ?? store.activeThreadID)
@@ -135,9 +171,6 @@ struct AgentChatDesktopRootView: View {
             if selectedThreadID == nil || selectedThreadID != newValue {
                 selectedThreadID = newValue
             }
-        }
-        .onChange(of: store.desktopSortedThreads.map(\.threadID)) { _, _ in
-            synchronizeSelection()
         }
         .onChange(of: selectedThreadID) { oldValue, newValue in
             persistComposerDraft(for: oldValue)
@@ -176,7 +209,7 @@ struct AgentChatDesktopRootView: View {
     private var sidebar: some View {
         List(selection: $selectedThreadID) {
             Section {
-                ConnectionStatusCard()
+                ConnectionStatusCard(showQuickConnect: $showQuickConnect)
                     .listRowInsets(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
                     .listRowBackground(Color.clear)
             }
@@ -195,7 +228,26 @@ struct AgentChatDesktopRootView: View {
                             thread: thread,
                             title: store.effectiveThreadTitle(for: thread),
                             isSelected: selectedThreadID == thread.threadID,
-                            isActive: store.activeThreadID == thread.threadID
+                            isActive: store.activeThreadID == thread.threadID,
+                            isPinned: store.isPinnedThread(thread.threadID),
+                            onPin: {
+                                store.togglePinnedThread(thread.threadID)
+                            },
+                            onHide: {
+                                store.hideThread(thread.threadID)
+                                if selectedThreadID == thread.threadID {
+                                    selectedThreadID = nil
+                                }
+                            },
+                            onClose: {
+                                store.closeThread(thread.threadID)
+                                if selectedThreadID == thread.threadID {
+                                    selectedThreadID = nil
+                                }
+                            },
+                            onOpenInNewWindow: {
+                                openThreadInNewWindow(thread)
+                            }
                         )
                         .tag(Optional(thread.threadID))
                     }
@@ -213,6 +265,19 @@ struct AgentChatDesktopRootView: View {
                             store.connectToAgent(id: agent.agentID)
                         }
                         .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                        .contextMenu {
+                            Button {
+                                editingAgent = agent
+                                showAgentEditSheet = true
+                            } label: {
+                                Label("Edit Agent", systemImage: "pencil")
+                            }
+                            Button {
+                                store.connectToAgent(id: agent.agentID)
+                            } label: {
+                                Label("Connect", systemImage: "link")
+                            }
+                        }
                     }
                 }
             }
@@ -307,5 +372,15 @@ struct AgentChatDesktopRootView: View {
         DispatchQueue.main.async {
             isComposerFocused = true
         }
+    }
+
+    private func openThreadInNewWindow(_ thread: DaemonThreadSummary) {
+        store.attachThread(thread.threadID)
+        guard let url = AgentChatDesktopURL.threadLink(for: thread.threadID) else {
+            store.errorMessage = "Couldn't create a desktop thread link for \(thread.threadID)."
+            return
+        }
+
+        NSWorkspace.shared.open(url)
     }
 }

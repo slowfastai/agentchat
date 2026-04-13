@@ -1,5 +1,206 @@
 import SwiftUI
 
+struct CommandPaletteView: View {
+    @Binding var isPresented: Bool
+    @EnvironmentObject private var store: DaemonChatStore
+    @FocusState private var isSearchFocused: Bool
+    @State private var searchText = ""
+    @State private var selectedIndex = 0
+
+    let showNewThreadSheet: () -> Void
+    let showAddAgentsSheet: () -> Void
+    let toggleInspector: () -> Void
+    let focusComposer: () -> Void
+    let connectAction: () -> Void
+
+    private var commands: [CommandItem] {
+        var allCommands: [CommandItem] = [
+            CommandItem(title: "New Thread", shortcut: "⌘N", icon: "plus.bubble") { [self] in
+                showNewThreadSheet()
+                dismiss()
+            },
+            CommandItem(title: "Add Agents to Thread", shortcut: "⇧⌘A", icon: "person.badge.plus", requiresThread: true) { [self] in
+                showAddAgentsSheet()
+                dismiss()
+            },
+            CommandItem(title: "Reconnect", shortcut: "⇧⌘R", icon: "arrow.clockwise") { [self] in
+                store.reconnectNow()
+                dismiss()
+            },
+            CommandItem(title: "Disconnect", shortcut: "", icon: "xmark.circle") { [self] in
+                store.disconnect()
+                dismiss()
+            },
+            CommandItem(title: "Toggle Inspector", shortcut: "⌥⌘I", icon: "sidebar.right") { [self] in
+                toggleInspector()
+                dismiss()
+            },
+            CommandItem(title: "Focus Composer", shortcut: "⇧⌘L", icon: "text.bubble", requiresThread: true) { [self] in
+                focusComposer()
+                dismiss()
+            },
+        ]
+
+        if !store.connectionState.isOnline {
+            allCommands.append(
+                CommandItem(title: "Connect", shortcut: "", icon: "link") { [self] in
+                connectAction()
+                dismiss()
+                }
+            )
+        }
+
+        if searchText.isEmpty {
+            return allCommands
+        }
+
+        return allCommands.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.4)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    dismiss()
+                }
+
+            VStack(spacing: 0) {
+                Spacer()
+
+                VStack(spacing: 0) {
+                    Text("Command Palette")
+                        .font(.headline)
+                        .padding()
+
+                    TextField("Type a command...", text: $searchText)
+                        .textFieldStyle(.roundedBorder)
+                        .padding(.horizontal)
+                        .focused($isSearchFocused)
+
+                    Divider()
+                        .padding(.top, 8)
+
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(commands.enumerated()), id: \.offset) { index, command in
+                                CommandRow(
+                                    command: command,
+                                    isSelected: index == selectedIndex,
+                                    hasThread: store.activeThreadID != nil
+                                ) {
+                                    command.action()
+                                }
+                                .onTapGesture {
+                                    if command.requiresThread && store.activeThreadID == nil {
+                                        return
+                                    }
+                                    command.action()
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 300)
+                }
+                .background(Color(nsColor: .windowBackgroundColor))
+                .cornerRadius(12)
+                .shadow(radius: 20)
+                .padding(.horizontal, 100)
+                .padding(.bottom, 100)
+            }
+        }
+        .onAppear {
+            isSearchFocused = true
+        }
+        .onKeyPress(.upArrow) {
+            if selectedIndex > 0 {
+                selectedIndex -= 1
+            }
+            return .handled
+        }
+        .onKeyPress(.downArrow) {
+            if selectedIndex < commands.count - 1 {
+                selectedIndex += 1
+            }
+            return .handled
+        }
+        .onKeyPress(.return) {
+            if selectedIndex < commands.count {
+                let command = commands[selectedIndex]
+                if !command.requiresThread || store.activeThreadID != nil {
+                    command.action()
+                }
+            }
+            return .handled
+        }
+        .onKeyPress(.escape) {
+            dismiss()
+            return .handled
+        }
+        .onChange(of: searchText) { _, _ in
+            selectedIndex = 0
+        }
+    }
+
+    private func dismiss() {
+        searchText = ""
+        isPresented = false
+    }
+}
+
+private struct CommandItem: Identifiable {
+    let id = UUID()
+    let title: String
+    let shortcut: String
+    let icon: String
+    var requiresThread: Bool = false
+    let action: () -> Void
+}
+
+private struct CommandRow: View {
+    let command: CommandItem
+    let isSelected: Bool
+    let hasThread: Bool
+    let onSelect: () -> Void
+
+    private var isDisabled: Bool {
+        command.requiresThread && !hasThread
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: command.icon)
+                .font(.body)
+                .frame(width: 24)
+                .foregroundStyle(isDisabled ? .secondary : .primary)
+
+            Text(command.title)
+                .font(.body)
+                .foregroundStyle(isDisabled ? .secondary : .primary)
+
+            Spacer()
+
+            if !command.shortcut.isEmpty {
+                Text(command.shortcut)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if !isDisabled {
+                onSelect()
+            }
+        }
+    }
+}
+
 func desktopTintColor(named name: String) -> Color {
     switch name {
     case "blue":
@@ -75,6 +276,8 @@ private struct InspectorFactRow: View {
 
 struct ConnectionStatusCard: View {
     @EnvironmentObject private var store: DaemonChatStore
+    @Binding var showQuickConnect: Bool
+    @State private var quickConnectURL = ""
 
     private var presentation: AgentChatDesktopConnectionPresentation {
         AgentChatDesktopConnectionPresentation(state: store.connectionState)
@@ -82,6 +285,15 @@ struct ConnectionStatusCard: View {
 
     private var tint: Color {
         desktopTintColor(named: presentation.tintName)
+    }
+
+    private var canPasteFromClipboard: Bool {
+        if let clipboardString = NSPasteboard.general.string(forType: .string) {
+            return clipboardString.contains("agentchat://") ||
+                   clipboardString.contains("ws://") ||
+                   clipboardString.contains("wss://")
+        }
+        return false
     }
 
     var body: some View {
@@ -121,7 +333,9 @@ struct ConnectionStatusCard: View {
                     }
                 }
 
-                if !store.daemonURL.isEmpty {
+                if showQuickConnect && !store.connectionState.isOnline {
+                    quickConnectSection
+                } else if !store.daemonURL.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Endpoint")
                             .font(.caption2.weight(.semibold))
@@ -160,6 +374,15 @@ struct ConnectionStatusCard: View {
                 }
 
                 HStack(spacing: 8) {
+                    if !store.connectionState.isOnline {
+                        Button(showQuickConnect ? "Hide" : "Connect") {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showQuickConnect.toggle()
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
                     Button("Reconnect") {
                         store.reconnectNow()
                     }
@@ -175,6 +398,62 @@ struct ConnectionStatusCard: View {
             }
         }
     }
+
+    private var quickConnectSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("ws://127.0.0.1:9390 or agentchat://...", text: $quickConnectURL)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+                .onSubmit {
+                    connectWithURL()
+                }
+
+            HStack(spacing: 8) {
+                Button("Paste & Connect") {
+                    if let clipboardString = NSPasteboard.general.string(forType: .string) {
+                        quickConnectURL = clipboardString.trimmingCharacters(in: .whitespacesAndNewlines)
+                        connectWithURL()
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(!canPasteFromClipboard)
+                .help("Paste URL from clipboard")
+
+                Button("Apply") {
+                    connectWithURL()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(quickConnectURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                Spacer()
+
+                Text("Press Enter to connect")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Text("Supports ws://, wss://, or agentchat://connect? links")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(8)
+        .background(Color.black.opacity(0.03), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onAppear {
+            if let clipboardString = NSPasteboard.general.string(forType: .string),
+               canPasteFromClipboard {
+                quickConnectURL = clipboardString.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+    }
+
+    private func connectWithURL() {
+        let trimmedURL = quickConnectURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedURL.isEmpty else { return }
+
+        store.updateDaemonURL(trimmedURL)
+        quickConnectURL = ""
+        showQuickConnect = false
+    }
 }
 
 struct ThreadSidebarRow: View {
@@ -182,6 +461,11 @@ struct ThreadSidebarRow: View {
     let title: String
     let isSelected: Bool
     let isActive: Bool
+    let isPinned: Bool
+    let onPin: () -> Void
+    let onHide: () -> Void
+    let onClose: () -> Void
+    let onOpenInNewWindow: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -195,6 +479,12 @@ struct ThreadSidebarRow: View {
                     .lineLimit(1)
 
                 Spacer()
+
+                if isPinned {
+                    Image(systemName: "pin.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
 
                 DesktopStatusPill(label: thread.state.capitalized, tint: isActive ? .green : .secondary)
             }
@@ -216,6 +506,33 @@ struct ThreadSidebarRow: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
         )
+        .contextMenu {
+            Button {
+                onOpenInNewWindow()
+            } label: {
+                Label("Open in New Window", systemImage: "macwindow")
+            }
+
+            Button {
+                onPin()
+            } label: {
+                Label(isPinned ? "Unpin" : "Pin", systemImage: isPinned ? "pin.slash" : "pin")
+            }
+
+            Button {
+                onHide()
+            } label: {
+                Label("Hide", systemImage: "eye.slash")
+            }
+
+            Divider()
+
+            Button(role: .destructive) {
+                onClose()
+            } label: {
+                Label("Close Thread", systemImage: "xmark.circle")
+            }
+        }
     }
 }
 
