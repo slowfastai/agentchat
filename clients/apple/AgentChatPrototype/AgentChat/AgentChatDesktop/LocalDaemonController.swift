@@ -8,7 +8,7 @@ struct LocalDaemonLaunchCommand: Equatable {
     let currentDirectoryURL: URL?
 }
 
-private nonisolated final class LocalDaemonProbeState: @unchecked Sendable {
+private final class LocalDaemonProbeState: @unchecked Sendable {
     private let lock = NSLock()
     private var didResume = false
 
