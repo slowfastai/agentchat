@@ -10,6 +10,7 @@ final class DaemonChatStore: ObservableObject {
     private static let hiddenThreadsKey = "agentchat_hidden_thread_ids"
     private static let knownAgentsKey = "agentchat_known_agents"
     private static let selectedAgentsKey = "agentchat_selected_agent_ids"
+    private static let lastUsedWorkingDirectoryKey = "agentchat_last_working_directory"
     private static let persistedThreadStateKey = "agentchat_persisted_thread_state"
     private static let initialNetworkWarmupKey = "agentchat_initial_network_warmup_completed"
     private static let relayAppInstallationIDKey = "agentchat_relay_app_installation_id"
@@ -34,6 +35,11 @@ final class DaemonChatStore: ObservableObject {
     @Published var agentAvatarData: [String: Data] = [:]
     @Published var agentSettings: [String: AgentLocalSettings] = [:]
     @Published var connectingAgentIDs: Set<String> = []
+    @Published var lastUsedWorkingDirectory: String = "" {
+        didSet {
+            persistLastUsedWorkingDirectory()
+        }
+    }
 
     private var daemonURLString: String
 
@@ -95,7 +101,8 @@ final class DaemonChatStore: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        self.daemonURLString = defaults.string(forKey: Self.daemonWSURLKey) ?? ""
+        let savedURL = defaults.string(forKey: Self.daemonWSURLKey)
+        self.daemonURLString = savedURL ?? "ws://127.0.0.1:9390"
         self.pinnedThreadIDs = Set(defaults.stringArray(forKey: Self.pinnedThreadsKey) ?? [])
         self.hiddenThreadIDs = Set(defaults.stringArray(forKey: Self.hiddenThreadsKey) ?? [])
         self.agents = Self.loadKnownAgents(from: defaults)
@@ -103,6 +110,7 @@ final class DaemonChatStore: ObservableObject {
         self.agentCustomNames = Self.loadAgentCustomNames(from: defaults)
         self.agentAvatarData = Self.loadAgentAvatarData(from: defaults)
         self.agentSettings = Self.loadAgentSettings(from: defaults)
+        self.lastUsedWorkingDirectory = defaults.string(forKey: Self.lastUsedWorkingDirectoryKey) ?? ""
 
         if Self.isUITestSeedEnabled {
             configureUITestSeedIfNeeded()
@@ -128,7 +136,7 @@ final class DaemonChatStore: ObservableObject {
         performInitialNetworkWarmupIfNeeded()
     }
 
-    func createThread(withAgentIDs agentIDs: [String]) {
+    func createThread(withAgentIDs agentIDs: [String], workingDir: String = ".") {
         let onlineAgentIDs = Set(agents.filter(\.isOnline).map(\.agentID))
         let chosenAgentIDs = Array(Set(agentIDs).intersection(onlineAgentIDs)).sorted()
         guard !chosenAgentIDs.isEmpty else {
@@ -139,7 +147,7 @@ final class DaemonChatStore: ObservableObject {
         pendingThreadAgentIDs = chosenAgentIDs.sorted()
         let title = chosenAgentIDs.isEmpty ? "New Chat" : chosenAgentIDs.joined(separator: " + ")
         Task {
-            await send(CreateThreadRequest(title: title, workingDir: "."), reportFailureToUser: true)
+            await send(CreateThreadRequest(title: title, workingDir: workingDir), reportFailureToUser: true)
         }
     }
 
@@ -965,6 +973,10 @@ final class DaemonChatStore: ObservableObject {
 
     private func persistSelectedAgents() {
         defaults.set(Array(selectedAgentIDs).sorted(), forKey: Self.selectedAgentsKey)
+    }
+
+    private func persistLastUsedWorkingDirectory() {
+        defaults.set(lastUsedWorkingDirectory, forKey: Self.lastUsedWorkingDirectoryKey)
     }
 
     private func setDaemonURLString(_ value: String) {

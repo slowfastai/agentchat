@@ -188,8 +188,8 @@ struct AgentChatDesktopRootView: View {
                 agents: store.desktopOnlineAgents,
                 initiallySelected: store.selectedAgentIDs,
                 confirmLabel: "Create Thread"
-            ) { selectedAgentIDs in
-                store.createThread(withAgentIDs: selectedAgentIDs)
+            ) { selectedAgentIDs, workingDir in
+                store.createThread(withAgentIDs: selectedAgentIDs, workingDir: workingDir)
             }
             .environmentObject(store)
         }
@@ -200,7 +200,7 @@ struct AgentChatDesktopRootView: View {
                 agents: store.desktopAvailableAgentsToAdd(to: activeThreadSnapshot),
                 initiallySelected: [],
                 confirmLabel: "Add to Thread"
-            ) { selectedAgentIDs in
+            ) { selectedAgentIDs, _ in
                 store.addAgents(selectedAgentIDs, toActiveThread: activeThreadSummary?.threadID)
             }
             .environmentObject(store)
@@ -362,20 +362,6 @@ struct AgentChatDesktopRootView: View {
 
     private var sidebar: some View {
         List(selection: $selectedThreadID) {
-            Section {
-                SidebarOverviewCard(
-                    threadCount: store.desktopSortedThreads.count,
-                    onlineAgentCount: store.desktopOnlineAgents.count,
-                    isOnline: store.connectionState.isOnline
-                )
-                .listRowInsets(EdgeInsets(top: 12, leading: 12, bottom: 6, trailing: 12))
-                .listRowBackground(Color.clear)
-
-                ConnectionStatusCard(showQuickConnect: $showQuickConnect)
-                    .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 10, trailing: 12))
-                    .listRowBackground(Color.clear)
-            }
-
             Section("Pinned") {
                 if filteredThreads.isEmpty {
                     ContentUnavailableView(
