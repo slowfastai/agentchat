@@ -4,7 +4,6 @@ struct AgentChatDesktopActions {
     let showNewThreadSheet: () -> Void
     let showAddAgentsSheet: () -> Void
     let toggleSidebar: () -> Void
-    let toggleInspector: () -> Void
     let focusComposer: () -> Void
 }
 
@@ -54,11 +53,6 @@ struct AgentChatDesktopCommands: Commands {
             Button("Toggle Sidebar") {
                 actions?.toggleSidebar()
             }
-
-            Button("Toggle Inspector") {
-                actions?.toggleInspector()
-            }
-            .keyboardShortcut("i", modifiers: [.command, .option])
 
             Button("Focus Composer") {
                 actions?.focusComposer()
