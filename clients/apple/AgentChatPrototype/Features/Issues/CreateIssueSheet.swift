@@ -154,17 +154,9 @@ struct CreateIssueSheet: View {
             title: title.trimmingCharacters(in: .whitespacesAndNewlines),
             summary: summary.trimmingCharacters(in: .whitespacesAndNewlines),
             status: status,
-            priority: priority
+            priority: priority,
+            assignees: assignees
         )
-
-        if let projectIndex = store.projects.firstIndex(where: { $0.id == projectID }),
-           let newIssue = store.projects[projectIndex].issues.last {
-            if !assignees.isEmpty {
-                var updatedIssue = newIssue
-                updatedIssue.assignees = assignees
-                store.projects[projectIndex].issues[store.projects[projectIndex].issues.count - 1] = updatedIssue
-            }
-        }
 
         dismiss()
     }

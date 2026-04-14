@@ -159,7 +159,7 @@ final class DemoStore: ObservableObject {
         }
     }
 
-    func addIssue(to projectID: UUID, title: String, summary: String = "", status: IssueStatus = .backlog, priority: IssuePriority = .medium) {
+    func addIssue(to projectID: UUID, title: String, summary: String = "", status: IssueStatus = .backlog, priority: IssuePriority = .medium, assignees: [ParticipantRef] = []) {
         guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }) else { return }
         
         let maxNumber = projects.flatMap(\.issues).map(\.number).max() ?? 0
@@ -170,7 +170,7 @@ final class DemoStore: ObservableObject {
             summary: summary,
             status: status,
             priority: priority,
-            assignees: [],
+            assignees: assignees,
             latestActivityText: "",
             sessionCount: 0,
             threadCount: 0,
@@ -222,14 +222,10 @@ final class DemoStore: ObservableObject {
             sessions.append(session)
         }
 
-        if let issueIndex = allIssues.firstIndex(where: { $0.id == issueID }) {
-            var updatedIssue = allIssues[issueIndex]
-            updatedIssue.threadCount += 1
-            for projectIndex in projects.indices {
-                if let idx = projects[projectIndex].issues.firstIndex(where: { $0.id == issueID }) {
-                    projects[projectIndex].issues[idx] = updatedIssue
-                    break
-                }
+        for i in projects.indices {
+            if let j = projects[i].issues.firstIndex(where: { $0.id == issueID }) {
+                projects[i].issues[j].threadCount += 1
+                break
             }
         }
     }

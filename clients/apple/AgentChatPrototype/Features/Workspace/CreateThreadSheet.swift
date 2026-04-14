@@ -1,6 +1,6 @@
 import SwiftUI
 
-private struct ThreadCard: View {
+struct ThreadCard: View {
     let thread: Thread
 
     var body: some View {

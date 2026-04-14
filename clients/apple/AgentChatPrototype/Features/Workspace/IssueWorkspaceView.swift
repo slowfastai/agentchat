@@ -581,6 +581,8 @@ private struct WorkspaceSidePanel: View {
     }
 
     @State private var showCreateThread = false
+    }
+}
 
 private struct SkillSection: Identifiable {
     let scope: SkillScope

@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import AppKit
 
@@ -139,3 +140,4 @@ struct CreateProjectSheet: View {
         dismiss()
     }
 }
+#endif

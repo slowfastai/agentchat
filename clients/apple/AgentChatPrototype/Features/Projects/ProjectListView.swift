@@ -6,7 +6,7 @@ struct ProjectListView: View {
     @Binding var selectedIssueID: UUID?
     @Binding var showCreateProject: Bool
 
-    @State private var showCreateIssue: [UUID: Bool] = [:]
+    @State private var projectForNewIssue: Project?
 
     var body: some View {
         ScrollView {
@@ -25,15 +25,9 @@ struct ProjectListView: View {
                                 }
                             },
                             onAddIssue: {
-                                showCreateIssue[project.id] = true
+                                projectForNewIssue = project
                             }
                         )
-                        .sheet(isPresented: Binding(
-                            get: { showCreateIssue[project.id] ?? false },
-                            set: { showCreateIssue[project.id] = $0 }
-                        )) {
-                            CreateIssueSheet(projectID: project.id)
-                        }
                     }
                 }
             }
@@ -48,6 +42,9 @@ struct ProjectListView: View {
                     Label("Add Project", systemImage: "plus")
                 }
             }
+        }
+        .sheet(item: $projectForNewIssue) { project in
+            CreateIssueSheet(projectID: project.id)
         }
     }
 
@@ -129,9 +126,6 @@ private struct ProjectCard: View {
                                 StatusBadge(text: issue.status.title, color: issue.status.badgeColor)
                             }
                             .contentShape(Rectangle())
-                            .onTapGesture {
-                                // Issue selection handled by parent
-                            }
                         }
 
                         if project.issues.count > 3 {
