@@ -92,9 +92,11 @@ struct RootView: View {
                 )
             }
         }
+        #if os(macOS)
         .sheet(isPresented: $showCreateProject) {
             CreateProjectSheet()
         }
+        #endif
         .onAppear {
             if store.selectedIssueID == nil {
                 store.selectedIssueID = store.currentProject?.issues.first?.id

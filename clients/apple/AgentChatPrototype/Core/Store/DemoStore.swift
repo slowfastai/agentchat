@@ -180,13 +180,13 @@ final class DemoStore: ObservableObject {
         projects[projectIndex].issues.append(issue)
     }
 
-    func createThread(for issueID: UUID, agentNames: [String]) {
+    func createThread(for issueID: UUID, agentIDs: [UUID]) {
         let issueThreads = threads.filter { $0.issueID == issueID }
         let threadNumber = issueThreads.count + 1
 
         var participants: [ParticipantRef] = []
-        for name in agentNames {
-            if let agent = agents.first(where: { $0.name == name }) {
+        for id in agentIDs {
+            if let agent = agents.first(where: { $0.id == id }) {
                 participants.append(ParticipantRef(
                     id: agent.id,
                     displayName: agent.name,
@@ -207,13 +207,13 @@ final class DemoStore: ObservableObject {
         )
         threads.append(thread)
 
-        for name in agentNames {
+        for participant in participants {
             let session = WorkspaceSession(
                 id: UUID(),
                 issueID: issueID,
                 title: thread.title,
                 state: .idle,
-                agentName: name,
+                agentName: participant.displayName,
                 startedAt: Date(),
                 elapsedSeconds: 0,
                 latestEventText: "Ready",
@@ -231,7 +231,28 @@ final class DemoStore: ObservableObject {
     }
 
     func deleteProject(_ projectID: UUID) {
+        guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }) else { return }
+        
+        let projectIssueIDs = Set(projects[projectIndex].issues.map { $0.id })
+        
+        threads.removeAll { thread in
+            projectIssueIDs.contains(thread.issueID)
+        }
+        
+        sessions.removeAll { session in
+            projectIssueIDs.contains(session.issueID)
+        }
+        
+        for issueID in projectIssueIDs {
+            timelineByIssue.removeValue(forKey: issueID)
+        }
+        
+        if let selectedIssueID, projectIssueIDs.contains(selectedIssueID) {
+            self.selectedIssueID = nil
+        }
+        
         projects.removeAll { $0.id == projectID }
+        
         if selectedProjectID == projectID {
             selectedProjectID = projects.first?.id
         }

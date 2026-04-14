@@ -152,11 +152,7 @@ struct CreateThreadSheet: View {
     }
 
     private func createThread() {
-        let agentNames = store.agents
-            .filter { selectedAgents.contains($0.id) }
-            .map { $0.name }
-
-        store.createThread(for: issueID, agentNames: agentNames)
+        store.createThread(for: issueID, agentIDs: Array(selectedAgents))
         dismiss()
     }
 }
