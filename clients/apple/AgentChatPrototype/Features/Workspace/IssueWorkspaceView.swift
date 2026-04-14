@@ -448,6 +448,7 @@ private struct WorkspaceSidePanel: View {
     private enum SidePanelTab: String, CaseIterable, Identifiable {
         case timeline
         case sessions
+        case threads
         case panels
 
         var id: Self { self }
@@ -456,6 +457,7 @@ private struct WorkspaceSidePanel: View {
             switch self {
             case .timeline: return "Timeline"
             case .sessions: return "Sessions"
+            case .threads: return "Threads"
             case .panels: return "Panels"
             }
         }
@@ -509,6 +511,8 @@ private struct WorkspaceSidePanel: View {
                             }
                         }
                     }
+                case .threads:
+                    threadsTabContent
                 case .panels:
                     ScrollView {
                         VStack(spacing: AppSpacing.sm) {
@@ -534,7 +538,49 @@ private struct WorkspaceSidePanel: View {
             }
         }
     }
-}
+
+    @ViewBuilder
+    private var threadsTabContent: some View {
+        VStack(alignment: .leading, spacing: AppSpacing.md) {
+            if store.threads(for: issueID).isEmpty {
+                VStack(spacing: AppSpacing.md) {
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.secondary)
+                    Text("No threads yet")
+                        .font(.headline)
+                    Text("Start a thread to begin a groupchat with agents.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, AppSpacing.xl)
+            } else {
+                ScrollView {
+                    VStack(spacing: AppSpacing.sm) {
+                        ForEach(store.threads(for: issueID)) { thread in
+                            ThreadCard(thread: thread)
+                        }
+                    }
+                }
+            }
+
+            Spacer()
+
+            Button {
+                showCreateThread = true
+            } label: {
+                Label("Start New Thread", systemImage: "plus")
+            }
+            .buttonStyle(.borderedProminent)
+            .sheet(isPresented: $showCreateThread) {
+                CreateThreadSheet(issueID: issueID)
+            }
+        }
+    }
+
+    @State private var showCreateThread = false
 
 private struct SkillSection: Identifiable {
     let scope: SkillScope

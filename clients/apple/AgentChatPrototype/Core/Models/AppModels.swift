@@ -15,6 +15,7 @@ extension ColorToken {
 }
 
 enum SidebarDestination: String, CaseIterable, Hashable, Identifiable {
+    case projects
     case inbox
     case switcher
     case agents
@@ -23,6 +24,7 @@ enum SidebarDestination: String, CaseIterable, Hashable, Identifiable {
 
     var title: String {
         switch self {
+        case .projects: return "Projects"
         case .inbox: return "Issues"
         case .switcher: return "Switcher"
         case .agents: return "Agents"
@@ -31,6 +33,7 @@ enum SidebarDestination: String, CaseIterable, Hashable, Identifiable {
 
     var systemImage: String {
         switch self {
+        case .projects: return "folder"
         case .inbox: return "list.bullet.rectangle"
         case .switcher: return "square.grid.2x2"
         case .agents: return "person.2"
@@ -78,6 +81,7 @@ enum SwitcherMode: String, CaseIterable, Hashable, Identifiable {
 struct Project: Identifiable, Hashable {
     let id: UUID
     var name: String
+    var repoPath: String
     var color: ColorToken
     var issues: [Issue]
 }
@@ -92,6 +96,7 @@ struct Issue: Identifiable, Hashable {
     var assignees: [ParticipantRef]
     var latestActivityText: String
     var sessionCount: Int
+    var threadCount: Int
     var totalActiveSeconds: Int
     var updatedAt: Date
 }
@@ -233,6 +238,38 @@ enum SessionState: String, CaseIterable, Hashable {
         case .failed: return .red
         }
     }
+}
+
+enum ThreadState: String, CaseIterable, Hashable {
+    case idle
+    case active
+    case completed
+
+    var title: String {
+        switch self {
+        case .idle: return "Idle"
+        case .active: return "Active"
+        case .completed: return "Completed"
+        }
+    }
+
+    var badgeColor: ColorToken {
+        switch self {
+        case .idle: return .gray
+        case .active: return .blue
+        case .completed: return .green
+        }
+    }
+}
+
+struct Thread: Identifiable, Hashable {
+    let id: UUID
+    var issueID: UUID
+    var title: String
+    var participants: [ParticipantRef]
+    var createdAt: Date
+    var state: ThreadState
+    var latestActivityText: String
 }
 
 struct TimelineItem: Identifiable, Hashable {
