@@ -23,20 +23,24 @@ struct LocalDaemonControllerTests {
             "/Library/Apple/usr/bin",
             "/custom/bin",
         ].joined(separator: ":"))
-        #expect(environment.values["AGENTCHAT_AGENTS_JSON"]?.contains("\"id\": \"codex\"") == true)
+        #expect(environment.values["AGENTCHAT_HOME"] == "/Users/tester/Library/Application Support/AgentChat")
+        #expect(environment.values["AGENTCHAT_AGENTS_FILE"] == "/Users/tester/Library/Application Support/AgentChat/config/agents.json")
     }
 
     @Test func localDaemonEnvironmentPreservesExplicitAgentConfiguration() {
         let environment = LocalDaemonEnvironment.make(
             from: [
                 "PATH": "/usr/bin",
+                "AGENTCHAT_HOME": "/tmp/custom-agentchat",
+                "AGENTCHAT_AGENTS_FILE": "/tmp/custom-agentchat/agents.json",
                 "AGENTCHAT_AGENT_COMMAND": "opencode",
             ],
             homeDirectoryPath: "/Users/tester"
         )
 
         #expect(environment.values["AGENTCHAT_AGENT_COMMAND"] == "opencode")
-        #expect(environment.values["AGENTCHAT_AGENTS_JSON"] == nil)
+        #expect(environment.values["AGENTCHAT_HOME"] == "/tmp/custom-agentchat")
+        #expect(environment.values["AGENTCHAT_AGENTS_FILE"] == "/tmp/custom-agentchat/agents.json")
     }
 
     @Test func localDaemonManagementOnlyActivatesForLoopbackDirectLinks() {
@@ -124,5 +128,48 @@ struct LocalDaemonControllerTests {
             "agentchat-daemon",
         ])
         #expect(command?.currentDirectoryURL?.path == "/tmp/agentchat")
+    }
+
+    @Test func resolvedInstallableDaemonBinaryURLRejectsCargoRunFallback() {
+        let sourceFilePath = "/tmp/agentchat/clients/apple/AgentChatPrototype/AgentChat/AgentChatDesktop/LocalDaemonController.swift"
+        let installableURL = LocalDaemonController.resolvedInstallableDaemonBinaryURL(
+            environment: [:],
+            sourceFilePath: sourceFilePath,
+            pathExists: { path in
+                path == "/tmp/agentchat/daemon/Cargo.toml"
+            },
+            executableExists: { _ in false }
+        )
+
+        #expect(installableURL == nil)
+    }
+
+    @Test func launchAgentLayoutUsesPerUserApplicationSupportPaths() {
+        let layout = LocalDaemonInstallLayout.make(
+            homeDirectoryURL: URL(fileURLWithPath: "/Users/tester", isDirectory: true)
+        )
+
+        #expect(layout.agentChatHomeURL.path == "/Users/tester/Library/Application Support/AgentChat")
+        #expect(layout.daemonBinaryURL.path == "/Users/tester/Library/Application Support/AgentChat/bin/agentchat-daemon")
+        #expect(layout.agentsFileURL.path == "/Users/tester/Library/Application Support/AgentChat/config/agents.json")
+        #expect(layout.launchAgentPlistURL.path == "/Users/tester/Library/LaunchAgents/dev.slowfast.agentchat.daemon.plist")
+    }
+
+    @Test func launchAgentPlistIncludesStablePathsAndEnvironment() {
+        let layout = LocalDaemonInstallLayout.make(
+            homeDirectoryURL: URL(fileURLWithPath: "/Users/tester", isDirectory: true)
+        )
+        let environment = LocalDaemonEnvironment.make(
+            from: ["PATH": "/usr/bin"],
+            homeDirectoryPath: "/Users/tester",
+            installLayout: layout
+        ).values
+        let plist = makeLaunchAgentPlist(layout: layout, environment: environment)
+
+        #expect(plist.contains("dev.slowfast.agentchat.daemon"))
+        #expect(plist.contains("/Users/tester/Library/Application Support/AgentChat/bin/agentchat-daemon"))
+        #expect(plist.contains("/Users/tester/Library/Application Support/AgentChat/config/agents.json"))
+        #expect(plist.contains("/Users/tester/Library/Application Support/AgentChat/logs/daemon.stdout.log"))
+        #expect(plist.contains("<key>KeepAlive</key>"))
     }
 }

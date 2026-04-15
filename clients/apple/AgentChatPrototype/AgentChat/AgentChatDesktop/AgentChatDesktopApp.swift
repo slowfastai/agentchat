@@ -21,10 +21,6 @@ final class AgentChatDesktopAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
-        LocalDaemonController.shared.stopManagedDaemonIfNeeded()
-    }
-
     private func installToggleSidebarMenuItemIfNeeded() {
         guard let mainMenu = NSApp.mainMenu else { return }
         let targetMenu = resolveViewMenu(in: mainMenu)
