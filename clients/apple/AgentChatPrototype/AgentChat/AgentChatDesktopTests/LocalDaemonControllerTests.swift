@@ -3,6 +3,42 @@ import Testing
 @testable import AgentChatDesktop
 
 struct LocalDaemonControllerTests {
+    @Test func localDaemonEnvironmentPrependsPreferredCliPaths() {
+        let environment = LocalDaemonEnvironment.make(
+            from: ["PATH": "/usr/bin:/custom/bin:/opt/homebrew/bin"],
+            homeDirectoryPath: "/Users/tester"
+        )
+
+        #expect(environment.values["PATH"] == [
+            "/Users/tester/.opencode/bin",
+            "/Users/tester/.cargo/bin",
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "/usr/local/sbin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+            "/Library/Apple/usr/bin",
+            "/custom/bin",
+        ].joined(separator: ":"))
+        #expect(environment.values["AGENTCHAT_AGENTS_JSON"]?.contains("\"id\": \"codex\"") == true)
+    }
+
+    @Test func localDaemonEnvironmentPreservesExplicitAgentConfiguration() {
+        let environment = LocalDaemonEnvironment.make(
+            from: [
+                "PATH": "/usr/bin",
+                "AGENTCHAT_AGENT_COMMAND": "opencode",
+            ],
+            homeDirectoryPath: "/Users/tester"
+        )
+
+        #expect(environment.values["AGENTCHAT_AGENT_COMMAND"] == "opencode")
+        #expect(environment.values["AGENTCHAT_AGENTS_JSON"] == nil)
+    }
+
     @Test func localDaemonManagementOnlyActivatesForLoopbackDirectLinks() {
         #expect(LocalDaemonController.shouldManageLocalDaemon(for: "ws://127.0.0.1:9390"))
         #expect(LocalDaemonController.shouldManageLocalDaemon(for: "ws://localhost:9390"))

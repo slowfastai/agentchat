@@ -78,10 +78,24 @@ struct AgentChatDesktopApp: App {
     @NSApplicationDelegateAdaptor(AgentChatDesktopAppDelegate.self) private var appDelegate
     @StateObject private var store = DaemonChatStore()
     @State private var openWindows: [UUID: WindowProxy] = [:]
+    @State private var didBootstrapStore = false
 
-    private func ensureLocalDaemonIfNeeded() {
+    private func ensureLocalDaemonIfNeeded(for connectionLink: String? = nil) {
+        Task {
+            await LocalDaemonController.shared.ensureRunning(for: connectionLink ?? store.daemonURL)
+        }
+    }
+
+    private func bootstrapStoreIfNeeded() {
+        guard !didBootstrapStore else { return }
+        didBootstrapStore = true
+
         Task {
             await LocalDaemonController.shared.ensureRunning(for: store.daemonURL)
+            guard !Task.isCancelled else { return }
+
+            store.start()
+            await NotificationHelper.requestAuthorization()
         }
     }
 
@@ -90,14 +104,10 @@ struct AgentChatDesktopApp: App {
             AgentChatDesktopRootView()
                 .environmentObject(store)
                 .onAppear {
-                    ensureLocalDaemonIfNeeded()
-                    store.start()
-                    Task {
-                        await NotificationHelper.requestAuthorization()
-                    }
+                    bootstrapStoreIfNeeded()
                 }
-                .onChange(of: store.daemonURL) { _, _ in
-                    ensureLocalDaemonIfNeeded()
+                .onChange(of: store.daemonURL) { _, newValue in
+                    ensureLocalDaemonIfNeeded(for: newValue)
                 }
                 .onOpenURL { url in
                     if let threadID = AgentChatDesktopURL.threadID(from: url) {

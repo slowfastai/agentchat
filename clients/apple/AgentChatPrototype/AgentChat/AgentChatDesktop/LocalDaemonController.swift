@@ -8,6 +8,69 @@ struct LocalDaemonLaunchCommand: Equatable {
     let currentDirectoryURL: URL?
 }
 
+struct LocalDaemonEnvironment {
+    let values: [String: String]
+
+    static func make(
+        from base: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectoryPath: String = NSHomeDirectory()
+    ) -> LocalDaemonEnvironment {
+        var values = base
+        values["PATH"] = launchPath(
+            existingPath: base["PATH"],
+            homeDirectoryPath: homeDirectoryPath
+        )
+        if values["AGENTCHAT_AGENTS_JSON"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false,
+           values["AGENTCHAT_AGENT_COMMAND"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+            values["AGENTCHAT_AGENTS_JSON"] = defaultManagedAgentsJSON
+        }
+        return LocalDaemonEnvironment(values: values)
+    }
+
+    private static let defaultManagedAgentsJSON = """
+    [
+      {
+        "id": "codex",
+        "name": "Codex",
+        "backend": "codex_app_server",
+        "command": "codex",
+        "args": []
+      }
+    ]
+    """
+
+    private static func launchPath(existingPath: String?, homeDirectoryPath: String) -> String {
+        let preferredComponents = [
+            homeDirectoryPath + "/.opencode/bin",
+            homeDirectoryPath + "/.cargo/bin",
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "/usr/local/sbin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+            "/Library/Apple/usr/bin",
+        ]
+
+        let existingComponents = (existingPath ?? "")
+            .split(separator: ":")
+            .map(String.init)
+
+        var orderedComponents: [String] = []
+        for component in preferredComponents + existingComponents {
+            let trimmed = component.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !orderedComponents.contains(trimmed) else {
+                continue
+            }
+            orderedComponents.append(trimmed)
+        }
+
+        return orderedComponents.joined(separator: ":")
+    }
+}
+
 private final class LocalDaemonProbeState: @unchecked Sendable {
     private let lock = NSLock()
     private var didResume = false
@@ -73,6 +136,7 @@ final class LocalDaemonController {
             let process = Process()
             process.executableURL = launchCommand.executableURL
             process.arguments = launchCommand.arguments
+            process.environment = LocalDaemonEnvironment.make().values
             if let currentDirectoryURL = launchCommand.currentDirectoryURL {
                 process.currentDirectoryURL = currentDirectoryURL
             }
