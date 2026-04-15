@@ -90,6 +90,27 @@ struct LocalDaemonEnvironment {
         "backend": "codex_app_server",
         "command": "codex",
         "args": []
+      },
+      {
+        "id": "opencode",
+        "name": "OpenCode",
+        "backend": "acp",
+        "command": "opencode",
+        "args": ["acp"]
+      },
+      {
+        "id": "claude-code",
+        "name": "Claude Code",
+        "backend": "acp",
+        "command": "npx",
+        "args": ["--yes", "@agentclientprotocol/claude-agent-acp"]
+      },
+      {
+        "id": "pi",
+        "name": "Pi",
+        "backend": "acp",
+        "command": "npx",
+        "args": ["--yes", "pi-acp"]
       }
     ]
     """
@@ -296,6 +317,11 @@ final class LocalDaemonController {
     }
 
     private func installAndStartLaunchAgentIfPossible() async throws -> Bool {
+        if Self.isSandboxedDesktopBuild() {
+            logger.notice("Skipping LaunchAgent install because the desktop app is running sandboxed")
+            return false
+        }
+
         guard let installableBinaryURL = Self.resolvedInstallableDaemonBinaryURL() else {
             return false
         }
@@ -351,6 +377,16 @@ final class LocalDaemonController {
         logger.info(
             "Launched dev-only local daemon child via \(launchCommand.executableURL.path(percentEncoded: false), privacy: .public)"
         )
+    }
+
+    nonisolated static func isSandboxedDesktopBuild(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        if environment["APP_SANDBOX_CONTAINER_ID"] != nil {
+            return true
+        }
+
+        return NSHomeDirectory().contains("/Library/Containers/")
     }
 
     nonisolated static func shouldManageLocalDaemon(for connectionLink: String) -> Bool {

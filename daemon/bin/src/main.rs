@@ -47,6 +47,27 @@ const DEFAULT_MANAGED_AGENTS_JSON: &str = r#"[
     "backend": "codex_app_server",
     "command": "codex",
     "args": []
+  },
+  {
+    "id": "opencode",
+    "name": "OpenCode",
+    "backend": "acp",
+    "command": "opencode",
+    "args": ["acp"]
+  },
+  {
+    "id": "claude-code",
+    "name": "Claude Code",
+    "backend": "acp",
+    "command": "npx",
+    "args": ["--yes", "@agentclientprotocol/claude-agent-acp"]
+  },
+  {
+    "id": "pi",
+    "name": "Pi",
+    "backend": "acp",
+    "command": "npx",
+    "args": ["--yes", "pi-acp"]
   }
 ]"#;
 
@@ -395,16 +416,48 @@ fn load_agent_config() -> AgentConfig {
 }
 
 fn built_in_agent_configs() -> Vec<AgentConfig> {
-    vec![AgentConfig {
-        id: "codex".into(),
-        name: "Codex".into(),
-        backend: "codex_app_server".into(),
-        command: "codex".into(),
-        args: vec![],
-        working_dir: None,
-        env_vars: Default::default(),
-        extra: Default::default(),
-    }]
+    vec![
+        AgentConfig {
+            id: "codex".into(),
+            name: "Codex".into(),
+            backend: "codex_app_server".into(),
+            command: "codex".into(),
+            args: vec![],
+            working_dir: None,
+            env_vars: Default::default(),
+            extra: Default::default(),
+        },
+        AgentConfig {
+            id: "opencode".into(),
+            name: "OpenCode".into(),
+            backend: "acp".into(),
+            command: "opencode".into(),
+            args: vec!["acp".into()],
+            working_dir: None,
+            env_vars: Default::default(),
+            extra: Default::default(),
+        },
+        AgentConfig {
+            id: "claude-code".into(),
+            name: "Claude Code".into(),
+            backend: "acp".into(),
+            command: "npx".into(),
+            args: vec!["--yes".into(), "@agentclientprotocol/claude-agent-acp".into()],
+            working_dir: None,
+            env_vars: Default::default(),
+            extra: Default::default(),
+        },
+        AgentConfig {
+            id: "pi".into(),
+            name: "Pi".into(),
+            backend: "acp".into(),
+            command: "npx".into(),
+            args: vec!["--yes".into(), "pi-acp".into()],
+            working_dir: None,
+            env_vars: Default::default(),
+            extra: Default::default(),
+        },
+    ]
 }
 
 fn local_agent_config_path(project_root: &Path) -> PathBuf {
@@ -599,7 +652,7 @@ mod tests {
             .map(|config| config.id)
             .collect::<Vec<_>>();
 
-        assert_eq!(ids, vec!["codex"]);
+        assert_eq!(ids, vec!["codex", "opencode", "claude-code", "pi"]);
     }
 
     #[test]
@@ -615,7 +668,7 @@ mod tests {
             .map(|config| config.id)
             .collect::<Vec<_>>();
 
-        assert_eq!(ids, vec!["codex"]);
+        assert_eq!(ids, vec!["codex", "opencode", "claude-code", "pi"]);
     }
 
     #[test]
@@ -792,7 +845,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_layout_bootstraps_default_codex_config() {
+    fn managed_layout_bootstraps_default_multi_agent_config() {
         let root = tempfile::tempdir().expect("temp dir");
         let paths = DaemonPaths::managed_default(root.path());
 
@@ -802,6 +855,9 @@ mod tests {
 
         let raw = fs::read_to_string(&paths.agents_file).expect("agents file");
         assert!(raw.contains("\"id\": \"codex\""));
+        assert!(raw.contains("\"id\": \"opencode\""));
+        assert!(raw.contains("\"id\": \"claude-code\""));
+        assert!(raw.contains("\"id\": \"pi\""));
     }
 
     fn daemon_paths_for_test(project_root: &Path) -> DaemonPaths {

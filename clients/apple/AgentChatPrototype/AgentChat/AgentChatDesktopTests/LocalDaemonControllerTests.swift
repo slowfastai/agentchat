@@ -43,6 +43,15 @@ struct LocalDaemonControllerTests {
         #expect(environment.values["AGENTCHAT_AGENTS_FILE"] == "/tmp/custom-agentchat/agents.json")
     }
 
+    @Test func defaultManagedAgentsJSONIncludesMultipleBuiltInAgents() {
+        let json = LocalDaemonEnvironment.defaultManagedAgentsJSON
+
+        #expect(json.contains("\"id\": \"codex\""))
+        #expect(json.contains("\"id\": \"opencode\""))
+        #expect(json.contains("\"id\": \"claude-code\""))
+        #expect(json.contains("\"id\": \"pi\""))
+    }
+
     @Test func localDaemonManagementOnlyActivatesForLoopbackDirectLinks() {
         #expect(LocalDaemonController.shouldManageLocalDaemon(for: "ws://127.0.0.1:9390"))
         #expect(LocalDaemonController.shouldManageLocalDaemon(for: "ws://localhost:9390"))
