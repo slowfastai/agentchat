@@ -234,6 +234,11 @@ final class DemoStore: ObservableObject {
         guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }) else { return }
         
         let projectIssueIDs = Set(projects[projectIndex].issues.map { $0.id })
+        let deletedThreadIDs = Set(
+            threads
+                .filter { projectIssueIDs.contains($0.issueID) }
+                .map(\.id)
+        )
         
         threads.removeAll { thread in
             projectIssueIDs.contains(thread.issueID)
@@ -250,11 +255,19 @@ final class DemoStore: ObservableObject {
         if let selectedIssueID, projectIssueIDs.contains(selectedIssueID) {
             self.selectedIssueID = nil
         }
+
+        if let selectedThreadID, deletedThreadIDs.contains(selectedThreadID) {
+            self.selectedThreadID = nil
+        }
         
-        projects.removeAll { $0.id == projectID }
+        projects.remove(at: projectIndex)
         
         if selectedProjectID == projectID {
             selectedProjectID = projects.first?.id
+        }
+
+        if selectedIssueID == nil {
+            selectedIssueID = currentProject?.issues.first?.id
         }
     }
 
