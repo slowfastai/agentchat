@@ -6,9 +6,11 @@ final class DemoStore: ObservableObject {
     @Published var projects: [Project] = []
     @Published var agents: [AgentProfile] = []
     @Published var sessions: [WorkspaceSession] = []
+    @Published var threads: [Thread] = []
     @Published var timelineByIssue: [UUID: [TimelineItem]] = [:]
     @Published var selectedProjectID: UUID?
     @Published var selectedIssueID: UUID?
+    @Published var selectedThreadID: UUID?
     
     @Published var agentCustomNames: [String: String] = [:]
     @Published var agentAvatarData: [String: Data] = [:]
@@ -136,6 +138,137 @@ final class DemoStore: ObservableObject {
     func sessions(for issueID: UUID) -> [WorkspaceSession] {
         sessions.filter { $0.issueID == issueID }
             .sorted { $0.startedAt > $1.startedAt }
+    }
+
+    func threads(for issueID: UUID) -> [Thread] {
+        threads.filter { $0.issueID == issueID }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    func createProject(name: String, repoPath: String, color: ColorToken = .blue) {
+        let project = Project(
+            id: UUID(),
+            name: name,
+            repoPath: repoPath,
+            color: color,
+            issues: []
+        )
+        projects.append(project)
+        if selectedProjectID == nil {
+            selectedProjectID = project.id
+        }
+    }
+
+    func addIssue(to projectID: UUID, title: String, summary: String = "", status: IssueStatus = .backlog, priority: IssuePriority = .medium, assignees: [ParticipantRef] = []) {
+        guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }) else { return }
+        
+        let maxNumber = projects.flatMap(\.issues).map(\.number).max() ?? 0
+        let issue = Issue(
+            id: UUID(),
+            number: maxNumber + 1,
+            title: title,
+            summary: summary,
+            status: status,
+            priority: priority,
+            assignees: assignees,
+            latestActivityText: "",
+            sessionCount: 0,
+            threadCount: 0,
+            totalActiveSeconds: 0,
+            updatedAt: Date()
+        )
+        projects[projectIndex].issues.append(issue)
+    }
+
+    func createThread(for issueID: UUID, agentIDs: [UUID]) {
+        let issueThreads = threads.filter { $0.issueID == issueID }
+        let threadNumber = issueThreads.count + 1
+
+        var participants: [ParticipantRef] = []
+        for id in agentIDs {
+            if let agent = agents.first(where: { $0.id == id }) {
+                participants.append(ParticipantRef(
+                    id: agent.id,
+                    displayName: agent.name,
+                    role: .agent(agent.kind),
+                    accent: agent.accent
+                ))
+            }
+        }
+
+        let thread = Thread(
+            id: UUID(),
+            issueID: issueID,
+            title: "Thread \(threadNumber)",
+            participants: participants,
+            createdAt: Date(),
+            state: .active,
+            latestActivityText: "Thread started"
+        )
+        threads.append(thread)
+
+        for participant in participants {
+            let session = WorkspaceSession(
+                id: UUID(),
+                issueID: issueID,
+                title: thread.title,
+                state: .idle,
+                agentName: participant.displayName,
+                startedAt: Date(),
+                elapsedSeconds: 0,
+                latestEventText: "Ready",
+                activeToolName: nil
+            )
+            sessions.append(session)
+        }
+
+        for i in projects.indices {
+            if let j = projects[i].issues.firstIndex(where: { $0.id == issueID }) {
+                projects[i].issues[j].threadCount += 1
+                break
+            }
+        }
+    }
+
+    func deleteProject(_ projectID: UUID) {
+        guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }) else { return }
+        
+        let projectIssueIDs = Set(projects[projectIndex].issues.map { $0.id })
+        let deletedThreadIDs = Set(
+            threads
+                .filter { projectIssueIDs.contains($0.issueID) }
+                .map(\.id)
+        )
+        
+        threads.removeAll { thread in
+            projectIssueIDs.contains(thread.issueID)
+        }
+        
+        sessions.removeAll { session in
+            projectIssueIDs.contains(session.issueID)
+        }
+        
+        for issueID in projectIssueIDs {
+            timelineByIssue.removeValue(forKey: issueID)
+        }
+        
+        if let selectedIssueID, projectIssueIDs.contains(selectedIssueID) {
+            self.selectedIssueID = nil
+        }
+
+        if let selectedThreadID, deletedThreadIDs.contains(selectedThreadID) {
+            self.selectedThreadID = nil
+        }
+        
+        projects.remove(at: projectIndex)
+        
+        if selectedProjectID == projectID {
+            selectedProjectID = projects.first?.id
+        }
+
+        if selectedIssueID == nil {
+            selectedIssueID = currentProject?.issues.first?.id
+        }
     }
 
     func skillCards(for issueID: UUID) -> [SkillCardModel] {
@@ -288,6 +421,7 @@ final class DemoStore: ObservableObject {
             assignees: [participant(from: claude), participant(from: codex)],
             latestActivityText: "Codex suggested a replay-safe resubscribe path.",
             sessionCount: 2,
+            threadCount: 1,
             totalActiveSeconds: 18 * 60,
             updatedAt: Date().addingTimeInterval(-120)
         )
@@ -302,6 +436,7 @@ final class DemoStore: ObservableObject {
             assignees: [participant(from: claude)],
             latestActivityText: "Claude is checking disconnect cleanup ordering.",
             sessionCount: 1,
+            threadCount: 1,
             totalActiveSeconds: 12 * 60,
             updatedAt: Date().addingTimeInterval(-240)
         )
@@ -316,6 +451,7 @@ final class DemoStore: ObservableObject {
             assignees: [participant(from: pi)],
             latestActivityText: "Pi is ready to convert transcripts into project skills.",
             sessionCount: 1,
+            threadCount: 0,
             totalActiveSeconds: 7 * 60,
             updatedAt: Date().addingTimeInterval(-900)
         )
@@ -323,6 +459,7 @@ final class DemoStore: ObservableObject {
         let project = Project(
             id: UUID(),
             name: "AgentChat",
+            repoPath: "~/projects/agentchat",
             color: .blue,
             issues: [issueA, issueB, issueC]
         )

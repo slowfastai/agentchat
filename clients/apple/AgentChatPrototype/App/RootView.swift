@@ -10,7 +10,8 @@ private enum CompactTab: Hashable {
 
 struct RootView: View {
     @EnvironmentObject private var store: DemoStore
-    @State private var destination: SidebarDestination? = .inbox
+    @State private var destination: SidebarDestination? = .projects
+    @State private var showCreateProject = false
 
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -35,8 +36,25 @@ struct RootView: View {
                     .tag(item)
             }
             .navigationTitle("AgentChat")
+            .toolbar {
+                ToolbarItem(placement: .bottomBar) {
+                    if destination == .projects {
+                        Button {
+                            showCreateProject = true
+                        } label: {
+                            Label("Add Project", systemImage: "plus")
+                        }
+                    }
+                }
+            }
         } content: {
-            switch destination ?? .inbox {
+            switch destination ?? .projects {
+            case .projects:
+                ProjectListView(
+                    selectedProjectID: $store.selectedProjectID,
+                    selectedIssueID: $store.selectedIssueID,
+                    showCreateProject: $showCreateProject
+                )
             case .inbox:
                 IssueInboxView(selectedIssueID: $store.selectedIssueID)
             case .switcher:
@@ -45,7 +63,17 @@ struct RootView: View {
                 AgentListView()
             }
         } detail: {
-            switch destination ?? .inbox {
+            switch destination ?? .projects {
+            case .projects:
+                if let selectedIssueID = store.selectedIssueID {
+                    IssueWorkspaceView(issueID: selectedIssueID)
+                } else {
+                    EmptyStateView(
+                        title: "Select an issue",
+                        message: "Pick an issue from a project to open the workspace.",
+                        systemImage: "rectangle.and.text.magnifyingglass"
+                    )
+                }
             case .inbox, .switcher:
                 if let selectedIssueID = store.selectedIssueID {
                     IssueWorkspaceView(issueID: selectedIssueID)
@@ -64,6 +92,11 @@ struct RootView: View {
                 )
             }
         }
+        #if os(macOS)
+        .sheet(isPresented: $showCreateProject) {
+            CreateProjectSheet()
+        }
+        #endif
         .onAppear {
             if store.selectedIssueID == nil {
                 store.selectedIssueID = store.currentProject?.issues.first?.id
