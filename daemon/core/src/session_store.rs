@@ -16,9 +16,13 @@ pub struct SessionStore {
 
 impl SessionStore {
     pub fn new(project_root: &Path) -> Self {
+        Self::new_with_sessions_dir(project_root.join(".agentchat").join("sessions"))
+    }
+
+    pub fn new_with_sessions_dir(sessions_dir: impl Into<PathBuf>) -> Self {
         Self {
             transcripts: HashMap::new(),
-            sessions_dir: project_root.join(".agentchat").join("sessions"),
+            sessions_dir: sessions_dir.into(),
         }
     }
 

@@ -12,8 +12,12 @@ pub struct SkillStore {
 
 impl SkillStore {
     pub fn new(project_root: &Path) -> Self {
+        Self::new_with_skills_dir(project_root.join(".agentchat").join("skills"))
+    }
+
+    pub fn new_with_skills_dir(skills_dir: impl Into<PathBuf>) -> Self {
         Self {
-            skills_dir: project_root.join(".agentchat").join("skills"),
+            skills_dir: skills_dir.into(),
         }
     }
 

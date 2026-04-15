@@ -39,6 +39,37 @@ const DEV_DAEMON_IDENTITY_LABEL: &str = "agentchat-dev-daemon-identity-v1";
 const DEV_APP_IDENTITY_LABEL: &str = "agentchat-dev-app-identity-v1";
 
 const DEFAULT_PORT: u16 = 9390;
+const DEFAULT_MANAGED_AGENTCHAT_HOME_RELATIVE: &str = "Library/Application Support/AgentChat";
+const DEFAULT_MANAGED_AGENTS_JSON: &str = r#"[
+  {
+    "id": "codex",
+    "name": "Codex",
+    "backend": "codex_app_server",
+    "command": "codex",
+    "args": []
+  },
+  {
+    "id": "opencode",
+    "name": "OpenCode",
+    "backend": "acp",
+    "command": "opencode",
+    "args": ["acp"]
+  },
+  {
+    "id": "claude-code",
+    "name": "Claude Code",
+    "backend": "acp",
+    "command": "npx",
+    "args": ["--yes", "@agentclientprotocol/claude-agent-acp"]
+  },
+  {
+    "id": "pi",
+    "name": "Pi",
+    "backend": "acp",
+    "command": "npx",
+    "args": ["--yes", "pi-acp"]
+  }
+]"#;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct CliOptions {
@@ -68,6 +99,15 @@ struct SharedFileWriterGuard<'a> {
 #[derive(Clone, Default)]
 struct MobileQrAvailability {
     relay_connected: Option<Arc<AtomicBool>>,
+}
+
+#[derive(Debug, Clone)]
+struct DaemonPaths {
+    home_dir: PathBuf,
+    agents_file: PathBuf,
+    sessions_dir: PathBuf,
+    skills_dir: PathBuf,
+    log_path: PathBuf,
 }
 
 impl MobileQrAvailability {
@@ -100,6 +140,118 @@ impl MobileQrAvailability {
         if let Some(relay_connected) = &self.relay_connected {
             relay_connected.store(connected, Ordering::SeqCst);
         }
+    }
+}
+
+impl DaemonPaths {
+    fn resolve(project_root: &Path) -> Result<Self, String> {
+        let home_dir = if let Some(home) = optional_env("AGENTCHAT_HOME") {
+            PathBuf::from(home)
+        } else {
+            project_root.to_path_buf()
+        };
+
+        let agents_file = optional_env("AGENTCHAT_AGENTS_FILE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                if optional_env("AGENTCHAT_HOME").is_some() {
+                    home_dir.join("config").join("agents.json")
+                } else {
+                    project_root.join(".agentchat").join("agents.json")
+                }
+            });
+
+        let log_path = optional_env("AGENTCHAT_LOG_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                if optional_env("AGENTCHAT_HOME").is_some() {
+                    home_dir.join("logs").join("agentchat-daemon.log")
+                } else {
+                    project_root
+                        .join(".agentchat")
+                        .join("logs")
+                        .join("agentchat-daemon.log")
+                }
+            });
+
+        let base_data_dir = if optional_env("AGENTCHAT_HOME").is_some() {
+            home_dir.join("data")
+        } else {
+            project_root.join(".agentchat")
+        };
+
+        let paths = Self {
+            home_dir,
+            agents_file,
+            sessions_dir: base_data_dir.join("sessions"),
+            skills_dir: base_data_dir.join("skills"),
+            log_path,
+        };
+
+        paths.validate()?;
+        Ok(paths)
+    }
+
+    fn managed_default(home_directory: &Path) -> Self {
+        let home_dir = home_directory.join(DEFAULT_MANAGED_AGENTCHAT_HOME_RELATIVE);
+        Self {
+            agents_file: home_dir.join("config").join("agents.json"),
+            sessions_dir: home_dir.join("data").join("sessions"),
+            skills_dir: home_dir.join("data").join("skills"),
+            log_path: home_dir.join("logs").join("agentchat-daemon.log"),
+            home_dir,
+        }
+    }
+
+    fn ensure_managed_layout(&self) -> Result<(), String> {
+        for dir in [
+            &self.home_dir,
+            self.agents_file.parent().ok_or_else(|| {
+                format!("invalid agents file path: {}", self.agents_file.display())
+            })?,
+            self.sessions_dir.parent().ok_or_else(|| {
+                format!("invalid sessions dir path: {}", self.sessions_dir.display())
+            })?,
+            &self.sessions_dir,
+            &self.skills_dir,
+            self.log_path
+                .parent()
+                .ok_or_else(|| format!("invalid daemon log path: {}", self.log_path.display()))?,
+            &self.home_dir.join("cache"),
+            &self.home_dir.join("run"),
+        ] {
+            fs::create_dir_all(dir).map_err(|err| {
+                format!(
+                    "failed to create managed daemon directory '{}': {err}",
+                    dir.display()
+                )
+            })?;
+        }
+
+        if !self.agents_file.exists() {
+            fs::write(&self.agents_file, DEFAULT_MANAGED_AGENTS_JSON).map_err(|err| {
+                format!(
+                    "failed to write default managed agents file '{}': {err}",
+                    self.agents_file.display()
+                )
+            })?;
+        }
+
+        Ok(())
+    }
+
+    fn is_managed_home_enabled() -> bool {
+        optional_env("AGENTCHAT_HOME").is_some()
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.agents_file.is_dir() {
+            return Err(format!(
+                "daemon agents path points to a directory: {}",
+                self.agents_file.display()
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -170,7 +322,7 @@ fn parse_cli_options() -> Result<Option<CliOptions>, String> {
 
 fn print_usage() {
     println!(
-        "agentchat-daemon\n\nUsage:\n  agentchat-daemon [--mobile]\n\nOptions:\n  --mobile            Print a terminal QR code for the current direct or relay connection so the iOS app can scan it\n  -h, --help          Show this help text\n\nEnvironment:\n  AGENTCHAT_MOBILE_WS_URL   Override the websocket endpoint embedded in the QR payload (must be ws://... or wss://...)\n  AGENTCHAT_AGENT_BACKEND   Select the agent backend adapter for single-agent mode\n\nAgent config precedence:\n  1. AGENTCHAT_AGENTS_JSON\n  2. .agentchat/agents.json\n  3. Single-agent AGENTCHAT_AGENT_* env vars\n  4. Built-in agents\n\nExamples:\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon\n    Starts the built-in agents: OpenCode, Codex, Claude Code, and Pi\n\n  AGENTCHAT_AGENT_ID=opencode \\\n  AGENTCHAT_AGENT_NAME=\"OpenCode (ACP)\" \\\n  AGENTCHAT_AGENT_BACKEND=acp \\\n  AGENTCHAT_AGENT_COMMAND=opencode \\\n  AGENTCHAT_AGENT_ARGS=\"acp\" \\\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon -- --mobile\n\n  AGENTCHAT_AGENTS_JSON='[{{\"id\":\"claude-code\",\"name\":\"Claude Code\",\"backend\":\"acp\",\"command\":\"npx\",\"args\":[\"--yes\",\"@agentclientprotocol/claude-agent-acp\"]}},{{\"id\":\"pi\",\"name\":\"Pi\",\"backend\":\"acp\",\"command\":\"npx\",\"args\":[\"--yes\",\"pi-acp\"]}}]' \\\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon\n\n  cat .agentchat/agents.json\n    Local per-project agent config. Useful for setting env_vars such as HTTP_PROXY only for Claude Code."
+        "agentchat-daemon\n\nUsage:\n  agentchat-daemon [--mobile]\n\nOptions:\n  --mobile            Print a terminal QR code for the current direct or relay connection so the iOS app can scan it\n  -h, --help          Show this help text\n\nEnvironment:\n  AGENTCHAT_HOME            Managed daemon home, for example ~/Library/Application Support/AgentChat\n  AGENTCHAT_AGENTS_FILE     Override the daemon-owned agents.json path\n  AGENTCHAT_MOBILE_WS_URL   Override the websocket endpoint embedded in the QR payload (must be ws://... or wss://...)\n  AGENTCHAT_AGENT_BACKEND   Select the agent backend adapter for single-agent mode\n\nAgent config precedence:\n  1. AGENTCHAT_AGENTS_JSON\n  2. AGENTCHAT_AGENTS_FILE or $AGENTCHAT_HOME/config/agents.json\n  3. .agentchat/agents.json\n  4. Single-agent AGENTCHAT_AGENT_* env vars\n  5. Built-in defaults (Codex only)\n\nExamples:\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon\n    Starts the default Codex agent\n\n  AGENTCHAT_HOME=\"$HOME/Library/Application Support/AgentChat\" \\\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon\n\n  AGENTCHAT_AGENT_ID=opencode \\\n  AGENTCHAT_AGENT_NAME=\"OpenCode (ACP)\" \\\n  AGENTCHAT_AGENT_BACKEND=acp \\\n  AGENTCHAT_AGENT_COMMAND=opencode \\\n  AGENTCHAT_AGENT_ARGS=\"acp\" \\\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon -- --mobile"
     );
 }
 
@@ -266,16 +418,6 @@ fn load_agent_config() -> AgentConfig {
 fn built_in_agent_configs() -> Vec<AgentConfig> {
     vec![
         AgentConfig {
-            id: "opencode".into(),
-            name: "OpenCode".into(),
-            backend: "acp".into(),
-            command: "opencode".into(),
-            args: vec!["acp".into()],
-            working_dir: None,
-            env_vars: Default::default(),
-            extra: Default::default(),
-        },
-        AgentConfig {
             id: "codex".into(),
             name: "Codex".into(),
             backend: "codex_app_server".into(),
@@ -286,14 +428,21 @@ fn built_in_agent_configs() -> Vec<AgentConfig> {
             extra: Default::default(),
         },
         AgentConfig {
+            id: "opencode".into(),
+            name: "OpenCode".into(),
+            backend: "acp".into(),
+            command: "opencode".into(),
+            args: vec!["acp".into()],
+            working_dir: None,
+            env_vars: Default::default(),
+            extra: Default::default(),
+        },
+        AgentConfig {
             id: "claude-code".into(),
             name: "Claude Code".into(),
             backend: "acp".into(),
             command: "npx".into(),
-            args: vec![
-                "--yes".into(),
-                "@agentclientprotocol/claude-agent-acp".into(),
-            ],
+            args: vec!["--yes".into(), "@agentclientprotocol/claude-agent-acp".into()],
             working_dir: None,
             env_vars: Default::default(),
             extra: Default::default(),
@@ -324,9 +473,23 @@ fn load_agent_configs_from_json(source: &str, raw: &str) -> Result<Vec<AgentConf
     Ok(configs)
 }
 
-fn load_agent_configs(project_root: &Path) -> Result<Vec<AgentConfig>, String> {
+fn load_agent_configs(
+    project_root: &Path,
+    daemon_paths: &DaemonPaths,
+) -> Result<Vec<AgentConfig>, String> {
     if let Some(raw) = optional_env("AGENTCHAT_AGENTS_JSON") {
         return load_agent_configs_from_json("AGENTCHAT_AGENTS_JSON", &raw);
+    }
+
+    let daemon_owned_config_path = daemon_paths.agents_file.as_path();
+    if daemon_owned_config_path.exists() {
+        let raw = fs::read_to_string(daemon_owned_config_path).map_err(|err| {
+            format!(
+                "failed to read {}: {err}",
+                daemon_owned_config_path.display()
+            )
+        })?;
+        return load_agent_configs_from_json(&daemon_owned_config_path.display().to_string(), &raw);
     }
 
     let local_config_path = local_agent_config_path(project_root);
@@ -405,21 +568,8 @@ struct RelayPairingOpenResponse {
     expires_at: u64,
 }
 
-fn default_log_path(project_root: &Path) -> PathBuf {
-    project_root
-        .join(".agentchat")
-        .join("logs")
-        .join("agentchat-daemon.log")
-}
-
-fn resolve_log_path(project_root: &Path) -> PathBuf {
-    optional_env("AGENTCHAT_LOG_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| default_log_path(project_root))
-}
-
-fn init_tracing(project_root: &Path) -> Result<PathBuf, String> {
-    let log_path = resolve_log_path(project_root);
+fn init_tracing(daemon_paths: &DaemonPaths) -> Result<PathBuf, String> {
+    let log_path = daemon_paths.log_path.clone();
     let parent = log_path
         .parent()
         .ok_or_else(|| format!("invalid daemon log path: {}", log_path.display()))?;
@@ -502,7 +652,7 @@ mod tests {
             .map(|config| config.id)
             .collect::<Vec<_>>();
 
-        assert_eq!(ids, vec!["opencode", "codex", "claude-code", "pi"]);
+        assert_eq!(ids, vec!["codex", "opencode", "claude-code", "pi"]);
     }
 
     #[test]
@@ -510,13 +660,15 @@ mod tests {
         let _guard = ENV_LOCK.lock().expect("env lock poisoned");
         clear_agent_config_env();
 
-        let configs = load_agent_configs(Path::new("/tmp")).expect("expected built-in configs");
+        let daemon_paths = daemon_paths_for_test(Path::new("/tmp"));
+        let configs = load_agent_configs(Path::new("/tmp"), &daemon_paths)
+            .expect("expected built-in configs");
         let ids = configs
             .into_iter()
             .map(|config| config.id)
             .collect::<Vec<_>>();
 
-        assert_eq!(ids, vec!["opencode", "codex", "claude-code", "pi"]);
+        assert_eq!(ids, vec!["codex", "opencode", "claude-code", "pi"]);
     }
 
     #[test]
@@ -526,7 +678,9 @@ mod tests {
         env::set_var("AGENTCHAT_AGENT_COMMAND", "opencode");
         env::set_var("AGENTCHAT_AGENT_ID", "custom-opencode");
 
-        let configs = load_agent_configs(Path::new("/tmp")).expect("expected single-agent config");
+        let daemon_paths = daemon_paths_for_test(Path::new("/tmp"));
+        let configs = load_agent_configs(Path::new("/tmp"), &daemon_paths)
+            .expect("expected single-agent config");
 
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].id, "custom-opencode");
@@ -545,7 +699,9 @@ mod tests {
             r#"[{"id":"pi","name":"Pi","backend":"acp","command":"npx","args":["--yes","pi-acp"]}]"#,
         );
 
-        let configs = load_agent_configs(Path::new("/tmp")).expect("expected json config");
+        let daemon_paths = daemon_paths_for_test(Path::new("/tmp"));
+        let configs =
+            load_agent_configs(Path::new("/tmp"), &daemon_paths).expect("expected json config");
 
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].id, "pi");
@@ -572,7 +728,9 @@ mod tests {
         env::set_var("AGENTCHAT_AGENT_COMMAND", "opencode");
         env::set_var("AGENTCHAT_AGENT_ID", "custom-opencode");
 
-        let configs = load_agent_configs(&test_root).expect("expected local project config");
+        let daemon_paths = daemon_paths_for_test(&test_root);
+        let configs =
+            load_agent_configs(&test_root, &daemon_paths).expect("expected local project config");
 
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].id, "claude-code");
@@ -634,31 +792,82 @@ mod tests {
     }
 
     #[test]
-    fn default_log_path_uses_project_agentchat_logs_directory() {
-        let root = PathBuf::from("/tmp/agentchat-project");
+    fn managed_daemon_paths_default_to_application_support_layout() {
+        let home_dir = PathBuf::from("/Users/tester");
+        let paths = DaemonPaths::managed_default(&home_dir);
 
         assert_eq!(
-            default_log_path(&root),
+            paths.home_dir,
+            PathBuf::from("/Users/tester/Library/Application Support/AgentChat")
+        );
+        assert_eq!(
+            paths.agents_file,
+            PathBuf::from("/Users/tester/Library/Application Support/AgentChat/config/agents.json")
+        );
+        assert_eq!(
+            paths.log_path,
+            PathBuf::from(
+                "/Users/tester/Library/Application Support/AgentChat/logs/agentchat-daemon.log"
+            )
+        );
+    }
+
+    #[test]
+    fn daemon_paths_use_project_agentchat_logs_directory_by_default() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        clear_agent_config_env();
+        let root = PathBuf::from("/tmp/agentchat-project");
+        let paths = DaemonPaths::resolve(&root).expect("expected project-root daemon paths");
+
+        assert_eq!(
+            paths.log_path,
             PathBuf::from("/tmp/agentchat-project/.agentchat/logs/agentchat-daemon.log")
         );
     }
 
     #[test]
-    fn resolve_log_path_prefers_environment_override() {
+    fn daemon_paths_prefer_environment_overrides() {
         let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        clear_agent_config_env();
+        env::set_var("AGENTCHAT_HOME", "/tmp/managed-agentchat");
+        env::set_var("AGENTCHAT_AGENTS_FILE", "/tmp/custom-agents.json");
         env::set_var("AGENTCHAT_LOG_PATH", "/tmp/custom-daemon.log");
         let root = PathBuf::from("/tmp/agentchat-project");
+        let paths = DaemonPaths::resolve(&root).expect("expected overridden daemon paths");
 
-        assert_eq!(
-            resolve_log_path(&root),
-            PathBuf::from("/tmp/custom-daemon.log")
-        );
+        assert_eq!(paths.home_dir, PathBuf::from("/tmp/managed-agentchat"));
+        assert_eq!(paths.agents_file, PathBuf::from("/tmp/custom-agents.json"));
+        assert_eq!(paths.log_path, PathBuf::from("/tmp/custom-daemon.log"));
 
+        env::remove_var("AGENTCHAT_HOME");
+        env::remove_var("AGENTCHAT_AGENTS_FILE");
         env::remove_var("AGENTCHAT_LOG_PATH");
+    }
+
+    #[test]
+    fn managed_layout_bootstraps_default_multi_agent_config() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = DaemonPaths::managed_default(root.path());
+
+        paths
+            .ensure_managed_layout()
+            .expect("expected managed layout to initialize");
+
+        let raw = fs::read_to_string(&paths.agents_file).expect("agents file");
+        assert!(raw.contains("\"id\": \"codex\""));
+        assert!(raw.contains("\"id\": \"opencode\""));
+        assert!(raw.contains("\"id\": \"claude-code\""));
+        assert!(raw.contains("\"id\": \"pi\""));
+    }
+
+    fn daemon_paths_for_test(project_root: &Path) -> DaemonPaths {
+        DaemonPaths::resolve(project_root).expect("expected daemon paths")
     }
 
     fn clear_agent_config_env() {
         for key in [
+            "AGENTCHAT_HOME",
+            "AGENTCHAT_AGENTS_FILE",
             "AGENTCHAT_AGENTS_JSON",
             "AGENTCHAT_AGENT_ID",
             "AGENTCHAT_AGENT_NAME",
@@ -672,6 +881,7 @@ mod tests {
             "AGENTCHAT_AGENT_SANDBOX",
             "AGENTCHAT_AGENT_EXPERIMENTAL_RAW_EVENTS",
             "AGENTCHAT_AGENT_PERSIST_EXTENDED_HISTORY",
+            "AGENTCHAT_LOG_PATH",
         ] {
             env::remove_var(key);
         }
@@ -1273,6 +1483,20 @@ async fn wait_for_shutdown_signal() -> Result<(), String> {
 async fn main() {
     // Use the current directory as the default project root.
     let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let daemon_paths = match DaemonPaths::resolve(&project_root) {
+        Ok(paths) => paths,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    };
+
+    if DaemonPaths::is_managed_home_enabled() {
+        if let Err(err) = daemon_paths.ensure_managed_layout() {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    }
 
     let cli_options = match parse_cli_options() {
         Ok(Some(options)) => options,
@@ -1283,7 +1507,7 @@ async fn main() {
         }
     };
 
-    let log_path = match init_tracing(&project_root) {
+    let log_path = match init_tracing(&daemon_paths) {
         Ok(path) => path,
         Err(err) => {
             eprintln!("{err}");
@@ -1295,7 +1519,7 @@ async fn main() {
     info!("daemon logs redirected to {}", log_path.display());
 
     // Launch one or more configured agent backends from the environment.
-    let agent_configs = match load_agent_configs(&project_root) {
+    let agent_configs = match load_agent_configs(&project_root, &daemon_paths) {
         Ok(configs) => configs,
         Err(err) => {
             error!("failed to load agent configuration: {err}");
@@ -1331,8 +1555,12 @@ async fn main() {
             }
 
             let manager = Rc::new(RefCell::new(manager));
-            let session_store = Rc::new(RefCell::new(SessionStore::new(&project_root)));
-            let skill_store = Rc::new(SkillStore::new(&project_root));
+            let session_store = Rc::new(RefCell::new(SessionStore::new_with_sessions_dir(
+                daemon_paths.sessions_dir.clone(),
+            )));
+            let skill_store = Rc::new(SkillStore::new_with_skills_dir(
+                daemon_paths.skills_dir.clone(),
+            ));
             let distiller = Rc::new(Distiller::new(skill_store.clone()));
             let mobile_qr_availability = if relay_config.is_some() {
                 MobileQrAvailability::relay()
