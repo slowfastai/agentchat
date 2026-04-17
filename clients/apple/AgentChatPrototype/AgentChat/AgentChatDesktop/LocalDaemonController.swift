@@ -82,38 +82,69 @@ struct LocalDaemonEnvironment {
         return LocalDaemonEnvironment(values: values)
     }
 
-    nonisolated static let defaultManagedAgentsJSON = """
-    [
-      {
-        "id": "codex",
-        "name": "Codex",
-        "backend": "codex_app_server",
-        "command": "codex",
-        "args": []
-      },
-      {
-        "id": "opencode",
-        "name": "OpenCode",
-        "backend": "acp",
-        "command": "opencode",
-        "args": ["acp"]
-      },
-      {
-        "id": "claude-code",
-        "name": "Claude Code",
-        "backend": "acp",
-        "command": "npx",
-        "args": ["--yes", "@agentclientprotocol/claude-agent-acp"]
-      },
-      {
-        "id": "pi",
-        "name": "Pi",
-        "backend": "acp",
-        "command": "npx",
-        "args": ["--yes", "pi-acp"]
-      }
-    ]
-    """
+    nonisolated static func defaultManagedAgentsJSON(
+        homeDirectoryPath: String = NSHomeDirectory(),
+        baseEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+        executableExists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) },
+        directoryContents: (String) -> [String] = { path in
+            (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? []
+        }
+    ) -> String {
+        let codexCommand = resolvedExecutablePath(
+            named: "codex",
+            homeDirectoryPath: homeDirectoryPath,
+            baseEnvironment: baseEnvironment,
+            executableExists: executableExists,
+            directoryContents: directoryContents
+        ) ?? "codex"
+        let opencodeCommand = resolvedExecutablePath(
+            named: "opencode",
+            homeDirectoryPath: homeDirectoryPath,
+            baseEnvironment: baseEnvironment,
+            executableExists: executableExists,
+            directoryContents: directoryContents
+        ) ?? "opencode"
+        let npxCommand = resolvedExecutablePath(
+            named: "npx",
+            homeDirectoryPath: homeDirectoryPath,
+            baseEnvironment: baseEnvironment,
+            executableExists: executableExists,
+            directoryContents: directoryContents
+        ) ?? "npx"
+
+        return """
+        [
+          {
+            "id": "codex",
+            "name": "Codex",
+            "backend": "codex_app_server",
+            "command": "\(jsonEscaped(codexCommand))",
+            "args": []
+          },
+          {
+            "id": "opencode",
+            "name": "OpenCode",
+            "backend": "acp",
+            "command": "\(jsonEscaped(opencodeCommand))",
+            "args": ["acp"]
+          },
+          {
+            "id": "claude-code",
+            "name": "Claude Code",
+            "backend": "acp",
+            "command": "\(jsonEscaped(npxCommand))",
+            "args": ["--yes", "@agentclientprotocol/claude-agent-acp"]
+          },
+          {
+            "id": "pi",
+            "name": "Pi",
+            "backend": "acp",
+            "command": "\(jsonEscaped(npxCommand))",
+            "args": ["--yes", "pi-acp"]
+          }
+        ]
+        """
+    }
 
     private nonisolated static func nonEmptyValue(_ value: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -152,6 +183,46 @@ struct LocalDaemonEnvironment {
         }
 
         return orderedComponents.joined(separator: ":")
+    }
+
+    private nonisolated static func resolvedExecutablePath(
+        named executable: String,
+        homeDirectoryPath: String,
+        baseEnvironment: [String: String],
+        executableExists: (String) -> Bool,
+        directoryContents: (String) -> [String]
+    ) -> String? {
+        let searchDirectories = launchPath(
+            existingPath: baseEnvironment["PATH"],
+            homeDirectoryPath: homeDirectoryPath
+        )
+        .split(separator: ":")
+        .map(String.init)
+
+        for directory in searchDirectories {
+            let candidate = directory + "/" + executable
+            if executableExists(candidate) {
+                return candidate
+            }
+        }
+
+        for nodeCellarRoot in ["/opt/homebrew/Cellar/node", "/usr/local/Cellar/node"] {
+            let versions = directoryContents(nodeCellarRoot).sorted(by: >)
+            for version in versions {
+                let candidate = nodeCellarRoot + "/" + version + "/bin/" + executable
+                if executableExists(candidate) {
+                    return candidate
+                }
+            }
+        }
+
+        return nil
+    }
+
+    private nonisolated static func jsonEscaped(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 }
 
@@ -557,7 +628,10 @@ final class LocalDaemonController {
         }
 
         if !fileManager.fileExists(atPath: layout.agentsFileURL.path) {
-            try LocalDaemonEnvironment.defaultManagedAgentsJSON.write(
+            try LocalDaemonEnvironment.defaultManagedAgentsJSON(
+                homeDirectoryPath: layout.homeDirectoryURL.path,
+                baseEnvironment: environment
+            ).write(
                 to: layout.agentsFileURL,
                 atomically: true,
                 encoding: .utf8

@@ -44,12 +44,31 @@ struct LocalDaemonControllerTests {
     }
 
     @Test func defaultManagedAgentsJSONIncludesMultipleBuiltInAgents() {
-        let json = LocalDaemonEnvironment.defaultManagedAgentsJSON
+        let json = LocalDaemonEnvironment.defaultManagedAgentsJSON()
 
         #expect(json.contains("\"id\": \"codex\""))
         #expect(json.contains("\"id\": \"opencode\""))
         #expect(json.contains("\"id\": \"claude-code\""))
         #expect(json.contains("\"id\": \"pi\""))
+    }
+
+    @Test func defaultManagedAgentsJSONResolvesCodexFromNodeCellarWhenPathMissesIt() {
+        let json = LocalDaemonEnvironment.defaultManagedAgentsJSON(
+            homeDirectoryPath: "/Users/tester",
+            baseEnvironment: ["PATH": "/usr/bin:/opt/homebrew/bin"],
+            executableExists: { path in
+                path == "/opt/homebrew/Cellar/node/23.11.0/bin/codex"
+                    || path == "/usr/bin/npx"
+            },
+            directoryContents: { path in
+                if path == "/opt/homebrew/Cellar/node" {
+                    return ["23.11.0"]
+                }
+                return []
+            }
+        )
+
+        #expect(json.contains("\"command\": \"/opt/homebrew/Cellar/node/23.11.0/bin/codex\""))
     }
 
     @Test func localDaemonManagementOnlyActivatesForLoopbackDirectLinks() {
