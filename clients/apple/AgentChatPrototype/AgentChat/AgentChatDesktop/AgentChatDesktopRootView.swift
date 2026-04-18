@@ -323,7 +323,7 @@ struct AgentChatDesktopRootView: View {
                                 editingAgent = agent
                             },
                             onReconnect: {
-                                store.reconnectNow()
+                                store.connectToAgent(id: agent.agentID)
                             }
                         )
                     }
