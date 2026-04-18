@@ -127,40 +127,6 @@ struct AgentChatDesktopRootView: View {
                 .help(showSidebar ? "Hide Sidebar (Command-B)" : "Show Sidebar (Command-B)")
             }
 
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button {
-                    showNewThreadSheet = true
-                } label: {
-                    Label("New Thread", systemImage: "square.and.pencil")
-                }
-                .buttonStyle(.borderedProminent)
-
-                Menu {
-                    Button {
-                        store.reconnectNow()
-                    } label: {
-                        Label("Reconnect", systemImage: "arrow.clockwise")
-                    }
-                    .disabled(!store.hasConfiguredDaemonURL)
-
-                    Button {
-                        showQuickConnect = true
-                    } label: {
-                        Label("Connect", systemImage: "link")
-                    }
-
-                    Divider()
-
-                    Button {
-                        showCommandPalette = true
-                    } label: {
-                        Label("Command Palette", systemImage: "command")
-                    }
-                } label: {
-                    Label("Workspace", systemImage: "slider.horizontal.3")
-                }
-            }
-
             ToolbarItem(placement: .keyboard) {
                 Button("Command Palette") {
                     showCommandPalette = true
@@ -317,7 +283,7 @@ struct AgentChatDesktopRootView: View {
             ContentUnavailableView(
                 "Select a Thread",
                 systemImage: "message.badge.circle",
-                description: Text("Open an existing thread or start a new conversation from the toolbar.")
+                description: Text("Open an existing thread or start a new conversation from the sidebar.")
             )
         }
     }
