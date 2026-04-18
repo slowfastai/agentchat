@@ -384,6 +384,7 @@ enum PrototypeDaemonAgentBridgeError: LocalizedError {
 
 enum PrototypeDaemonAgentBridge {
     static let defaultURLString = "ws://127.0.0.1:9390"
+    private static let assistantResponseTimeout: TimeInterval = 60
 
     static func fetchAgents(from urlString: String = defaultURLString) async throws -> [PrototypeDaemonAgentWire] {
         guard let url = URL(string: urlString) else {
@@ -490,7 +491,7 @@ enum PrototypeDaemonAgentBridge {
 
         var messagesByAgentID: [String: PrototypeRemoteAssistantMessage] = [:]
         var accumulators: [String: PrototypeRemoteAssistantAccumulator] = [:]
-        let deadline = Date().addingTimeInterval(15)
+        let deadline = Date().addingTimeInterval(Self.assistantResponseTimeout)
 
         while Date() < deadline {
             let responseText = try await receiveText(from: task)

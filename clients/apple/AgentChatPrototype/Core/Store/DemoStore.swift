@@ -105,7 +105,9 @@ final class DemoStore: ObservableObject {
     @Published var refreshingThreadIDs: Set<UUID> = []
     @Published var distillingThreadIDs: Set<UUID> = []
 
-    private let snapshotKey = "AgentChatPrototype.DemoStoreSnapshot.v1"
+    private let legacySnapshotKey = "AgentChatPrototype.DemoStoreSnapshot.v1"
+    private let snapshotDirectoryName = "AgentChatPrototype"
+    private let snapshotFileName = "DemoStoreSnapshot.v1.json"
     private var isHydratingSnapshot = false
     private var persistenceTask: Task<Void, Never>?
     private var agentDistillationByThreadID: [UUID: AgentDistillationResult] = [:]
@@ -176,7 +178,6 @@ final class DemoStore: ObservableObject {
         do {
             let fetchedAgents = try await PrototypeDaemonAgentBridge.fetchAgents()
             let customNames = agentCustomNames
-            let avatarData = agentAvatarData
 
             agents = fetchedAgents.map { agent in
                 let stableID = Self.stableAgentUUID(for: agent.agentID)
@@ -195,12 +196,6 @@ final class DemoStore: ObservableObject {
                         ? "\(agent.name) from local daemon"
                         : agent.capabilities.joined(separator: " · ")
                 )
-            }
-
-            for agent in agents {
-                if let data = avatarData[agent.id.uuidString] {
-                    agentAvatarData[agent.id.uuidString] = data
-                }
             }
 
             daemonStatusText = fetchedAgents.isEmpty
@@ -405,7 +400,7 @@ final class DemoStore: ObservableObject {
     ) -> UUID? {
         guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }) else { return nil }
         
-        let maxNumber = projects.flatMap(\.issues).map(\.number).max() ?? 0
+        let maxNumber = projects[projectIndex].issues.map(\.number).max() ?? 0
         let issue = Issue(
             id: UUID(),
             number: maxNumber + 1,
@@ -774,7 +769,8 @@ final class DemoStore: ObservableObject {
 
     func resetPrototypeData() {
         persistenceTask?.cancel()
-        UserDefaults.standard.removeObject(forKey: snapshotKey)
+        deleteSnapshotFile()
+        UserDefaults.standard.removeObject(forKey: legacySnapshotKey)
 
         isHydratingSnapshot = true
         projects = []
@@ -2112,12 +2108,54 @@ final class DemoStore: ObservableObject {
         guard let text else { return nil }
         let tokens = text.split(whereSeparator: \.isWhitespace)
         for token in tokens {
-            let candidate = String(token).trimmingCharacters(in: CharacterSet(charactersIn: ".,()[]{}"))
-            if candidate.contains("/") || candidate.hasPrefix("http://") || candidate.hasPrefix("https://") {
+            let candidate = String(token).trimmingCharacters(in: CharacterSet(charactersIn: ".,()[]{}<>\"'"))
+            if isLikelyPathOrURL(candidate) {
                 return candidate
             }
         }
         return nil
+    }
+
+    private func isLikelyPathOrURL(_ candidate: String) -> Bool {
+        guard !candidate.isEmpty else { return false }
+
+        let lowercased = candidate.lowercased()
+        if lowercased.hasPrefix("http://") || lowercased.hasPrefix("https://") {
+            return true
+        }
+
+        if lowercased == "and/or" || lowercased == "n/a" || lowercased == "w/o" {
+            return false
+        }
+        if candidate.range(of: #"^\d{1,4}/\d{1,2}(/\d{1,4})?$"#, options: .regularExpression) != nil {
+            return false
+        }
+
+        if candidate.hasPrefix("/") || candidate.hasPrefix("~/") || candidate.hasPrefix("./") || candidate.hasPrefix("../") {
+            return candidate.count > 1
+        }
+
+        guard candidate.contains("/") else { return false }
+        guard candidate.range(of: #"^[A-Za-z0-9_~.+@/\-#%]+$"#, options: .regularExpression) != nil else {
+            return false
+        }
+
+        let segments = candidate.split(separator: "/", omittingEmptySubsequences: false)
+        guard segments.count >= 2, !segments.contains(where: { $0.isEmpty }) else { return false }
+
+        let pathAnchors: Set<String> = [
+            "app", "apps", "assets", "client", "clients", "core", "daemon", "doc", "docs",
+            "lib", "package", "packages", "server", "source", "sources", "src", "test", "tests"
+        ]
+        if segments.contains(where: { pathAnchors.contains($0.lowercased()) }) {
+            return true
+        }
+
+        if candidate.range(of: #"\.[A-Za-z0-9]{1,8}($|[#?])"#, options: .regularExpression) != nil {
+            return true
+        }
+
+        return segments.count >= 3
     }
 
     private func trimmedSingleLine(_ text: String) -> String? {
@@ -2182,10 +2220,12 @@ final class DemoStore: ObservableObject {
         sourceAgentName: String,
         templateVersion: String
     ) -> AgentDistillationResult? {
-        let jsonText = extractJSONObject(from: response) ?? response
-        guard let data = jsonText.data(using: .utf8),
-              let envelope = try? JSONDecoder().decode(AgentDistillationEnvelope.self, from: data)
-        else {
+        let jsonCandidates = extractJSONObjects(from: response)
+        let candidateTexts = jsonCandidates.isEmpty ? [response] : jsonCandidates
+        guard let envelope = candidateTexts.lazy.compactMap({ jsonText -> AgentDistillationEnvelope? in
+            guard let data = jsonText.data(using: .utf8) else { return nil }
+            return try? JSONDecoder().decode(AgentDistillationEnvelope.self, from: data)
+        }).first else {
             return nil
         }
 
@@ -2250,12 +2290,58 @@ final class DemoStore: ObservableObject {
     }
 
     private func extractJSONObject(from text: String) -> String? {
-        guard let start = text.firstIndex(of: "{"),
-              let end = text.lastIndex(of: "}")
-        else {
-            return nil
+        extractJSONObjects(from: text).first
+    }
+
+    private func extractJSONObjects(from text: String) -> [String] {
+        var objects: [String] = []
+        var searchStart = text.startIndex
+
+        while searchStart < text.endIndex {
+            guard let start = text[searchStart...].firstIndex(of: "{") else {
+                break
+            }
+
+            var index = start
+            var depth = 0
+            var isInString = false
+            var isEscaped = false
+            var balancedEnd: String.Index?
+
+            while index < text.endIndex {
+                let character = text[index]
+                if isInString {
+                    if isEscaped {
+                        isEscaped = false
+                    } else if character == "\\" {
+                        isEscaped = true
+                    } else if character == "\"" {
+                        isInString = false
+                    }
+                } else if character == "\"" {
+                    isInString = true
+                } else if character == "{" {
+                    depth += 1
+                } else if character == "}" {
+                    depth -= 1
+                    if depth == 0 {
+                        balancedEnd = index
+                        break
+                    }
+                }
+
+                index = text.index(after: index)
+            }
+
+            if let balancedEnd {
+                objects.append(String(text[start...balancedEnd]))
+                searchStart = text.index(after: balancedEnd)
+            } else {
+                searchStart = text.index(after: start)
+            }
         }
-        return String(text[start...end])
+
+        return objects
     }
 
 
@@ -2359,59 +2445,143 @@ final class DemoStore: ObservableObject {
         guard !isHydratingSnapshot else { return }
 
         do {
-            let snapshot = DemoStoreSnapshot(
-                projects: projects,
-                agents: agents,
-                sessions: sessions,
-                threads: threads,
-                artifacts: artifacts,
-                decisions: decisions,
-                timelines: timelineByThread.map { PersistedThreadTimeline(threadID: $0.key, items: $0.value) }
-                    .sorted { $0.threadID.uuidString < $1.threadID.uuidString },
-                selectedProjectID: selectedProjectID,
-                selectedIssueID: selectedIssueID,
-                selectedThreadID: selectedThreadID,
-                agentCustomNames: agentCustomNames,
-                agentAvatarData: agentAvatarData,
-                agentDistillations: agentDistillationByThreadID
-                    .map { PersistedAgentDistillation(threadID: $0.key, result: $0.value) }
-                    .sorted { $0.threadID.uuidString < $1.threadID.uuidString }
-            )
-            let data = try JSONEncoder.prototypeStoreEncoder.encode(snapshot)
-            UserDefaults.standard.set(data, forKey: snapshotKey)
+            let data = try JSONEncoder.prototypeStoreEncoder.encode(currentSnapshot())
+            try writeSnapshotData(data)
+            UserDefaults.standard.removeObject(forKey: legacySnapshotKey)
         } catch {
-            UserDefaults.standard.removeObject(forKey: snapshotKey)
+            print("Failed to persist snapshot: \(error)")
         }
     }
 
     private func restoreSnapshot() -> Bool {
-        guard let data = UserDefaults.standard.data(forKey: snapshotKey) else {
-            return false
+        do {
+            let fileURL = try snapshotFileURL()
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                do {
+                    let data = try Data(contentsOf: fileURL)
+                    let snapshot = try JSONDecoder.prototypeStoreDecoder.decode(DemoStoreSnapshot.self, from: data)
+                    return applySnapshot(snapshot)
+                } catch {
+                    print("Failed to restore snapshot: \(error)")
+                    preserveInvalidSnapshot(at: fileURL)
+                    return restoreLegacySnapshot()
+                }
+            }
+        } catch {
+            print("Failed to locate snapshot file: \(error)")
         }
 
+        return restoreLegacySnapshot()
+    }
+
+    private func restoreLegacySnapshot() -> Bool {
+        guard let data = UserDefaults.standard.data(forKey: legacySnapshotKey) else {
+            return false
+        }
         do {
             let snapshot = try JSONDecoder.prototypeStoreDecoder.decode(DemoStoreSnapshot.self, from: data)
-            projects = snapshot.projects
-            agents = snapshot.agents
-            sessions = snapshot.sessions
-            threads = snapshot.threads
-            artifacts = snapshot.artifacts
-            decisions = snapshot.decisions
-            timelineByThread = Dictionary(
-                uniqueKeysWithValues: snapshot.timelines.map { ($0.threadID, $0.items) }
-            )
-            selectedProjectID = snapshot.selectedProjectID
-            selectedIssueID = snapshot.selectedIssueID
-            selectedThreadID = snapshot.selectedThreadID
-            agentCustomNames = snapshot.agentCustomNames
-            agentAvatarData = snapshot.agentAvatarData
-            agentDistillationByThreadID = Dictionary(
-                uniqueKeysWithValues: (snapshot.agentDistillations ?? []).map { ($0.threadID, $0.result) }
-            )
-            return !projects.isEmpty
+            let restored = applySnapshot(snapshot)
+            if restored {
+                do {
+                    try writeSnapshotData(data)
+                    UserDefaults.standard.removeObject(forKey: legacySnapshotKey)
+                } catch {
+                    print("Failed to migrate snapshot from UserDefaults: \(error)")
+                }
+            }
+            return restored
         } catch {
-            UserDefaults.standard.removeObject(forKey: snapshotKey)
+            print("Failed to restore legacy snapshot: \(error)")
             return false
+        }
+    }
+
+    private func currentSnapshot() -> DemoStoreSnapshot {
+        DemoStoreSnapshot(
+            projects: projects,
+            agents: agents,
+            sessions: sessions,
+            threads: threads,
+            artifacts: artifacts,
+            decisions: decisions,
+            timelines: timelineByThread.map { PersistedThreadTimeline(threadID: $0.key, items: $0.value) }
+                .sorted { $0.threadID.uuidString < $1.threadID.uuidString },
+            selectedProjectID: selectedProjectID,
+            selectedIssueID: selectedIssueID,
+            selectedThreadID: selectedThreadID,
+            agentCustomNames: agentCustomNames,
+            agentAvatarData: agentAvatarData,
+            agentDistillations: agentDistillationByThreadID
+                .map { PersistedAgentDistillation(threadID: $0.key, result: $0.value) }
+                .sorted { $0.threadID.uuidString < $1.threadID.uuidString }
+        )
+    }
+
+    private func applySnapshot(_ snapshot: DemoStoreSnapshot) -> Bool {
+        projects = snapshot.projects
+        agents = snapshot.agents
+        sessions = snapshot.sessions
+        threads = snapshot.threads
+        artifacts = snapshot.artifacts
+        decisions = snapshot.decisions
+        timelineByThread = Dictionary(
+            uniqueKeysWithValues: snapshot.timelines.map { ($0.threadID, $0.items) }
+        )
+        selectedProjectID = snapshot.selectedProjectID
+        selectedIssueID = snapshot.selectedIssueID
+        selectedThreadID = snapshot.selectedThreadID
+        agentCustomNames = snapshot.agentCustomNames
+        agentAvatarData = snapshot.agentAvatarData
+        agentDistillationByThreadID = Dictionary(
+            uniqueKeysWithValues: (snapshot.agentDistillations ?? []).map { ($0.threadID, $0.result) }
+        )
+        return !projects.isEmpty
+    }
+
+    private func writeSnapshotData(_ data: Data) throws {
+        let fileURL = try snapshotFileURL()
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+        try data.write(to: fileURL, options: [.atomic])
+    }
+
+    private func snapshotFileURL() throws -> URL {
+        guard let applicationSupportURL = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else {
+            throw NSError(
+                domain: "AgentChatPrototype.DemoStore",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Application Support directory is unavailable."]
+            )
+        }
+        return applicationSupportURL
+            .appendingPathComponent(snapshotDirectoryName, isDirectory: true)
+            .appendingPathComponent(snapshotFileName)
+    }
+
+    private func deleteSnapshotFile() {
+        do {
+            let fileURL = try snapshotFileURL()
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                try FileManager.default.removeItem(at: fileURL)
+            }
+        } catch {
+            print("Failed to delete snapshot file: \(error)")
+        }
+    }
+
+    private func preserveInvalidSnapshot(at fileURL: URL) {
+        let backupName = "DemoStoreSnapshot.v1.invalid-\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString).json"
+        let backupURL = fileURL.deletingLastPathComponent().appendingPathComponent(backupName)
+        do {
+            try FileManager.default.moveItem(at: fileURL, to: backupURL)
+        } catch {
+            print("Failed to preserve invalid snapshot: \(error)")
         }
     }
 
