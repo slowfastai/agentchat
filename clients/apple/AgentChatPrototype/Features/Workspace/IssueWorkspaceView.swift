@@ -39,13 +39,41 @@ struct IssueWorkspaceView: View {
 
     @State private var composerText = ""
     @State private var selectedTargets: Set<String> = []
+    @State private var showDistilledDecisionSheet = false
+    @State private var showDistilledArtifactSheet = false
+    @State private var showFollowUpIssueSheet = false
+
+    @State private var distilledDecisionDraft: DistilledDecisionDraft?
+    @State private var distilledArtifactDraft: DistilledArtifactDraft?
+    @State private var distilledFollowUpDraft: DistilledIssueDraft?
 
     var body: some View {
         if let issue = store.issue(for: issueID) {
             let activeThread = store.activeThread(for: issueID)
 
             VStack(spacing: 0) {
-                IssueWorkspaceHeader(issue: issue)
+                IssueWorkspaceHeader(
+                    issue: issue,
+                    onDistillSummary: {
+                        guard let activeThread else { return }
+                        store.distillThreadIntoIssueSummary(issueID: issue.id, threadID: activeThread.id)
+                    },
+                    onDraftDecision: {
+                        guard let activeThread else { return }
+                        distilledDecisionDraft = store.distilledDecisionDraft(for: activeThread.id)
+                        showDistilledDecisionSheet = distilledDecisionDraft != nil
+                    },
+                    onDraftArtifact: {
+                        guard let activeThread else { return }
+                        distilledArtifactDraft = store.distilledArtifactDraft(for: activeThread.id)
+                        showDistilledArtifactSheet = distilledArtifactDraft != nil
+                    },
+                    onCreateFollowUp: {
+                        guard let activeThread else { return }
+                        distilledFollowUpDraft = store.distilledFollowUpIssueDraft(for: activeThread.id)
+                        showFollowUpIssueSheet = distilledFollowUpDraft != nil
+                    }
+                )
                     .padding(.horizontal, AppSpacing.lg)
                     .padding(.top, AppSpacing.lg)
 
@@ -110,6 +138,34 @@ struct IssueWorkspaceView: View {
             .onChange(of: activeThread?.id) { _, _ in
                 seedTargets(from: activeThread, fallbackIssue: issue, reset: true)
             }
+            .sheet(isPresented: $showDistilledDecisionSheet) {
+                if let activeThread, let distilledDecisionDraft {
+                    CreateDecisionSheet(
+                        issueID: issue.id,
+                        thread: activeThread,
+                        initialDraft: distilledDecisionDraft
+                    )
+                }
+            }
+            .sheet(isPresented: $showDistilledArtifactSheet) {
+                if let activeThread, let distilledArtifactDraft {
+                    CreateArtifactSheet(
+                        issueID: issue.id,
+                        thread: activeThread,
+                        initialDraft: distilledArtifactDraft
+                    )
+                }
+            }
+            .sheet(isPresented: $showFollowUpIssueSheet) {
+                if let projectID = store.projectID(forIssueID: issue.id),
+                   let distilledFollowUpDraft {
+                    CreateFollowUpIssueSheet(
+                        projectID: projectID,
+                        sourceIssueID: issue.id,
+                        draft: distilledFollowUpDraft
+                    )
+                }
+            }
         } else {
             EmptyStateView(
                 title: "Issue not found",
@@ -132,6 +188,10 @@ struct IssueWorkspaceView: View {
 
 private struct IssueWorkspaceHeader: View {
     let issue: Issue
+    let onDistillSummary: () -> Void
+    let onDraftDecision: () -> Void
+    let onDraftArtifact: () -> Void
+    let onCreateFollowUp: () -> Void
 
     var body: some View {
         CardSurface(accent: issue.status.badgeColor) {
@@ -158,8 +218,14 @@ private struct IssueWorkspaceHeader: View {
                     HStack(spacing: 8) {
                         Button("Start") {}
                             .buttonStyle(.borderedProminent)
-                        Button("Distill") {}
-                            .buttonStyle(.bordered)
+                        Menu("Distill") {
+                            Button("Update Issue Summary", action: onDistillSummary)
+                            Button("Draft Decision", action: onDraftDecision)
+                            Button("Draft Artifact", action: onDraftArtifact)
+                            Button("Create Follow-up Issue", action: onCreateFollowUp)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .buttonStyle(.bordered)
                         Button("Switcher") {}
                             .buttonStyle(.bordered)
                     }
@@ -356,6 +422,7 @@ private struct IssueInspectorPanel: View {
 
     @State private var showCreateArtifact = false
     @State private var showCreateDecision = false
+    @State private var showDistilledFollowUp = false
 
     var body: some View {
         CardSurface(accent: .gray) {
@@ -399,6 +466,11 @@ private struct IssueInspectorPanel: View {
 
                                 Button("Add Decision") {
                                     showCreateDecision = true
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button("Follow-up") {
+                                    showDistilledFollowUp = true
                                 }
                                 .buttonStyle(.bordered)
                             }
@@ -462,6 +534,17 @@ private struct IssueInspectorPanel: View {
                 issueID: issue.id,
                 thread: activeThread
             )
+        }
+        .sheet(isPresented: $showDistilledFollowUp) {
+            if let activeThread,
+               let projectID = store.projectID(forIssueID: issue.id),
+               let draft = store.distilledFollowUpIssueDraft(for: activeThread.id) {
+                CreateFollowUpIssueSheet(
+                    projectID: projectID,
+                    sourceIssueID: issue.id,
+                    draft: draft
+                )
+            }
         }
     }
 

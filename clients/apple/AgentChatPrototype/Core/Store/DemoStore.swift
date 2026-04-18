@@ -22,6 +22,26 @@ private struct PersistedThreadTimeline: Codable {
     var items: [TimelineItem]
 }
 
+struct DistilledArtifactDraft {
+    var kind: IssueArtifactKind
+    var title: String
+    var summary: String
+    var pathOrURL: String
+}
+
+struct DistilledDecisionDraft {
+    var title: String
+    var rationale: String
+}
+
+struct DistilledIssueDraft {
+    var title: String
+    var summary: String
+    var status: IssueStatus
+    var priority: IssuePriority
+    var assignees: [ParticipantRef]
+}
+
 @MainActor
 final class DemoStore: ObservableObject {
     @Published var projects: [Project] = [] { didSet { schedulePersistence() } }
@@ -230,6 +250,12 @@ final class DemoStore: ObservableObject {
         projects.first(where: { $0.id == projectID })
     }
 
+    func projectID(forIssueID issueID: UUID) -> UUID? {
+        projects.first(where: { project in
+            project.issues.contains(where: { $0.id == issueID })
+        })?.id
+    }
+
     func thread(for threadID: UUID) -> Thread? {
         threads.first(where: { $0.id == threadID })
     }
@@ -298,8 +324,9 @@ final class DemoStore: ObservableObject {
         }
     }
 
-    func addIssue(to projectID: UUID, title: String, summary: String = "", status: IssueStatus = .backlog, priority: IssuePriority = .medium, assignees: [ParticipantRef] = []) {
-        guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }) else { return }
+    @discardableResult
+    func addIssue(to projectID: UUID, title: String, summary: String = "", status: IssueStatus = .backlog, priority: IssuePriority = .medium, assignees: [ParticipantRef] = []) -> UUID? {
+        guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }) else { return nil }
         
         let maxNumber = projects.flatMap(\.issues).map(\.number).max() ?? 0
         let issue = Issue(
@@ -317,6 +344,7 @@ final class DemoStore: ObservableObject {
             updatedAt: Date()
         )
         projects[projectIndex].issues.append(issue)
+        return issue.id
     }
 
     func createThread(for issueID: UUID, purpose: ThreadPurpose = .discussion, agentIDs: [UUID]) {
@@ -727,6 +755,104 @@ final class DemoStore: ObservableObject {
                 sessionID: nil
             )
         }
+    }
+
+    func distillThreadIntoIssueSummary(issueID: UUID, threadID: UUID) {
+        let summary = distilledSummary(for: threadID)
+        guard !summary.isEmpty else { return }
+
+        updateIssue(issueID: issueID) { issue in
+            issue.summary = summary
+            issue.updatedAt = Date()
+            issue.latestActivityText = "Issue summary distilled from thread"
+        }
+
+        append(
+            payload: .system(SystemEvent(text: "Distilled thread output into the issue summary.")),
+            issueID: issueID,
+            threadID: threadID,
+            sessionID: nil
+        )
+    }
+
+    func distilledDecisionDraft(for threadID: UUID) -> DistilledDecisionDraft? {
+        guard let thread = thread(for: threadID) else { return nil }
+
+        let userIntent = latestUserIntent(in: threadID)
+        let agentConclusion = latestAgentConclusion(in: threadID) ?? thread.latestActivityText
+        let rationaleParts = [
+            userIntent,
+            latestPlanSummary(in: threadID),
+            latestToolSummary(in: threadID),
+            agentConclusion
+        ]
+        .compactMap { value in
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }
+
+        guard !rationaleParts.isEmpty else { return nil }
+
+        let titlePrefix = thread.purpose == .review ? "Adopt review outcome" : "Adopt thread outcome"
+        return DistilledDecisionDraft(
+            title: "\(titlePrefix): \(thread.title)",
+            rationale: rationaleParts.joined(separator: "\n\n")
+        )
+    }
+
+    func distilledArtifactDraft(for threadID: UUID) -> DistilledArtifactDraft? {
+        guard let thread = thread(for: threadID) else { return nil }
+
+        if let toolEvent = timeline(forThreadID: threadID).reversed().compactMap({ item -> ToolCallEvent? in
+            if case .toolCall(let event) = item.payload {
+                return event
+            }
+            return nil
+        }).first {
+            return DistilledArtifactDraft(
+                kind: .note,
+                title: toolEvent.title,
+                summary: toolEvent.contentPreview ?? thread.latestActivityText,
+                pathOrURL: inferredPathOrURL(from: toolEvent.contentPreview) ?? ""
+            )
+        }
+
+        let latestConclusion = latestAgentConclusion(in: threadID) ?? thread.latestActivityText
+        guard !latestConclusion.isEmpty else { return nil }
+
+        return DistilledArtifactDraft(
+            kind: .note,
+            title: "\(thread.title) output",
+            summary: latestConclusion,
+            pathOrURL: inferredPathOrURL(from: latestConclusion) ?? ""
+        )
+    }
+
+    func distilledFollowUpIssueDraft(for threadID: UUID) -> DistilledIssueDraft? {
+        guard let thread = thread(for: threadID),
+              let issue = issue(for: thread.issueID)
+        else {
+            return nil
+        }
+
+        let action = latestPlanSummary(in: threadID)
+            ?? latestToolSummary(in: threadID)
+            ?? latestAgentConclusion(in: threadID)
+            ?? thread.latestActivityText
+        let trimmedAction = action.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedAction.isEmpty else { return nil }
+
+        return DistilledIssueDraft(
+            title: "Follow up: \(thread.title)",
+            summary: [
+                "Parent issue: #\(issue.number) \(issue.title)",
+                "Source thread: \(thread.title)",
+                trimmedAction
+            ].joined(separator: "\n\n"),
+            status: .todo,
+            priority: issue.priority,
+            assignees: thread.participants
+        )
     }
 
     func seed() {
@@ -1693,6 +1819,93 @@ final class DemoStore: ObservableObject {
             }
         }
         return items.last?.payload.summaryText
+    }
+
+    private func distilledSummary(for threadID: UUID) -> String {
+        guard let thread = thread(for: threadID) else { return "" }
+
+        var paragraphs: [String] = []
+        if let userIntent = latestUserIntent(in: threadID) {
+            paragraphs.append("Current objective: \(userIntent)")
+        }
+        if let plan = latestPlanSummary(in: threadID) {
+            paragraphs.append("Latest plan: \(plan)")
+        }
+        if let toolSummary = latestToolSummary(in: threadID) {
+            paragraphs.append("Key execution detail: \(toolSummary)")
+        }
+        if let conclusion = latestAgentConclusion(in: threadID) {
+            paragraphs.append("Latest outcome: \(conclusion)")
+        } else if !thread.latestActivityText.isEmpty {
+            paragraphs.append("Latest outcome: \(thread.latestActivityText)")
+        }
+
+        return paragraphs.joined(separator: "\n\n")
+    }
+
+    private func latestUserIntent(in threadID: UUID) -> String? {
+        timeline(forThreadID: threadID).reversed().compactMap { item in
+            if case .userMessage(let message) = item.payload {
+                return trimmedSingleLine(message.text)
+            }
+            return nil
+        }.first
+    }
+
+    private func latestAgentConclusion(in threadID: UUID) -> String? {
+        timeline(forThreadID: threadID).reversed().compactMap { item in
+            if case .agentMessage(let message) = item.payload {
+                return trimmedSingleLine(message.text)
+            }
+            return nil
+        }.first
+    }
+
+    private func latestToolSummary(in threadID: UUID) -> String? {
+        timeline(forThreadID: threadID).reversed().compactMap { item in
+            if case .toolCall(let event) = item.payload {
+                let preview = trimmedSingleLine(event.contentPreview ?? "")
+                if let preview, !preview.isEmpty {
+                    return "\(event.title): \(preview)"
+                }
+                return event.title
+            }
+            return nil
+        }.first
+    }
+
+    private func latestPlanSummary(in threadID: UUID) -> String? {
+        timeline(forThreadID: threadID).reversed().compactMap { item in
+            if case .plan(let event) = item.payload {
+                let steps = event.steps
+                    .map(trimmedSingleLine)
+                    .compactMap { $0 }
+                if steps.isEmpty {
+                    return event.title
+                }
+                return ([event.title] + steps).joined(separator: " | ")
+            }
+            return nil
+        }.first
+    }
+
+    private func inferredPathOrURL(from text: String?) -> String? {
+        guard let text else { return nil }
+        let tokens = text.split(whereSeparator: \.isWhitespace)
+        for token in tokens {
+            let candidate = String(token).trimmingCharacters(in: CharacterSet(charactersIn: ".,()[]{}"))
+            if candidate.contains("/") || candidate.hasPrefix("http://") || candidate.hasPrefix("https://") {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private func trimmedSingleLine(_ text: String) -> String? {
+        let trimmed = text
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private static func stableAgentUUID(for agentID: String) -> UUID {
