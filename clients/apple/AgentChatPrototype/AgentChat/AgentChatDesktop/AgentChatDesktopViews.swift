@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct CommandPaletteView: View {
     @Binding var isPresented: Bool
@@ -97,8 +98,15 @@ struct CommandPaletteView: View {
                     }
                     .frame(maxHeight: 300)
                 }
-                .background(Color(nsColor: .windowBackgroundColor))
-                .cornerRadius(12)
+                .background(
+                    DesktopGlassBackground(
+                        cornerRadius: 16,
+                        tint: .accentColor,
+                        tintOpacity: 0.035,
+                        strokeOpacity: 0.14,
+                        interactive: true
+                    )
+                )
                 .shadow(radius: 20)
                 .padding(.horizontal, 100)
                 .padding(.bottom, 100)
@@ -213,6 +221,272 @@ func desktopTintColor(named name: String) -> Color {
     }
 }
 
+struct DesktopChromeDivider: View {
+    let topInset: CGFloat
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Color.clear
+                .frame(height: topInset)
+
+            Rectangle()
+                .fill(Color.primary.opacity(0.10))
+                .frame(width: 1)
+        }
+        .frame(width: 1)
+    }
+}
+
+struct DesktopChromeSplitDivider: View {
+    let topInset: CGFloat
+    let sidebarWidth: CGFloat
+    let widthRange: ClosedRange<CGFloat>
+    let onWidthChange: (CGFloat) -> Void
+    @State private var dragStartWidth: CGFloat?
+    @State private var isHovering = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Color.clear
+                .frame(height: topInset)
+
+            Rectangle()
+                .fill(isHovering ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.12))
+                .frame(width: 1)
+        }
+        .frame(width: 7)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovering = hovering
+        }
+        .gesture(
+            DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                .onChanged { value in
+                    let baseWidth = dragStartWidth ?? sidebarWidth
+                    if dragStartWidth == nil {
+                        dragStartWidth = sidebarWidth
+                    }
+                    let proposedWidth = baseWidth + value.translation.width
+                    onWidthChange(min(max(proposedWidth, widthRange.lowerBound), widthRange.upperBound))
+                }
+                .onEnded { _ in
+                    dragStartWidth = nil
+                }
+        )
+    }
+}
+
+struct DesktopWindowChromeInsetReader: NSViewRepresentable {
+    let onChange: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> DesktopChromeInsetObserverView {
+        let view = DesktopChromeInsetObserverView(frame: .zero)
+        view.onChange = onChange
+        return view
+    }
+
+    func updateNSView(_ nsView: DesktopChromeInsetObserverView, context: Context) {
+        nsView.onChange = onChange
+        nsView.reportInset()
+    }
+}
+
+final class DesktopChromeInsetObserverView: NSView {
+    var onChange: ((CGFloat) -> Void)?
+    private var lastReportedInset: CGFloat = -1
+    private var observers: [NSObjectProtocol] = []
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        installObservers()
+        reportInset()
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        removeObservers()
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    override func layout() {
+        super.layout()
+        reportInset()
+    }
+
+    func reportInset() {
+        guard let window else { return }
+
+        let safeAreaInset = superview?.safeAreaInsets.top ?? safeAreaInsets.top
+        let titlebarInset = max(0, window.frame.maxY - window.contentLayoutRect.maxY)
+        let inset = max(safeAreaInset, titlebarInset)
+
+        guard abs(inset - lastReportedInset) > 0.5 else { return }
+        lastReportedInset = inset
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.onChange?(inset)
+        }
+    }
+
+    private func installObservers() {
+        removeObservers()
+        guard let window else { return }
+
+        observers = [
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.didResizeNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                self?.reportInset()
+            },
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.didEndLiveResizeNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                self?.reportInset()
+            },
+        ]
+    }
+
+    private func removeObservers() {
+        for observer in observers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        observers.removeAll()
+    }
+
+    deinit {
+        removeObservers()
+    }
+}
+
+private struct DesktopGlassBackground: View {
+    let cornerRadius: CGFloat
+    var tint: Color = .accentColor
+    var tintOpacity: Double = 0
+    var strokeOpacity: Double = 0.08
+    var fallbackMaterial: Material = .regularMaterial
+    var fallbackFill: Color?
+    var fallbackStroke: Color?
+    var interactive = false
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+    }
+
+    var body: some View {
+        if #available(macOS 26, *) {
+            if interactive {
+                shape
+                    .fill(Color.clear)
+                    .glassEffect(.regular.interactive(), in: shape)
+                    .overlay(shape.fill(tint.opacity(tintOpacity)))
+                    .overlay(shape.stroke(tint.opacity(strokeOpacity), lineWidth: 1))
+            } else {
+                shape
+                    .fill(Color.clear)
+                    .glassEffect(.regular, in: shape)
+                    .overlay(shape.fill(tint.opacity(tintOpacity)))
+                    .overlay(shape.stroke(tint.opacity(strokeOpacity), lineWidth: 1))
+            }
+        } else if let fallbackFill {
+            shape
+                .fill(fallbackFill)
+                .overlay(shape.stroke(fallbackStroke ?? Color.primary.opacity(strokeOpacity), lineWidth: 1))
+        } else {
+            shape
+                .fill(fallbackMaterial)
+                .overlay(shape.stroke(fallbackStroke ?? Color.primary.opacity(strokeOpacity), lineWidth: 1))
+        }
+    }
+}
+
+private struct DesktopGlassRailBackground: View {
+    var body: some View {
+        if #available(macOS 26, *) {
+            Rectangle()
+                .fill(Color.clear)
+                .glassEffect(.regular, in: Rectangle())
+                .overlay(Color.primary.opacity(0.025))
+        } else {
+            Color(nsColor: .windowBackgroundColor).opacity(0.45)
+        }
+    }
+}
+
+struct DesktopRootBackground: View {
+    var body: some View {
+        if #available(macOS 26, *) {
+            DesktopWindowVisualEffectBackdrop()
+                .overlay(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.10),
+                            Color.accentColor.opacity(0.08),
+                            Color.clear,
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+        } else {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.972, green: 0.968, blue: 0.948),
+                    Color(red: 0.942, green: 0.934, blue: 0.904),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
+    }
+}
+
+struct DesktopGlassWindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async {
+            configure(view.window)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            configure(nsView.window)
+        }
+    }
+
+    private func configure(_ window: NSWindow?) {
+        guard #available(macOS 26, *), let window else { return }
+
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.titlebarAppearsTransparent = true
+        window.styleMask.insert(.fullSizeContentView)
+        window.toolbarStyle = .unified
+    }
+}
+
+private struct DesktopWindowVisualEffectBackdrop: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView(frame: .zero)
+        view.autoresizingMask = [.width, .height]
+        view.material = .underWindowBackground
+        view.blendingMode = .behindWindow
+        view.state = .active
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = .underWindowBackground
+        nsView.blendingMode = .behindWindow
+        nsView.state = .active
+    }
+}
+
 private struct DesktopSurface<Content: View>: View {
     var padding: CGFloat = 16
     let content: Content
@@ -225,10 +499,13 @@ private struct DesktopSurface<Content: View>: View {
     var body: some View {
         content
             .padding(padding)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+            .background(
+                DesktopGlassBackground(
+                    cornerRadius: 20,
+                    tint: .primary,
+                    tintOpacity: 0.012,
+                    strokeOpacity: 0.08
+                )
             )
     }
 }
@@ -246,24 +523,54 @@ private struct DesktopHeroSurface<Content: View>: View {
         content
             .padding(22)
             .background(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(.regularMaterial)
-                    .overlay(
-                        LinearGradient(
-                            colors: [
-                                tint.opacity(0.16),
-                                Color.clear,
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                    )
+                DesktopGlassBackground(
+                    cornerRadius: 24,
+                    tint: tint,
+                    tintOpacity: 0.13,
+                    strokeOpacity: 0.16
+                )
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .stroke(tint.opacity(0.16), lineWidth: 1)
+    }
+}
+
+private struct DesktopGlassTileModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    var tint: Color = .primary
+    var tintOpacity: Double = 0.035
+    var fallbackFill = Color(nsColor: .controlBackgroundColor).opacity(0.18)
+    var fallbackStroke: Color?
+
+    func body(content: Content) -> some View {
+        content.background(
+            DesktopGlassBackground(
+                cornerRadius: cornerRadius,
+                tint: tint,
+                tintOpacity: tintOpacity,
+                strokeOpacity: 0.045,
+                fallbackFill: fallbackFill,
+                fallbackStroke: fallbackStroke
             )
+        )
+    }
+}
+
+private extension View {
+    func desktopGlassTile(
+        cornerRadius: CGFloat,
+        tint: Color = .primary,
+        tintOpacity: Double = 0.035,
+        fallbackFill: Color = Color(nsColor: .controlBackgroundColor).opacity(0.18),
+        fallbackStroke: Color? = nil
+    ) -> some View {
+        modifier(
+            DesktopGlassTileModifier(
+                cornerRadius: cornerRadius,
+                tint: tint,
+                tintOpacity: tintOpacity,
+                fallbackFill: fallbackFill,
+                fallbackStroke: fallbackStroke
+            )
+        )
     }
 }
 
@@ -322,7 +629,7 @@ struct SidebarOverviewCard: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.18), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .desktopGlassTile(cornerRadius: 14)
     }
 }
 
@@ -491,7 +798,7 @@ struct WorkspaceStartView: View {
             Spacer(minLength: 0)
         }
         .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.18), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .desktopGlassTile(cornerRadius: 14)
     }
 
     private func suggestionCard(_ text: String) -> some View {
@@ -499,7 +806,10 @@ struct WorkspaceStartView: View {
             .font(.callout)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(14)
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.16), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .desktopGlassTile(
+                cornerRadius: 16,
+                fallbackFill: Color(nsColor: .controlBackgroundColor).opacity(0.16)
+            )
     }
 }
 
@@ -908,7 +1218,12 @@ struct ConnectionStatusCard: View {
                 .foregroundStyle(.tertiary)
         }
         .padding(8)
-        .background(Color.black.opacity(0.03), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .desktopGlassTile(
+            cornerRadius: 8,
+            tint: tint,
+            tintOpacity: 0.035,
+            fallbackFill: Color.black.opacity(0.03)
+        )
         .onAppear {
             if let clipboardString = NSPasteboard.general.string(forType: .string),
                canPasteFromClipboard {
@@ -991,12 +1306,15 @@ struct ThreadSidebarRow: View {
         }
         .padding(12)
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(rowBackground)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(rowStroke, lineWidth: 1)
+            DesktopGlassBackground(
+                cornerRadius: 16,
+                tint: isSelected ? .accentColor : .primary,
+                tintOpacity: isSelected ? 0.10 : (isHovering ? 0.045 : 0.018),
+                strokeOpacity: isSelected ? 0.22 : 0.05,
+                fallbackFill: rowBackground,
+                fallbackStroke: rowStroke,
+                interactive: isSelected || isHovering
+            )
         )
         .onHover { hovering in
             isHovering = hovering
@@ -1438,8 +1756,15 @@ struct ThreadDetailView: View {
                             .frame(minHeight: 132)
                             .padding(12)
                             .background(
-                                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                    .fill(Color.black.opacity(0.035))
+                                DesktopGlassBackground(
+                                    cornerRadius: 18,
+                                    tint: .accentColor,
+                                    tintOpacity: isComposerFocused ? 0.035 : 0.012,
+                                    strokeOpacity: 0.04,
+                                    fallbackFill: Color.black.opacity(0.035),
+                                    fallbackStroke: Color.primary.opacity(0.06),
+                                    interactive: isComposerFocused
+                                )
                             )
                             .overlay(
                                 RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -1816,7 +2141,12 @@ struct TimelineEntryCard: View {
                             Spacer()
                         }
                         .padding(10)
-                        .background(Color.black.opacity(0.025), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .desktopGlassTile(
+                            cornerRadius: 12,
+                            tint: desktopTintColor(named: entry.tintName),
+                            tintOpacity: 0.04,
+                            fallbackFill: Color.black.opacity(0.025)
+                        )
                     }
                 }
             }
@@ -1824,12 +2154,14 @@ struct TimelineEntryCard: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.8))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(desktopTintColor(named: entry.tintName).opacity(0.12), lineWidth: 1)
+            DesktopGlassBackground(
+                cornerRadius: 18,
+                tint: desktopTintColor(named: entry.tintName),
+                tintOpacity: 0.035,
+                strokeOpacity: 0.12,
+                fallbackFill: Color(nsColor: .controlBackgroundColor).opacity(0.8),
+                fallbackStroke: desktopTintColor(named: entry.tintName).opacity(0.12)
+            )
         )
     }
 
@@ -2339,7 +2671,7 @@ struct DesktopVerticalTabRail: View {
             Spacer()
         }
         .frame(width: 52)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.45))
+        .background(DesktopGlassRailBackground())
     }
 }
 

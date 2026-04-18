@@ -5,8 +5,10 @@ struct AgentChatDesktopRootView: View {
     @EnvironmentObject private var store: DaemonChatStore
     @SceneStorage("agentchat.desktop.showSidebar") private var showSidebar = true
     @SceneStorage("agentchat.desktop.selectedTab") private var selectedTab: String = DesktopTab.chats.rawValue
+    @SceneStorage("agentchat.desktop.sidebarWidth") private var sidebarWidth = 340.0
 
     @State private var selectedThreadID: String?
+    @State private var topChromeInset: CGFloat = 40
 
     private enum DesktopTab: String {
         case chats = "chats"
@@ -107,12 +109,21 @@ struct AgentChatDesktopRootView: View {
     var body: some View {
         HStack(spacing: 0) {
             DesktopVerticalTabRail(selectedTab: $selectedTab)
-            Divider()
-            HSplitView {
+            DesktopChromeDivider(topInset: topChromeInset)
+
+            HStack(spacing: 0) {
                 if showSidebar {
                     sidebarContent
-                }
+                        .frame(width: clampedSidebarWidth)
 
+                    DesktopChromeSplitDivider(
+                        topInset: topChromeInset,
+                        sidebarWidth: clampedSidebarWidth,
+                        widthRange: CGFloat(sidebarWidthLimits.lowerBound)...CGFloat(sidebarWidthLimits.upperBound)
+                    ) { width in
+                        setSidebarWidth(width)
+                    }
+                }
                 detailPane
             }
         }
@@ -136,16 +147,13 @@ struct AgentChatDesktopRootView: View {
         .agentChatDesktopSidebarShortcut { [self] in
             toggleSidebar()
         }
+        .background(DesktopRootBackground())
         .background(
-            LinearGradient(
-                colors: [
-                    Color(red: 0.972, green: 0.968, blue: 0.948),
-                    Color(red: 0.942, green: 0.934, blue: 0.904),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            DesktopWindowChromeInsetReader { inset in
+                topChromeInset = inset
+            }
         )
+        .background(DesktopGlassWindowConfigurator())
         .sheet(isPresented: $showNewThreadSheet) {
             AgentSelectionSheet(
                 title: "Start New Thread",
@@ -291,19 +299,38 @@ struct AgentChatDesktopRootView: View {
             .frame(minWidth: 720, maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private var sidebarWidthLimits: ClosedRange<Double> {
+        switch DesktopTab(rawValue: selectedTab) ?? .chats {
+        case .chats:
+            return 320...520
+        case .agents, .settings:
+            return 280...480
+        }
+    }
+
+    private var clampedSidebarWidth: CGFloat {
+        let limits = sidebarWidthLimits
+        return CGFloat(min(max(sidebarWidth, limits.lowerBound), limits.upperBound))
+    }
+
     @ViewBuilder
     private var sidebarContent: some View {
         switch DesktopTab(rawValue: selectedTab) ?? .chats {
         case .chats:
             sidebar
-                .frame(minWidth: 320, idealWidth: 340, maxWidth: 520)
+                .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
         case .agents:
             agentsSidebarPanel
-                .frame(minWidth: 280, idealWidth: 320, maxWidth: 480)
+                .frame(minWidth: 280, maxWidth: .infinity, maxHeight: .infinity)
         case .settings:
             DesktopSettingsSidebarPanel()
-                .frame(minWidth: 280, idealWidth: 320, maxWidth: 480)
+                .frame(minWidth: 280, maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private func setSidebarWidth(_ width: CGFloat) {
+        let limits = sidebarWidthLimits
+        sidebarWidth = min(max(Double(width), limits.lowerBound), limits.upperBound)
     }
 
     private var agentsSidebarPanel: some View {
@@ -443,6 +470,8 @@ ForEach(recentThreads) { thread in
                 }
             }
         }
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
     }
 
     private func synchronizeSelection() {
