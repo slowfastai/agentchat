@@ -305,6 +305,12 @@ final class DemoStore: ObservableObject {
             .sorted { $0.createdAt > $1.createdAt }
     }
 
+    func followUpIssues(for sourceIssueID: UUID) -> [Issue] {
+        allIssues
+            .filter { $0.sourceIssueID == sourceIssueID }
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
     func threads(for issueID: UUID) -> [Thread] {
         threads.filter { $0.issueID == issueID }
             .sorted { $0.updatedAt > $1.updatedAt }

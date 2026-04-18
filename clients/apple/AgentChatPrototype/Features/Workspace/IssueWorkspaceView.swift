@@ -483,6 +483,25 @@ private struct IssueInspectorPanel: View {
                         }
                     }
 
+                    inspectorSection("Follow-up Issues", systemImage: "arrowshape.turn.up.right") {
+                        let followUps = store.followUpIssues(for: issue.id)
+                        if followUps.isEmpty {
+                            PlaceholderInspectorRow(text: "No follow-up issues created yet")
+                        } else {
+                            VStack(spacing: AppSpacing.sm) {
+                                ForEach(followUps) { followUp in
+                                    Button {
+                                        store.selectedIssueID = followUp.id
+                                        store.selectedThreadID = nil
+                                    } label: {
+                                        FollowUpIssueCard(issue: followUp)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
+
                     inspectorSection("Active Thread", systemImage: "bubble.left.and.bubble.right") {
                         if let activeThread {
                             VStack(alignment: .leading, spacing: 8) {
@@ -713,6 +732,30 @@ private struct DistillPreviewCard: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(ColorToken.purple.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct FollowUpIssueCard: View {
+    let issue: Issue
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "arrowshape.turn.up.right")
+                .foregroundStyle(ColorToken.orange.color)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("#\(issue.number) \(issue.title)")
+                    .font(.subheadline.weight(.semibold))
+                Text(issue.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+            Spacer(minLength: 0)
+            StatusBadge(text: issue.status.title, color: issue.status.badgeColor)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ColorToken.orange.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
