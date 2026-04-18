@@ -14,17 +14,28 @@ SwiftUI code skeleton for a macOS + iPad-first prototype.
 - `Features/Switcher/` multi-task switcher
 - `Features/Agents/` agent list
 
-## Suggested Xcode setup
+## Run the prototype
 
-Create a new **App** project in Xcode:
+The repo now includes a runnable macOS prototype project under [`Runner/`](./Runner).
 
-- Product Name: `AgentChatPrototype`
-- Interface: `SwiftUI`
-- Language: `Swift`
-- Platforms: `iOS` + `macOS` (or start with macOS first)
-- Deployment target: iOS 17 / macOS 14 or newer
+Generate the Xcode project from the checked-in spec:
 
-Then add all files under this folder into the app target.
+```bash
+cd clients/apple/AgentChatPrototype/Runner
+xcodegen generate
+```
+
+Build from the command line:
+
+```bash
+xcodebuild \
+  -project AgentChatPrototypeRunner.xcodeproj \
+  -scheme AgentChatPrototypeRunner \
+  -configuration Debug \
+  build
+```
+
+Or open [`AgentChatPrototypeRunner.xcodeproj`](./Runner/AgentChatPrototypeRunner.xcodeproj) in Xcode after generation and run the `AgentChatPrototypeRunner` scheme.
 
 ## Demo flow
 
