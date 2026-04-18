@@ -352,14 +352,7 @@ struct OnlineAgentsPanel: View {
                     VStack(spacing: 8) {
                         ForEach(agents) { agent in
                             HStack(spacing: 10) {
-                                ZStack {
-                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                        .fill(desktopTintColor(named: agent.tintName).opacity(0.14))
-                                        .frame(width: 28, height: 28)
-                                    Image(systemName: agent.symbolName)
-                                        .font(.caption)
-                                        .foregroundStyle(desktopTintColor(named: agent.tintName))
-                                }
+                                AgentAvatarView(agent: agent, size: 28)
 
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(agent.displayName)
@@ -1134,37 +1127,82 @@ struct ThreadSidebarRow: View {
 
 struct AgentSidebarRow: View {
     let agent: DaemonAgentSummary
-    let action: () -> Void
+    let onEdit: () -> Void
+    let onReconnect: () -> Void
+
+    private var statusText: String {
+        agent.status.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    private var statusTint: Color {
+        switch agent.status {
+        case "online":
+            return .green
+        case "offline":
+            return .secondary
+        default:
+            return .orange
+        }
+    }
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(desktopTintColor(named: agent.tintName).opacity(0.15))
-                        .frame(width: 34, height: 34)
-                    Image(systemName: agent.symbolName)
-                        .foregroundStyle(desktopTintColor(named: agent.tintName))
-                }
+        HStack(spacing: 10) {
+            AgentAvatarView(agent: agent, size: 34)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(agent.displayName)
-                        .font(.body.weight(.medium))
-                    Text(agent.capabilitySummary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(agent.displayName)
+                    .font(.body.weight(.medium))
+                    .lineLimit(1)
 
-                Spacer()
+                Text(agent.capabilitySummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
 
-                if agent.isOnline {
-                    Image(systemName: "dot.radiowaves.left.and.right")
-                        .foregroundStyle(.green)
+            Spacer(minLength: 0)
+
+            VStack(alignment: .trailing, spacing: 6) {
+                Text(statusText)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(statusTint)
+
+                HStack(spacing: 8) {
+                    Button {
+                        onEdit()
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Agent Settings")
+
+                    if !agent.isOnline {
+                        Button("Reconnect") {
+                            onReconnect()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
                 }
             }
         }
-        .buttonStyle(.plain)
+        .padding(.vertical, 2)
+        .contextMenu {
+            Button {
+                onEdit()
+            } label: {
+                Label("Agent Settings", systemImage: "slider.horizontal.3")
+            }
+
+            if !agent.isOnline {
+                Button {
+                    onReconnect()
+                } label: {
+                    Label("Reconnect", systemImage: "arrow.clockwise")
+                }
+            }
+        }
     }
 }
 
@@ -2212,8 +2250,7 @@ struct AgentSelectionSheet: View {
                         HStack(spacing: 10) {
                             Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                                 .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                            Image(systemName: agent.symbolName)
-                                .foregroundStyle(desktopTintColor(named: agent.tintName))
+                            AgentAvatarView(agent: agent, size: 30)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(agent.displayName)
                                     .font(.body.weight(.medium))
