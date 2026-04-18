@@ -294,7 +294,11 @@ struct AgentChatDesktopRootView: View {
 
     @ViewBuilder
     private var detail: some View {
-        if let thread = activeThreadSummary {
+        let currentTab = DesktopTab(rawValue: selectedTab) ?? .chats
+
+        if currentTab == .agents || currentTab == .settings {
+            Color.clear
+        } else if let thread = activeThreadSummary {
             ThreadDetailView(
                 thread: thread,
                 snapshot: activeThreadSnapshot,
