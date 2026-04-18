@@ -9,6 +9,10 @@ import AppKit
 #endif
 
 extension Color {
+    init(_ token: ColorToken) {
+        self.init(token: token)
+    }
+
     init(token: ColorToken) {
         switch token {
         case .blue:
@@ -24,6 +28,20 @@ extension Color {
         case .gray:
             self = .gray
         }
+    }
+}
+
+enum AppColors {
+    static var onlineStatus: Color {
+        Color(red: 0.3, green: 0.85, blue: 0.5)
+    }
+
+    static var unreadBadge: Color {
+        Color(red: 1.0, green: 0.35, blue: 0.35)
+    }
+
+    static var userBubble: Color {
+        Color(red: 0.15, green: 0.45, blue: 0.85)
     }
 }
 
@@ -307,6 +325,44 @@ struct AvatarView: View {
         let pieces = title.split(separator: " ")
         let value = pieces.prefix(2).compactMap { $0.first }.map(String.init).joined()
         return value.isEmpty ? "A" : value.uppercased()
+    }
+}
+
+enum PrototypeAvatarShape {
+    case circle
+    case roundedRect(cornerRadius: CGFloat)
+}
+
+struct PrototypeDefaultAvatarArtwork: View {
+    let assetName: String
+    let size: CGFloat
+    let shape: PrototypeAvatarShape
+
+    var body: some View {
+        Group {
+            switch shape {
+            case .circle:
+                Image(assetName)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: size, height: size)
+                    .clipShape(Circle())
+                    .overlay {
+                        Circle()
+                            .stroke(Color.black.opacity(0.06), lineWidth: 0.5)
+                    }
+            case .roundedRect(let cornerRadius):
+                Image(assetName)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: size, height: size)
+                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .stroke(Color.black.opacity(0.06), lineWidth: 0.5)
+                    }
+            }
+        }
     }
 }
 

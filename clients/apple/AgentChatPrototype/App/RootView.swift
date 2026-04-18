@@ -37,6 +37,17 @@ struct RootView: View {
             }
             .navigationTitle("AgentChat")
             .toolbar {
+                #if os(macOS)
+                ToolbarItem(placement: .primaryAction) {
+                    if destination == .projects {
+                        Button {
+                            showCreateProject = true
+                        } label: {
+                            Label("Add Project", systemImage: "plus")
+                        }
+                    }
+                }
+                #else
                 ToolbarItem(placement: .bottomBar) {
                     if destination == .projects {
                         Button {
@@ -46,6 +57,7 @@ struct RootView: View {
                         }
                     }
                 }
+                #endif
             }
         } content: {
             switch destination ?? .projects {
