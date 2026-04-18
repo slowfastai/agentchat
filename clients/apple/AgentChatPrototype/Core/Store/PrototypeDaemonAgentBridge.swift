@@ -447,6 +447,27 @@ enum PrototypeDaemonAgentBridge {
         return PrototypeRemoteThreadHandle(threadID: created.threadID)
     }
 
+    static func runOneShotPrompt(
+        agentID: String,
+        title: String,
+        content: String,
+        workingDir: String = ".",
+        urlString: String = defaultURLString
+    ) async throws -> PrototypeRemoteAssistantMessage? {
+        let handle = try await createRemoteThread(
+            title: title,
+            workingDir: workingDir,
+            agentID: agentID,
+            urlString: urlString
+        )
+        let messages = try await sendRemoteThreadMessage(
+            threadID: handle.threadID,
+            content: content,
+            urlString: urlString
+        )
+        return messages.last
+    }
+
     static func sendRemoteThreadMessage(
         threadID: String,
         content: String,

@@ -42,6 +42,40 @@ struct DistilledIssueDraft {
     var assignees: [ParticipantRef]
 }
 
+private struct AgentDistillationResult {
+    var summary: String?
+    var decision: DistilledDecisionDraft?
+    var artifact: DistilledArtifactDraft?
+    var followUp: DistilledIssueDraft?
+    var sourceAgentName: String
+    var generatedAt: Date
+}
+
+private struct AgentDistillationEnvelope: Decodable {
+    var summary: String?
+    var decision: AgentDecisionPayload?
+    var artifact: AgentArtifactPayload?
+    var followUp: AgentFollowUpPayload?
+
+    struct AgentDecisionPayload: Decodable {
+        var title: String
+        var rationale: String
+    }
+
+    struct AgentArtifactPayload: Decodable {
+        var kind: String?
+        var title: String
+        var summary: String
+        var pathOrURL: String?
+    }
+
+    struct AgentFollowUpPayload: Decodable {
+        var title: String
+        var summary: String
+        var priority: String?
+    }
+}
+
 @MainActor
 final class DemoStore: ObservableObject {
     @Published var projects: [Project] = [] { didSet { schedulePersistence() } }
@@ -62,10 +96,12 @@ final class DemoStore: ObservableObject {
     @Published var daemonStatusText = "Using seeded prototype agents"
     @Published var daemonStatusAccent: ColorToken = .gray
     @Published var refreshingThreadIDs: Set<UUID> = []
+    @Published var distillingThreadIDs: Set<UUID> = []
 
     private let snapshotKey = "AgentChatPrototype.DemoStoreSnapshot.v1"
     private var isHydratingSnapshot = false
     private var persistenceTask: Task<Void, Never>?
+    private var agentDistillationByThreadID: [UUID: AgentDistillationResult] = [:]
 
     init() {
         isHydratingSnapshot = true
@@ -681,6 +717,26 @@ final class DemoStore: ObservableObject {
         refreshingThreadIDs.contains(threadID)
     }
 
+    func isDistillingThread(_ threadID: UUID) -> Bool {
+        distillingThreadIDs.contains(threadID)
+    }
+
+    func hasAgentDistillation(for threadID: UUID) -> Bool {
+        agentDistillationByThreadID[threadID] != nil
+    }
+
+    func distillationSourceLabel(for threadID: UUID) -> String {
+        agentDistillationByThreadID[threadID].map { "Agent: \($0.sourceAgentName)" } ?? "Local heuristic"
+    }
+
+    func distillationGeneratedAt(for threadID: UUID) -> Date? {
+        agentDistillationByThreadID[threadID]?.generatedAt
+    }
+
+    func clearAgentDistillation(for threadID: UUID) {
+        agentDistillationByThreadID.removeValue(forKey: threadID)
+    }
+
     func resetPrototypeData() {
         persistenceTask?.cancel()
         UserDefaults.standard.removeObject(forKey: snapshotKey)
@@ -793,11 +849,14 @@ final class DemoStore: ObservableObject {
     }
 
     func distilledIssueSummaryText(for threadID: UUID) -> String? {
-        let summary = distilledSummary(for: threadID)
+        let summary = agentDistillationByThreadID[threadID]?.summary ?? distilledSummary(for: threadID)
         return summary.isEmpty ? nil : summary
     }
 
     func distilledDecisionDraft(for threadID: UUID) -> DistilledDecisionDraft? {
+        if let decision = agentDistillationByThreadID[threadID]?.decision {
+            return decision
+        }
         guard let thread = thread(for: threadID) else { return nil }
 
         let userIntent = latestUserIntent(in: threadID)
@@ -833,6 +892,9 @@ final class DemoStore: ObservableObject {
     }
 
     func distilledArtifactDraft(for threadID: UUID) -> DistilledArtifactDraft? {
+        if let artifact = agentDistillationByThreadID[threadID]?.artifact {
+            return artifact
+        }
         guard let thread = thread(for: threadID) else { return nil }
 
         if let toolEvent = timeline(forThreadID: threadID).reversed().compactMap({ item -> ToolCallEvent? in
@@ -873,6 +935,9 @@ final class DemoStore: ObservableObject {
     }
 
     func distilledFollowUpIssueDraft(for threadID: UUID) -> DistilledIssueDraft? {
+        if let followUp = agentDistillationByThreadID[threadID]?.followUp {
+            return followUp
+        }
         guard let thread = thread(for: threadID),
               let issue = issue(for: thread.issueID)
         else {
@@ -919,6 +984,45 @@ final class DemoStore: ObservableObject {
         selectedProjectID = projectID
         selectedIssueID = createdIssueID
         selectedThreadID = nil
+    }
+
+    func refreshDistillationWithAgent(issueID: UUID, threadID: UUID) async {
+        guard !distillingThreadIDs.contains(threadID),
+              let issue = issue(for: issueID),
+              let thread = thread(for: threadID),
+              let distiller = preferredDistillerAgent()
+        else {
+            return
+        }
+
+        distillingThreadIDs.insert(threadID)
+        defer {
+            distillingThreadIDs.remove(threadID)
+        }
+
+        let prompt = buildDistillationPrompt(issue: issue, thread: thread)
+
+        do {
+            let message = try await PrototypeDaemonAgentBridge.runOneShotPrompt(
+                agentID: distiller.daemonAgentID ?? distiller.name.lowercased(),
+                title: "Distill \(thread.title)",
+                content: prompt
+            )
+            guard let response = message?.response,
+                  let parsed = parseAgentDistillation(
+                    response,
+                    issue: issue,
+                    thread: thread,
+                    sourceAgentName: distiller.name
+                  )
+            else {
+                return
+            }
+
+            agentDistillationByThreadID[threadID] = parsed
+        } catch {
+            return
+        }
     }
 
     func seed() {
@@ -1973,6 +2077,147 @@ final class DemoStore: ObservableObject {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
+
+    private func preferredDistillerAgent() -> AgentProfile? {
+        agents.first(where: { $0.daemonAgentID == "pi" && $0.isOnline }) ??
+        agents.first(where: { agent in
+            agent.isOnline &&
+            agent.daemonAgentID != nil &&
+            agent.capabilityTags.joined(separator: " ").localizedCaseInsensitiveContains("distill")
+        }) ??
+        agents.first(where: { $0.isOnline && $0.daemonAgentID != nil })
+    }
+
+    private func buildDistillationPrompt(issue: Issue, thread: Thread) -> String {
+        let transcript = timeline(forThreadID: thread.id)
+            .suffix(24)
+            .map { item in
+                switch item.payload {
+                case .system(let event):
+                    return "SYSTEM: \(event.text)"
+                case .userMessage(let message):
+                    return "USER: \(message.text)"
+                case .agentMessage(let message):
+                    return "\(message.senderName.uppercased()): \(message.text)"
+                case .thinking(let event):
+                    return "\(event.agentName.uppercased()) THINKING: \(event.text)"
+                case .toolCall(let event):
+                    return "\(event.agentName.uppercased()) TOOL: \(event.title) [\(event.status.title)] \(event.contentPreview ?? "")"
+                case .plan(let event):
+                    return "\(event.agentName.uppercased()) PLAN: \(([event.title] + event.steps).joined(separator: " | "))"
+                case .turnEnd(let event):
+                    return "\(event.agentName.uppercased()) END: \(event.reason)"
+                }
+            }
+            .joined(separator: "\n")
+
+        return """
+        You are helping distill an engineering thread into project-management outputs.
+
+        Return strict JSON only with this shape:
+        {
+          "summary": "string",
+          "decision": { "title": "string", "rationale": "string" },
+          "artifact": { "kind": "note|document|changedFile|testLog|branch|commit|pullRequest|screenshot", "title": "string", "summary": "string", "pathOrURL": "string or empty" },
+          "followUp": { "title": "string", "summary": "string", "priority": "low|medium|high|urgent" }
+        }
+
+        Keep each field concise and useful. If a field is not justified, return an empty string for its text fields.
+
+        Issue:
+        #\(issue.number) \(issue.title)
+        Summary: \(issue.summary)
+
+        Thread:
+        \(thread.title)
+        Purpose: \(thread.purpose.title)
+
+        Transcript:
+        \(transcript)
+        """
+    }
+
+    private func parseAgentDistillation(
+        _ response: String,
+        issue: Issue,
+        thread: Thread,
+        sourceAgentName: String
+    ) -> AgentDistillationResult? {
+        let jsonText = extractJSONObject(from: response) ?? response
+        guard let data = jsonText.data(using: .utf8),
+              let envelope = try? JSONDecoder().decode(AgentDistillationEnvelope.self, from: data)
+        else {
+            return nil
+        }
+
+        let summary = normalizedOptionalString(envelope.summary)
+
+        let decision: DistilledDecisionDraft? = {
+            guard let payload = envelope.decision,
+                  let title = normalizedOptionalString(payload.title),
+                  let rationale = normalizedOptionalString(payload.rationale)
+            else {
+                return nil
+            }
+            return DistilledDecisionDraft(title: title, rationale: rationale)
+        }()
+
+        let artifact: DistilledArtifactDraft? = {
+            guard let payload = envelope.artifact,
+                  let title = normalizedOptionalString(payload.title),
+                  let summary = normalizedOptionalString(payload.summary)
+            else {
+                return nil
+            }
+            let kind = IssueArtifactKind(rawValue: payload.kind ?? "") ?? .note
+            return DistilledArtifactDraft(
+                kind: kind,
+                title: title,
+                summary: summary,
+                pathOrURL: normalizedOptionalString(payload.pathOrURL) ?? ""
+            )
+        }()
+
+        let followUp: DistilledIssueDraft? = {
+            guard let payload = envelope.followUp,
+                  let title = normalizedOptionalString(payload.title),
+                  let summary = normalizedOptionalString(payload.summary)
+            else {
+                return nil
+            }
+            let priority = IssuePriority(rawValue: payload.priority ?? "") ?? issue.priority
+            return DistilledIssueDraft(
+                title: title,
+                summary: summary,
+                status: .todo,
+                priority: priority,
+                assignees: thread.participants
+            )
+        }()
+
+        if summary == nil, decision == nil, artifact == nil, followUp == nil {
+            return nil
+        }
+
+        return AgentDistillationResult(
+            summary: summary,
+            decision: decision,
+            artifact: artifact,
+            followUp: followUp,
+            sourceAgentName: sourceAgentName,
+            generatedAt: Date()
+        )
+    }
+
+    private func extractJSONObject(from text: String) -> String? {
+        guard let start = text.firstIndex(of: "{"),
+              let end = text.lastIndex(of: "}")
+        else {
+            return nil
+        }
+        return String(text[start...end])
+    }
+
 
     private static func stableAgentUUID(for agentID: String) -> UUID {
         let digest = SHA256.hash(data: Data(agentID.utf8))

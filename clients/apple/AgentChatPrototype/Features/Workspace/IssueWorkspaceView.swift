@@ -557,6 +557,45 @@ private struct IssueInspectorPanel: View {
                             let followUpDraft = store.distilledFollowUpIssueDraft(for: activeThread.id)
 
                             VStack(spacing: AppSpacing.sm) {
+                                HStack(alignment: .center) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(store.distillationSourceLabel(for: activeThread.id))
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+                                        if let generatedAt = store.distillationGeneratedAt(for: activeThread.id) {
+                                            Text(AppFormatters.relativeString(from: generatedAt))
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+
+                                    Spacer()
+
+                                    if store.hasAgentDistillation(for: activeThread.id) {
+                                        Button("Clear") {
+                                            store.clearAgentDistillation(for: activeThread.id)
+                                        }
+                                        .buttonStyle(.bordered)
+                                    }
+
+                                    Button {
+                                        Task {
+                                            await store.refreshDistillationWithAgent(
+                                                issueID: issue.id,
+                                                threadID: activeThread.id
+                                            )
+                                        }
+                                    } label: {
+                                        if store.isDistillingThread(activeThread.id) {
+                                            Label("Distilling…", systemImage: "wand.and.stars")
+                                        } else {
+                                            Label("Ask Agent", systemImage: "wand.and.stars")
+                                        }
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(store.isDistillingThread(activeThread.id))
+                                }
+
                                 if let summaryPreview {
                                     DistillPreviewCard(
                                         title: "Issue Summary",
