@@ -22,6 +22,7 @@ targets:
       - path: ../Features/Workspace
     resources:
       - path: ../AgentChat/AgentChatDesktop/Assets.xcassets
+      - path: ../Config
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.agentchat.prototype.runner

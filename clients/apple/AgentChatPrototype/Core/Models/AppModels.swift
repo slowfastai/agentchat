@@ -78,11 +78,30 @@ enum SwitcherMode: String, CaseIterable, Hashable, Identifiable {
     var title: String { rawValue.capitalized }
 }
 
+enum DistillationTemplateFamily: String, CaseIterable, Hashable, Codable, Identifiable {
+    case `default`
+    case pi
+    case claude
+    case codex
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .default: return "Default"
+        case .pi: return "Pi"
+        case .claude: return "Claude"
+        case .codex: return "Codex"
+        }
+    }
+}
+
 struct Project: Identifiable, Hashable, Codable {
     let id: UUID
     var name: String
     var repoPath: String
     var color: ColorToken
+    var distillationTemplateFamily: DistillationTemplateFamily = .default
     var issues: [Issue]
 }
 

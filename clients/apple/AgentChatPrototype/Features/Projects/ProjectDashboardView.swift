@@ -81,7 +81,10 @@ struct ProjectDashboardView: View {
                             project: project,
                             openIssueCount: openIssues.count,
                             reviewIssueCount: reviewIssues.count,
-                            runningThreadCount: runningThreads.count
+                            runningThreadCount: runningThreads.count,
+                            onTemplateChange: { family in
+                                store.updateProjectDistillationTemplate(projectID: project.id, family: family)
+                            }
                         )
 
                         ProjectMetricGrid(
@@ -241,6 +244,7 @@ private struct ProjectDashboardHeader: View {
     let openIssueCount: Int
     let reviewIssueCount: Int
     let runningThreadCount: Int
+    let onTemplateChange: (DistillationTemplateFamily) -> Void
 
     var body: some View {
         CardSurface(accent: project.color) {
@@ -260,6 +264,18 @@ private struct ProjectDashboardHeader: View {
                     }
                     Spacer()
                     VStack(alignment: .trailing, spacing: 6) {
+                        Menu {
+                            ForEach(DistillationTemplateFamily.allCases) { family in
+                                Button(family.title) {
+                                    onTemplateChange(family)
+                                }
+                            }
+                        } label: {
+                            Label(project.distillationTemplateFamily.title, systemImage: "wand.and.stars")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .buttonStyle(.bordered)
+
                         StatusBadge(text: "\(openIssueCount) Open", color: .blue)
                         if reviewIssueCount > 0 {
                             StatusBadge(text: "\(reviewIssueCount) Review", color: .orange)

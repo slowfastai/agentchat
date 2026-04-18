@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		0ADDEF70B491C1839A16E186 /* PrototypeDaemonAgentBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CF5DC6388E5591E8287BBBA /* PrototypeDaemonAgentBridge.swift */; };
 		0AFE677CC88A5F5522430F68 /* SwitcherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DF695AA6201F776A1721D9A /* SwitcherView.swift */; };
+		0D250B9FD9B5E3D5D60A4231 /* DistillationPromptTemplate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1148E460D77978971B25BA5 /* DistillationPromptTemplate.swift */; };
 		1918BF42D94E1AF883052AA6 /* DemoStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D59AB66A0B12D6B5B93E8A63 /* DemoStore.swift */; };
 		1F46EE64EF99EC4656408C2F /* IssueWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 796CE19995A917AA0195620B /* IssueWorkspaceView.swift */; };
 		3508667E8FC1DBC1FA250854 /* AgentChatPrototypeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 002A1CF3C44D6B50B6BA2F0B /* AgentChatPrototypeApp.swift */; };
@@ -40,6 +41,7 @@
 		93ECCF4DC9404BEE189E4A29 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
 		97FD524EED3DF60CF22A084E /* ProjectListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectListView.swift; sourceTree = "<group>"; };
 		9CF5DC6388E5591E8287BBBA /* PrototypeDaemonAgentBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrototypeDaemonAgentBridge.swift; sourceTree = "<group>"; };
+		A1148E460D77978971B25BA5 /* DistillationPromptTemplate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DistillationPromptTemplate.swift; sourceTree = "<group>"; };
 		BEC9FB7E948F8013784AB0D0 /* AgentListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentListView.swift; sourceTree = "<group>"; };
 		C973F69634045DD2E8088565 /* ChatListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatListView.swift; sourceTree = "<group>"; };
 		CA298C7E515A2EC6ECF70F24 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
@@ -65,6 +67,7 @@
 			isa = PBXGroup;
 			children = (
 				D59AB66A0B12D6B5B93E8A63 /* DemoStore.swift */,
+				A1148E460D77978971B25BA5 /* DistillationPromptTemplate.swift */,
 				9CF5DC6388E5591E8287BBBA /* PrototypeDaemonAgentBridge.swift */,
 			);
 			name = Store;
@@ -255,6 +258,7 @@
 				DD591BFE1703312609D54CF8 /* CreateThreadSheet.swift in Sources */,
 				1918BF42D94E1AF883052AA6 /* DemoStore.swift in Sources */,
 				3C4F04AB9FDC54BB2001DA5D /* DesignSystem.swift in Sources */,
+				0D250B9FD9B5E3D5D60A4231 /* DistillationPromptTemplate.swift in Sources */,
 				6060E8F7C3F7A6DD253345C4 /* Formatters.swift in Sources */,
 				CCD86A155FBD16A35BE5F57A /* IssueInboxView.swift in Sources */,
 				AE3FC67AD3C1AF071F6139EF /* IssueOutputSheets.swift in Sources */,

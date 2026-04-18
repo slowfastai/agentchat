@@ -54,6 +54,7 @@ private struct AgentDistillationResult: Codable {
     var artifact: DistilledArtifactDraft?
     var followUp: DistilledIssueDraft?
     var sourceAgentName: String
+    var templateVersion: String
     var generatedAt: Date
 }
 
@@ -298,6 +299,14 @@ final class DemoStore: ObservableObject {
         })?.id
     }
 
+    func projectTemplateFamily(forIssueID issueID: UUID) -> DistillationTemplateFamily {
+        guard let projectID = projectID(forIssueID: issueID),
+              let project = project(for: projectID) else {
+            return .default
+        }
+        return project.distillationTemplateFamily
+    }
+
     func thread(for threadID: UUID) -> Thread? {
         threads.first(where: { $0.id == threadID })
     }
@@ -358,18 +367,29 @@ final class DemoStore: ObservableObject {
             .sorted { $0.updatedAt > $1.updatedAt }
     }
 
-    func createProject(name: String, repoPath: String, color: ColorToken = .blue) {
+    func createProject(
+        name: String,
+        repoPath: String,
+        color: ColorToken = .blue,
+        distillationTemplateFamily: DistillationTemplateFamily = .default
+    ) {
         let project = Project(
             id: UUID(),
             name: name,
             repoPath: repoPath,
             color: color,
+            distillationTemplateFamily: distillationTemplateFamily,
             issues: []
         )
         projects.append(project)
         if selectedProjectID == nil {
             selectedProjectID = project.id
         }
+    }
+
+    func updateProjectDistillationTemplate(projectID: UUID, family: DistillationTemplateFamily) {
+        guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return }
+        projects[index].distillationTemplateFamily = family
     }
 
     @discardableResult
@@ -733,7 +753,14 @@ final class DemoStore: ObservableObject {
     }
 
     func distillationSourceLabel(for threadID: UUID) -> String {
-        agentDistillationByThreadID[threadID].map { "Agent: \($0.sourceAgentName)" } ?? "Local heuristic"
+        guard let result = agentDistillationByThreadID[threadID] else {
+            guard let thread = thread(for: threadID) else {
+                return "Local heuristic · Template: \(DistillationPromptTemplate.currentTemplateVersion())"
+            }
+            let family = projectTemplateFamily(forIssueID: thread.issueID)
+            return "Local heuristic · Template: \(DistillationPromptTemplate.currentTemplateVersion(family: family))"
+        }
+        return "Agent: \(result.sourceAgentName) · Template: \(result.templateVersion)"
     }
 
     func distillationGeneratedAt(for threadID: UUID) -> Date? {
@@ -1009,7 +1036,18 @@ final class DemoStore: ObservableObject {
             distillingThreadIDs.remove(threadID)
         }
 
-        let prompt = buildDistillationPrompt(issue: issue, thread: thread)
+        let distillerIdentifier = distiller.daemonAgentID ?? distiller.name
+        let templateFamily = projectTemplateFamily(forIssueID: issue.id)
+        let prompt = buildDistillationPrompt(
+            issue: issue,
+            thread: thread,
+            templateFamily: templateFamily,
+            distillerIdentifier: distillerIdentifier
+        )
+        let templateVersion = DistillationPromptTemplate.currentTemplateVersion(
+            family: templateFamily,
+            agentIdentifier: distillerIdentifier
+        )
 
         do {
             let message = try await PrototypeDaemonAgentBridge.runOneShotPrompt(
@@ -1022,7 +1060,8 @@ final class DemoStore: ObservableObject {
                     response,
                     issue: issue,
                     thread: thread,
-                    sourceAgentName: distiller.name
+                    sourceAgentName: distiller.name,
+                    templateVersion: templateVersion
                   )
             else {
                 return
@@ -2098,9 +2137,13 @@ final class DemoStore: ObservableObject {
         agents.first(where: { $0.isOnline && $0.daemonAgentID != nil })
     }
 
-    private func buildDistillationPrompt(issue: Issue, thread: Thread) -> String {
-        let transcript = timeline(forThreadID: thread.id)
-            .suffix(24)
+    private func buildDistillationPrompt(
+        issue: Issue,
+        thread: Thread,
+        templateFamily: DistillationTemplateFamily = .default,
+        distillerIdentifier: String? = nil
+    ) -> String {
+        let transcriptLines = timeline(forThreadID: thread.id)
             .map { item in
                 switch item.payload {
                 case .system(let event):
@@ -2119,39 +2162,25 @@ final class DemoStore: ObservableObject {
                     return "\(event.agentName.uppercased()) END: \(event.reason)"
                 }
             }
-            .joined(separator: "\n")
 
-        return """
-        You are helping distill an engineering thread into project-management outputs.
-
-        Return strict JSON only with this shape:
-        {
-          "summary": "string",
-          "decision": { "title": "string", "rationale": "string" },
-          "artifact": { "kind": "note|document|changedFile|testLog|branch|commit|pullRequest|screenshot", "title": "string", "summary": "string", "pathOrURL": "string or empty" },
-          "followUp": { "title": "string", "summary": "string", "priority": "low|medium|high|urgent" }
-        }
-
-        Keep each field concise and useful. If a field is not justified, return an empty string for its text fields.
-
-        Issue:
-        #\(issue.number) \(issue.title)
-        Summary: \(issue.summary)
-
-        Thread:
-        \(thread.title)
-        Purpose: \(thread.purpose.title)
-
-        Transcript:
-        \(transcript)
-        """
+        return DistillationPromptTemplate.render(
+            issueNumber: issue.number,
+            issueTitle: issue.title,
+            issueSummary: issue.summary,
+            threadTitle: thread.title,
+            threadPurpose: thread.purpose.title,
+            transcriptLines: transcriptLines,
+            family: templateFamily,
+            agentIdentifier: distillerIdentifier
+        )
     }
 
     private func parseAgentDistillation(
         _ response: String,
         issue: Issue,
         thread: Thread,
-        sourceAgentName: String
+        sourceAgentName: String,
+        templateVersion: String
     ) -> AgentDistillationResult? {
         let jsonText = extractJSONObject(from: response) ?? response
         guard let data = jsonText.data(using: .utf8),
@@ -2215,6 +2244,7 @@ final class DemoStore: ObservableObject {
             artifact: artifact,
             followUp: followUp,
             sourceAgentName: sourceAgentName,
+            templateVersion: templateVersion,
             generatedAt: Date()
         )
     }
