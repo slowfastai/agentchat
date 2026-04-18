@@ -70,16 +70,32 @@ struct IssueWorkspaceView: View {
 
     var body: some View {
         if let issue = store.issue(for: issueID) {
+            let activeThread = store.activeThread(for: issueID)
+
             VStack(spacing: 0) {
                 IssueWorkspaceHeader(issue: issue)
                     .padding(.horizontal, AppSpacing.lg)
                     .padding(.top, AppSpacing.lg)
 
                 HStack(alignment: .top, spacing: AppSpacing.md) {
-                    ChatTimelineColumn(items: store.timeline(for: issueID))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    IssueThreadRail(
+                        issueID: issueID,
+                        activeThreadID: activeThread?.id
+                    )
+                    .frame(width: 260, maxHeight: .infinity)
 
-                    WorkspaceSidePanel(issueID: issueID)
+                    if let activeThread {
+                        ChatTimelineColumn(
+                            thread: activeThread,
+                            items: store.timeline(forThreadID: activeThread.id)
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        ThreadEmptyState(issueID: issueID)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+
+                    IssueInspectorPanel(issue: issue, activeThread: activeThread)
                         .frame(width: 320)
                 }
                 .padding(.horizontal, AppSpacing.lg)
@@ -88,11 +104,13 @@ struct IssueWorkspaceView: View {
 
                 MessageComposerBar(
                     issue: issue,
+                    thread: activeThread,
                     text: $composerText,
                     selectedTargets: $selectedTargets,
                     onSend: {
+                        guard let activeThread else { return }
                         store.sendMessage(
-                            issueID: issueID,
+                            threadID: activeThread.id,
                             text: composerText,
                             targets: Array(selectedTargets)
                         )
@@ -105,7 +123,13 @@ struct IssueWorkspaceView: View {
             .background(Color.appCanvasBackground)
             .navigationTitle(issue.title)
             .onAppear {
-                seedTargets(from: issue)
+                seedTargets(from: activeThread, fallbackIssue: issue)
+                if let activeThread {
+                    store.selectThread(activeThread.id)
+                }
+            }
+            .onChange(of: activeThread?.id) { _, _ in
+                seedTargets(from: activeThread, fallbackIssue: issue, reset: true)
             }
         } else {
             EmptyStateView(
@@ -116,9 +140,13 @@ struct IssueWorkspaceView: View {
         }
     }
 
-    private func seedTargets(from issue: Issue) {
+    private func seedTargets(from thread: Thread?, fallbackIssue issue: Issue, reset: Bool = false) {
+        if reset {
+            selectedTargets.removeAll()
+        }
         if selectedTargets.isEmpty {
-            selectedTargets = Set(issue.agentNames)
+            let threadAgentNames = thread?.agentNames ?? []
+            selectedTargets = Set(threadAgentNames.isEmpty ? issue.agentNames : threadAgentNames)
         }
     }
 }
@@ -180,29 +208,226 @@ private struct IssueWorkspaceHeader: View {
     }
 }
 
+private struct IssueThreadRail: View {
+    @EnvironmentObject private var store: DemoStore
+    let issueID: UUID
+    let activeThreadID: UUID?
+
+    @State private var showCreateThread = false
+
+    var body: some View {
+        CardSurface(accent: .gray) {
+            VStack(alignment: .leading, spacing: AppSpacing.md) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Threads")
+                            .font(.headline)
+                        Text("Agent work sessions")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        showCreateThread = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                let threads = store.threads(for: issueID)
+                if threads.isEmpty {
+                    VStack(alignment: .leading, spacing: AppSpacing.sm) {
+                        Image(systemName: "bubble.left.and.bubble.right")
+                            .font(.title2)
+                            .foregroundStyle(.secondary)
+                        Text("No threads yet")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Start a thread to organize agent work for this issue.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, AppSpacing.lg)
+                } else {
+                    ScrollView {
+                        VStack(spacing: AppSpacing.sm) {
+                            ForEach(threads) { thread in
+                                Button {
+                                    store.selectThread(thread.id)
+                                } label: {
+                                    ThreadCard(
+                                        thread: thread,
+                                        isSelected: activeThreadID == thread.id
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+        }
+        .sheet(isPresented: $showCreateThread) {
+            CreateThreadSheet(issueID: issueID)
+        }
+    }
+}
+
 private struct ChatTimelineColumn: View {
+    let thread: Thread
     let items: [TimelineItem]
 
     var body: some View {
         CardSurface(accent: .blue) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: AppSpacing.md) {
-                        ForEach(items) { item in
-                            TimelineItemView(item: item)
-                                .id(item.id)
+            VStack(alignment: .leading, spacing: AppSpacing.md) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 8) {
+                            Text(thread.title)
+                                .font(.headline)
+                            StatusBadge(text: thread.purpose.title, color: thread.purpose.badgeColor)
                         }
+                        Text(thread.latestActivityText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    .padding(.vertical, 4)
+
+                    Spacer()
+                    StatusBadge(text: thread.state.title, color: thread.state.badgeColor)
                 }
-                .onChange(of: items.count) { _, _ in
-                    guard let lastID = items.last?.id else { return }
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        proxy.scrollTo(lastID, anchor: .bottom)
+
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: AppSpacing.md) {
+                            ForEach(items) { item in
+                                TimelineItemView(item: item)
+                                    .id(item.id)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .onChange(of: items.count) { _, _ in
+                        guard let lastID = items.last?.id else { return }
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo(lastID, anchor: .bottom)
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+private struct ThreadEmptyState: View {
+    let issueID: UUID
+    @State private var showCreateThread = false
+
+    var body: some View {
+        CardSurface(accent: .blue) {
+            VStack(spacing: AppSpacing.md) {
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .font(.system(size: 42))
+                    .foregroundStyle(.secondary)
+                Text("Start the first thread")
+                    .font(.title3.weight(.semibold))
+                Text("Threads keep research, implementation, review, and debugging work separate under the same issue.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+                Button {
+                    showCreateThread = true
+                } label: {
+                    Label("Start Thread", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .sheet(isPresented: $showCreateThread) {
+            CreateThreadSheet(issueID: issueID)
+        }
+    }
+}
+
+private struct IssueInspectorPanel: View {
+    let issue: Issue
+    let activeThread: Thread?
+
+    var body: some View {
+        CardSurface(accent: .gray) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: AppSpacing.md) {
+                    inspectorSection("Context", systemImage: "doc.text") {
+                        Text(issue.summary)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    inspectorSection("Active Thread", systemImage: "bubble.left.and.bubble.right") {
+                        if let activeThread {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(activeThread.title)
+                                    .font(.subheadline.weight(.semibold))
+                                HStack {
+                                    StatusBadge(text: activeThread.purpose.title, color: activeThread.purpose.badgeColor)
+                                    StatusBadge(text: activeThread.state.title, color: activeThread.state.badgeColor)
+                                }
+                                Text(activeThread.latestActivityText)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Text("No active thread")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    inspectorSection("Artifacts", systemImage: "shippingbox") {
+                        PlaceholderInspectorRow(text: "Changed files, branches, PRs, logs, and screenshots will attach here.")
+                    }
+
+                    inspectorSection("Decisions", systemImage: "checkmark.seal") {
+                        PlaceholderInspectorRow(text: "Thread summaries and decisions will be saved back to the issue.")
+                    }
+                }
+            }
+        }
+    }
+
+    private func inspectorSection<Content: View>(
+        _ title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: AppSpacing.sm) {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .foregroundStyle(.secondary)
+                Text(title)
+                    .font(.headline)
+            }
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, AppSpacing.sm)
+    }
+}
+
+private struct PlaceholderInspectorRow: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
@@ -498,7 +723,7 @@ private struct WorkspaceSidePanel: View {
                 case .timeline:
                     ScrollView {
                         VStack(alignment: .leading, spacing: AppSpacing.sm) {
-                            ForEach(store.timeline(for: issueID).suffix(12)) { item in
+                            ForEach(store.timeline(forIssueID: issueID).suffix(12)) { item in
                                 TimelineEventRow(item: item)
                             }
                         }
@@ -560,7 +785,10 @@ private struct WorkspaceSidePanel: View {
                 ScrollView {
                     VStack(spacing: AppSpacing.sm) {
                         ForEach(store.threads(for: issueID)) { thread in
-                            ThreadCard(thread: thread)
+                            ThreadCard(
+                                thread: thread,
+                                isSelected: store.selectedThreadID == thread.id
+                            )
                         }
                     }
                 }
@@ -707,16 +935,22 @@ private struct SessionMiniCard: View {
 
 private struct MessageComposerBar: View {
     let issue: Issue
+    let thread: Thread?
     @Binding var text: String
     @Binding var selectedTargets: Set<String>
     let onSend: () -> Void
+
+    private var targetNames: [String] {
+        let threadAgentNames = thread?.agentNames ?? []
+        return threadAgentNames.isEmpty ? issue.agentNames : threadAgentNames
+    }
 
     var body: some View {
         CardSurface(accent: .green) {
             VStack(alignment: .leading, spacing: AppSpacing.md) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(issue.agentNames, id: \.self) { name in
+                        ForEach(targetNames, id: \.self) { name in
                             Button {
                                 if selectedTargets.contains(name) {
                                     selectedTargets.remove(name)
@@ -747,7 +981,7 @@ private struct MessageComposerBar: View {
                     Spacer()
                     Button("Send", action: onSend)
                         .buttonStyle(.borderedProminent)
-                        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(thread == nil || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }

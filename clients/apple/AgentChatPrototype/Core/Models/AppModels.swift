@@ -203,6 +203,7 @@ enum ParticipantRole: Hashable {
 struct WorkspaceSession: Identifiable, Hashable {
     let id: UUID
     var issueID: UUID
+    var threadID: UUID
     var title: String
     var state: SessionState
     var agentName: String
@@ -262,19 +263,71 @@ enum ThreadState: String, CaseIterable, Hashable {
     }
 }
 
+enum ThreadPurpose: String, CaseIterable, Hashable, Identifiable {
+    case discussion
+    case research
+    case implementation
+    case review
+    case debugging
+    case testing
+    case summary
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .discussion: return "Discussion"
+        case .research: return "Research"
+        case .implementation: return "Implementation"
+        case .review: return "Review"
+        case .debugging: return "Debugging"
+        case .testing: return "Testing"
+        case .summary: return "Summary"
+        }
+    }
+
+    var badgeColor: ColorToken {
+        switch self {
+        case .discussion: return .blue
+        case .research: return .purple
+        case .implementation: return .green
+        case .review: return .orange
+        case .debugging: return .red
+        case .testing: return .gray
+        case .summary: return .purple
+        }
+    }
+}
+
 struct Thread: Identifiable, Hashable {
     let id: UUID
     var issueID: UUID
     var title: String
+    var purpose: ThreadPurpose
     var participants: [ParticipantRef]
     var createdAt: Date
+    var updatedAt: Date
     var state: ThreadState
     var latestActivityText: String
+}
+
+extension Thread {
+    var agentNames: [String] {
+        participants.compactMap {
+            switch $0.role {
+            case .human:
+                return nil
+            case .agent:
+                return $0.displayName
+            }
+        }
+    }
 }
 
 struct TimelineItem: Identifiable, Hashable {
     let id: UUID
     var issueID: UUID
+    var threadID: UUID
     var sessionID: UUID?
     var timestamp: Date
     var payload: TimelinePayload

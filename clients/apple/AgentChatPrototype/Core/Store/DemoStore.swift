@@ -7,7 +7,7 @@ final class DemoStore: ObservableObject {
     @Published var agents: [AgentProfile] = []
     @Published var sessions: [WorkspaceSession] = []
     @Published var threads: [Thread] = []
-    @Published var timelineByIssue: [UUID: [TimelineItem]] = [:]
+    @Published var timelineByThread: [UUID: [TimelineItem]] = [:]
     @Published var selectedProjectID: UUID?
     @Published var selectedIssueID: UUID?
     @Published var selectedThreadID: UUID?
@@ -131,8 +131,31 @@ final class DemoStore: ObservableObject {
         allIssues.first(where: { $0.id == issueID })
     }
 
-    func timeline(for issueID: UUID) -> [TimelineItem] {
-        timelineByIssue[issueID] ?? []
+    func thread(for threadID: UUID) -> Thread? {
+        threads.first(where: { $0.id == threadID })
+    }
+
+    func activeThread(for issueID: UUID) -> Thread? {
+        let issueThreads = threads(for: issueID)
+        if let selectedThreadID,
+           let selectedThread = issueThreads.first(where: { $0.id == selectedThreadID }) {
+            return selectedThread
+        }
+        return issueThreads.first
+    }
+
+    func selectThread(_ threadID: UUID) {
+        selectedThreadID = threadID
+    }
+
+    func timeline(forThreadID threadID: UUID) -> [TimelineItem] {
+        timelineByThread[threadID] ?? []
+    }
+
+    func timeline(forIssueID issueID: UUID) -> [TimelineItem] {
+        threads(for: issueID)
+            .flatMap { timelineByThread[$0.id] ?? [] }
+            .sorted { $0.timestamp < $1.timestamp }
     }
 
     func sessions(for issueID: UUID) -> [WorkspaceSession] {
@@ -140,9 +163,14 @@ final class DemoStore: ObservableObject {
             .sorted { $0.startedAt > $1.startedAt }
     }
 
+    func sessions(forThreadID threadID: UUID) -> [WorkspaceSession] {
+        sessions.filter { $0.threadID == threadID }
+            .sorted { $0.startedAt > $1.startedAt }
+    }
+
     func threads(for issueID: UUID) -> [Thread] {
         threads.filter { $0.issueID == issueID }
-            .sorted { $0.createdAt > $1.createdAt }
+            .sorted { $0.updatedAt > $1.updatedAt }
     }
 
     func createProject(name: String, repoPath: String, color: ColorToken = .blue) {
@@ -180,7 +208,7 @@ final class DemoStore: ObservableObject {
         projects[projectIndex].issues.append(issue)
     }
 
-    func createThread(for issueID: UUID, agentIDs: [UUID]) {
+    func createThread(for issueID: UUID, purpose: ThreadPurpose = .discussion, agentIDs: [UUID]) {
         let issueThreads = threads.filter { $0.issueID == issueID }
         let threadNumber = issueThreads.count + 1
 
@@ -196,25 +224,30 @@ final class DemoStore: ObservableObject {
             }
         }
 
+        let now = Date()
         let thread = Thread(
             id: UUID(),
             issueID: issueID,
-            title: "Thread \(threadNumber)",
+            title: "\(purpose.title) \(threadNumber)",
+            purpose: purpose,
             participants: participants,
-            createdAt: Date(),
+            createdAt: now,
+            updatedAt: now,
             state: .active,
             latestActivityText: "Thread started"
         )
         threads.append(thread)
+        selectedThreadID = thread.id
 
         for participant in participants {
             let session = WorkspaceSession(
                 id: UUID(),
                 issueID: issueID,
+                threadID: thread.id,
                 title: thread.title,
                 state: .idle,
                 agentName: participant.displayName,
-                startedAt: Date(),
+                startedAt: now,
                 elapsedSeconds: 0,
                 latestEventText: "Ready",
                 activeToolName: nil
@@ -222,9 +255,17 @@ final class DemoStore: ObservableObject {
             sessions.append(session)
         }
 
+        append(
+            payload: .system(SystemEvent(text: "\(thread.title) started.")),
+            issueID: issueID,
+            threadID: thread.id,
+            sessionID: nil
+        )
+
         for i in projects.indices {
             if let j = projects[i].issues.firstIndex(where: { $0.id == issueID }) {
                 projects[i].issues[j].threadCount += 1
+                projects[i].issues[j].updatedAt = now
                 break
             }
         }
@@ -248,8 +289,8 @@ final class DemoStore: ObservableObject {
             projectIssueIDs.contains(session.issueID)
         }
         
-        for issueID in projectIssueIDs {
-            timelineByIssue.removeValue(forKey: issueID)
+        for threadID in deletedThreadIDs {
+            timelineByThread.removeValue(forKey: threadID)
         }
         
         if let selectedIssueID, projectIssueIDs.contains(selectedIssueID) {
@@ -315,7 +356,7 @@ final class DemoStore: ObservableObject {
     }
 
     func latestTimelinePreview(for issueID: UUID) -> String? {
-        guard let latest = timeline(for: issueID).last else { return nil }
+        guard let latest = timeline(forIssueID: issueID).last else { return nil }
 
         switch latest.payload {
         case .system(let event):
@@ -350,10 +391,11 @@ final class DemoStore: ObservableObject {
         sessions(for: issueID).contains(where: { $0.state == .running })
     }
 
-    func sendMessage(issueID: UUID, text: String, targets: [String]) {
+    func sendMessage(threadID: UUID, text: String, targets: [String]) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty, let thread = thread(for: threadID) else { return }
 
+        let issueID = thread.issueID
         let resolvedTargets = targets.isEmpty ? (issue(for: issueID)?.agentNames ?? ["Claude"]) : targets
 
         append(
@@ -366,8 +408,14 @@ final class DemoStore: ObservableObject {
                 )
             ),
             issueID: issueID,
+            threadID: threadID,
             sessionID: nil
         )
+        updateThread(threadID: threadID) { thread in
+            thread.state = .active
+            thread.latestActivityText = trimmed
+            thread.updatedAt = Date()
+        }
 
         updateIssue(issueID: issueID) { issue in
             issue.status = .inProgress
@@ -376,7 +424,7 @@ final class DemoStore: ObservableObject {
         }
 
         Task {
-            await simulateResponses(issueID: issueID, input: trimmed, targets: resolvedTargets)
+            await simulateResponses(threadID: threadID, input: trimmed, targets: resolvedTargets)
         }
     }
 
@@ -421,7 +469,7 @@ final class DemoStore: ObservableObject {
             assignees: [participant(from: claude), participant(from: codex)],
             latestActivityText: "Codex suggested a replay-safe resubscribe path.",
             sessionCount: 2,
-            threadCount: 1,
+            threadCount: 2,
             totalActiveSeconds: 18 * 60,
             updatedAt: Date().addingTimeInterval(-120)
         )
@@ -436,7 +484,7 @@ final class DemoStore: ObservableObject {
             assignees: [participant(from: claude)],
             latestActivityText: "Claude is checking disconnect cleanup ordering.",
             sessionCount: 1,
-            threadCount: 1,
+            threadCount: 2,
             totalActiveSeconds: 12 * 60,
             updatedAt: Date().addingTimeInterval(-240)
         )
@@ -451,7 +499,7 @@ final class DemoStore: ObservableObject {
             assignees: [participant(from: pi)],
             latestActivityText: "Pi is ready to convert transcripts into project skills.",
             sessionCount: 1,
-            threadCount: 0,
+            threadCount: 1,
             totalActiveSeconds: 7 * 60,
             updatedAt: Date().addingTimeInterval(-900)
         )
@@ -468,11 +516,81 @@ final class DemoStore: ObservableObject {
         selectedProjectID = project.id
         selectedIssueID = issueA.id
 
+        let relayResearchThread = Thread(
+            id: UUID(),
+            issueID: issueA.id,
+            title: "Research reconnect behavior",
+            purpose: .research,
+            participants: [participant(from: claude), participant(from: codex)],
+            createdAt: Date().addingTimeInterval(-20 * 60),
+            updatedAt: Date().addingTimeInterval(-620),
+            state: .completed,
+            latestActivityText: "Mapped the secure channel activation path."
+        )
+
+        let relayReviewThread = Thread(
+            id: UUID(),
+            issueID: issueA.id,
+            title: "Review replay handling",
+            purpose: .review,
+            participants: [participant(from: codex)],
+            createdAt: Date().addingTimeInterval(-18 * 60),
+            updatedAt: Date().addingTimeInterval(-120),
+            state: .active,
+            latestActivityText: "Suggested rehydrate hooks after secure channel activation."
+        )
+
+        let shutdownDebugThread = Thread(
+            id: UUID(),
+            issueID: issueB.id,
+            title: "Debug shutdown path",
+            purpose: .debugging,
+            participants: [participant(from: claude)],
+            createdAt: Date().addingTimeInterval(-12 * 60),
+            updatedAt: Date().addingTimeInterval(-240),
+            state: .active,
+            latestActivityText: "Reading daemon/server/src/ws.rs"
+        )
+
+        let shutdownReviewThread = Thread(
+            id: UUID(),
+            issueID: issueB.id,
+            title: "Review cancellation edge cases",
+            purpose: .review,
+            participants: [participant(from: claude)],
+            createdAt: Date().addingTimeInterval(-9 * 60),
+            updatedAt: Date().addingTimeInterval(-500),
+            state: .idle,
+            latestActivityText: "Ready to inspect teardown ordering."
+        )
+
+        let skillThread = Thread(
+            id: UUID(),
+            issueID: issueC.id,
+            title: "Plan skill distillation",
+            purpose: .summary,
+            participants: [participant(from: pi)],
+            createdAt: Date().addingTimeInterval(-7 * 60),
+            updatedAt: Date().addingTimeInterval(-500),
+            state: .idle,
+            latestActivityText: "Ready to distill a finished session."
+        )
+
+        threads = [
+            relayResearchThread,
+            relayReviewThread,
+            shutdownDebugThread,
+            shutdownReviewThread,
+            skillThread
+        ]
+        selectedThreadID = relayReviewThread.id
+
         sessions = [
             WorkspaceSession(
                 id: UUID(),
                 issueID: issueA.id,
-                title: "Relay review",
+                threadID: relayReviewThread.id,
+                title: relayReviewThread.title,
                 state: .waitingInput,
                 agentName: "Codex",
                 startedAt: Date().addingTimeInterval(-18 * 60),
@@ -483,7 +601,8 @@ final class DemoStore: ObservableObject {
             WorkspaceSession(
                 id: UUID(),
                 issueID: issueB.id,
-                title: "Shutdown race debugging",
+                threadID: shutdownDebugThread.id,
+                title: shutdownDebugThread.title,
                 state: .running,
                 agentName: "Claude",
                 startedAt: Date().addingTimeInterval(-12 * 60),
@@ -494,7 +613,8 @@ final class DemoStore: ObservableObject {
             WorkspaceSession(
                 id: UUID(),
                 issueID: issueC.id,
-                title: "Skill distillation",
+                threadID: skillThread.id,
+                title: skillThread.title,
                 state: .idle,
                 agentName: "Pi",
                 startedAt: Date().addingTimeInterval(-7 * 60),
@@ -504,19 +624,21 @@ final class DemoStore: ObservableObject {
             )
         ]
 
-        timelineByIssue = [
-            issueA.id: [
+        timelineByThread = [
+            relayResearchThread.id: [
                 TimelineItem(
                     id: UUID(),
                     issueID: issueA.id,
-                    sessionID: sessions.first(where: { $0.issueID == issueA.id })?.id,
+                    threadID: relayResearchThread.id,
+                    sessionID: nil,
                     timestamp: Date().addingTimeInterval(-700),
-                    payload: .system(SystemEvent(text: "Claude and Codex joined this issue room."))
+                    payload: .system(SystemEvent(text: "Research reconnect behavior started."))
                 ),
                 TimelineItem(
                     id: UUID(),
                     issueID: issueA.id,
-                    sessionID: sessions.first(where: { $0.issueID == issueA.id })?.id,
+                    threadID: relayResearchThread.id,
+                    sessionID: nil,
                     timestamp: Date().addingTimeInterval(-660),
                     payload: .agentMessage(
                         ChatMessage(
@@ -530,7 +652,8 @@ final class DemoStore: ObservableObject {
                 TimelineItem(
                     id: UUID(),
                     issueID: issueA.id,
-                    sessionID: sessions.first(where: { $0.issueID == issueA.id })?.id,
+                    threadID: relayResearchThread.id,
+                    sessionID: nil,
                     timestamp: Date().addingTimeInterval(-620),
                     payload: .toolCall(
                         ToolCallEvent(
@@ -543,11 +666,37 @@ final class DemoStore: ObservableObject {
                     )
                 )
             ],
-            issueB.id: [
+            relayReviewThread.id: [
+                TimelineItem(
+                    id: UUID(),
+                    issueID: issueA.id,
+                    threadID: relayReviewThread.id,
+                    sessionID: sessions.first(where: { $0.threadID == relayReviewThread.id })?.id,
+                    timestamp: Date().addingTimeInterval(-220),
+                    payload: .system(SystemEvent(text: "Review replay handling started."))
+                ),
+                TimelineItem(
+                    id: UUID(),
+                    issueID: issueA.id,
+                    threadID: relayReviewThread.id,
+                    sessionID: sessions.first(where: { $0.threadID == relayReviewThread.id })?.id,
+                    timestamp: Date().addingTimeInterval(-180),
+                    payload: .agentMessage(
+                        ChatMessage(
+                            senderName: "Codex",
+                            senderRole: .agent(.codex),
+                            text: "The replay path should be attached to thread state, not only the raw daemon session, so Issue history stays reconstructable.",
+                            isStreaming: false
+                        )
+                    )
+                )
+            ],
+            shutdownDebugThread.id: [
                 TimelineItem(
                     id: UUID(),
                     issueID: issueB.id,
-                    sessionID: sessions.first(where: { $0.issueID == issueB.id })?.id,
+                    threadID: shutdownDebugThread.id,
+                    sessionID: sessions.first(where: { $0.threadID == shutdownDebugThread.id })?.id,
                     timestamp: Date().addingTimeInterval(-320),
                     payload: .thinking(
                         ThinkingEvent(
@@ -559,7 +708,8 @@ final class DemoStore: ObservableObject {
                 TimelineItem(
                     id: UUID(),
                     issueID: issueB.id,
-                    sessionID: sessions.first(where: { $0.issueID == issueB.id })?.id,
+                    threadID: shutdownDebugThread.id,
+                    sessionID: sessions.first(where: { $0.threadID == shutdownDebugThread.id })?.id,
                     timestamp: Date().addingTimeInterval(-300),
                     payload: .toolCall(
                         ToolCallEvent(
@@ -572,11 +722,22 @@ final class DemoStore: ObservableObject {
                     )
                 )
             ],
-            issueC.id: [
+            shutdownReviewThread.id: [
+                TimelineItem(
+                    id: UUID(),
+                    issueID: issueB.id,
+                    threadID: shutdownReviewThread.id,
+                    sessionID: nil,
+                    timestamp: Date().addingTimeInterval(-500),
+                    payload: .system(SystemEvent(text: "Review cancellation edge cases is ready."))
+                )
+            ],
+            skillThread.id: [
                 TimelineItem(
                     id: UUID(),
                     issueID: issueC.id,
-                    sessionID: sessions.first(where: { $0.issueID == issueC.id })?.id,
+                    threadID: skillThread.id,
+                    sessionID: sessions.first(where: { $0.threadID == skillThread.id })?.id,
                     timestamp: Date().addingTimeInterval(-500),
                     payload: .plan(
                         PlanEvent(
@@ -603,9 +764,12 @@ final class DemoStore: ObservableObject {
         )
     }
 
-    private func simulateResponses(issueID: UUID, input: String, targets: [String]) async {
+    private func simulateResponses(threadID: UUID, input: String, targets: [String]) async {
+        guard let thread = thread(for: threadID) else { return }
+        let issueID = thread.issueID
+
         for target in targets {
-            let sessionID = ensureSession(issueID: issueID, agentName: target)
+            let sessionID = ensureSession(issueID: issueID, threadID: threadID, agentName: target)
             setSessionState(sessionID, state: .running, latestEventText: "Thinking about your request", activeToolName: nil)
 
             append(
@@ -616,6 +780,7 @@ final class DemoStore: ObservableObject {
                     )
                 ),
                 issueID: issueID,
+                threadID: threadID,
                 sessionID: sessionID
             )
 
@@ -633,6 +798,7 @@ final class DemoStore: ObservableObject {
                     )
                 ),
                 issueID: issueID,
+                threadID: threadID,
                 sessionID: sessionID
             )
             setSessionState(sessionID, state: .running, latestEventText: tool.title, activeToolName: tool.name)
@@ -641,6 +807,7 @@ final class DemoStore: ObservableObject {
 
             await streamAgentMessage(
                 issueID: issueID,
+                threadID: threadID,
                 sessionID: sessionID,
                 agentName: target,
                 text: responseText(for: target, input: input)
@@ -657,6 +824,7 @@ final class DemoStore: ObservableObject {
                     )
                 ),
                 issueID: issueID,
+                threadID: threadID,
                 sessionID: sessionID
             )
 
@@ -668,11 +836,17 @@ final class DemoStore: ObservableObject {
                     )
                 ),
                 issueID: issueID,
+                threadID: threadID,
                 sessionID: sessionID
             )
 
             let finalPreview = responseText(for: target, input: input)
             setSessionState(sessionID, state: .completed, latestEventText: finalPreview, activeToolName: nil)
+            updateThread(threadID: threadID) { thread in
+                thread.state = .completed
+                thread.latestActivityText = "\(target): \(finalPreview)"
+                thread.updatedAt = Date()
+            }
             updateIssue(issueID: issueID) { issue in
                 issue.status = .review
                 issue.latestActivityText = "\(target): \(finalPreview)"
@@ -685,7 +859,7 @@ final class DemoStore: ObservableObject {
         }
     }
 
-    private func streamAgentMessage(issueID: UUID, sessionID: UUID, agentName: String, text: String) async {
+    private func streamAgentMessage(issueID: UUID, threadID: UUID, sessionID: UUID, agentName: String, text: String) async {
         let itemID = UUID()
         append(
             itemID: itemID,
@@ -698,6 +872,7 @@ final class DemoStore: ObservableObject {
                 )
             ),
             issueID: issueID,
+            threadID: threadID,
             sessionID: sessionID
         )
 
@@ -705,7 +880,7 @@ final class DemoStore: ObservableObject {
         for chunk in chunks(from: text) {
             await pause(milliseconds: 140)
             current += chunk
-            updateTimelineItem(issueID: issueID, itemID: itemID) { item in
+            updateTimelineItem(threadID: threadID, itemID: itemID) { item in
                 guard case .agentMessage(var message) = item.payload else { return }
                 message.text = current
                 message.isStreaming = true
@@ -714,33 +889,34 @@ final class DemoStore: ObservableObject {
             setSessionState(sessionID, state: .running, latestEventText: current, activeToolName: nil)
         }
 
-        updateTimelineItem(issueID: issueID, itemID: itemID) { item in
+        updateTimelineItem(threadID: threadID, itemID: itemID) { item in
             guard case .agentMessage(var message) = item.payload else { return }
             message.isStreaming = false
             item.payload = .agentMessage(message)
         }
     }
 
-    private func append(itemID: UUID = UUID(), payload: TimelinePayload, issueID: UUID, sessionID: UUID?) {
-        var items = timelineByIssue[issueID] ?? []
+    private func append(itemID: UUID = UUID(), payload: TimelinePayload, issueID: UUID, threadID: UUID, sessionID: UUID?) {
+        var items = timelineByThread[threadID] ?? []
         items.append(
             TimelineItem(
                 id: itemID,
                 issueID: issueID,
+                threadID: threadID,
                 sessionID: sessionID,
                 timestamp: Date(),
                 payload: payload
             )
         )
-        timelineByIssue[issueID] = items
+        timelineByThread[threadID] = items
     }
 
-    private func updateTimelineItem(issueID: UUID, itemID: UUID, mutate: (inout TimelineItem) -> Void) {
-        guard var items = timelineByIssue[issueID], let index = items.firstIndex(where: { $0.id == itemID }) else {
+    private func updateTimelineItem(threadID: UUID, itemID: UUID, mutate: (inout TimelineItem) -> Void) {
+        guard var items = timelineByThread[threadID], let index = items.firstIndex(where: { $0.id == itemID }) else {
             return
         }
         mutate(&items[index])
-        timelineByIssue[issueID] = items
+        timelineByThread[threadID] = items
     }
 
     private func updateIssue(issueID: UUID, mutate: (inout Issue) -> Void) {
@@ -753,14 +929,20 @@ final class DemoStore: ObservableObject {
         }
     }
 
-    private func ensureSession(issueID: UUID, agentName: String) -> UUID {
-        if let existing = sessions.first(where: { $0.issueID == issueID && $0.agentName == agentName }) {
+    private func updateThread(threadID: UUID, mutate: (inout Thread) -> Void) {
+        guard let index = threads.firstIndex(where: { $0.id == threadID }) else { return }
+        mutate(&threads[index])
+    }
+
+    private func ensureSession(issueID: UUID, threadID: UUID, agentName: String) -> UUID {
+        if let existing = sessions.first(where: { $0.threadID == threadID && $0.agentName == agentName }) {
             return existing.id
         }
 
         let session = WorkspaceSession(
             id: UUID(),
             issueID: issueID,
+            threadID: threadID,
             title: "\(agentName) session",
             state: .idle,
             agentName: agentName,

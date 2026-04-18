@@ -2,9 +2,10 @@ import SwiftUI
 
 struct ThreadCard: View {
     let thread: Thread
+    var isSelected: Bool = false
 
     var body: some View {
-        CardSurface(accent: thread.state.badgeColor) {
+        CardSurface(accent: isSelected ? thread.purpose.badgeColor : thread.state.badgeColor) {
             VStack(alignment: .leading, spacing: AppSpacing.sm) {
                 HStack {
                     Text(thread.title)
@@ -12,6 +13,8 @@ struct ThreadCard: View {
                     Spacer()
                     StatusBadge(text: thread.state.title, color: thread.state.badgeColor)
                 }
+
+                StatusBadge(text: thread.purpose.title, color: thread.purpose.badgeColor)
 
                 if !thread.participants.isEmpty {
                     HStack(spacing: 6) {
@@ -28,9 +31,15 @@ struct ThreadCard: View {
                         .lineLimit(2)
                 }
 
-                Text(AppFormatters.relativeString(from: thread.createdAt))
+                Text(AppFormatters.relativeString(from: thread.updatedAt))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            }
+        }
+        .overlay {
+            if isSelected {
+                RoundedRectangle(cornerRadius: AppRadius.card, style: .continuous)
+                    .stroke(thread.purpose.badgeColor.color.opacity(0.45), lineWidth: 2)
             }
         }
     }
@@ -42,6 +51,7 @@ struct CreateThreadSheet: View {
 
     let issueID: UUID
 
+    @State private var purpose: ThreadPurpose = .discussion
     @State private var selectedAgents: Set<UUID> = []
     @State private var isValid = false
 
@@ -57,7 +67,7 @@ struct CreateThreadSheet: View {
 
             footer
         }
-        .frame(width: 400, height: 360)
+        .frame(width: 440, height: 460)
         .onChange(of: selectedAgents) { _, _ in validateForm() }
     }
 
@@ -79,6 +89,16 @@ struct CreateThreadSheet: View {
 
     private var formContent: some View {
         VStack(alignment: .leading, spacing: AppSpacing.md) {
+            Text("Purpose")
+                .font(.subheadline.weight(.semibold))
+
+            Picker("Purpose", selection: $purpose) {
+                ForEach(ThreadPurpose.allCases) { purpose in
+                    Text(purpose.title).tag(purpose)
+                }
+            }
+            .pickerStyle(.menu)
+
             Text("Select agents to participate in this thread")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -152,7 +172,7 @@ struct CreateThreadSheet: View {
     }
 
     private func createThread() {
-        store.createThread(for: issueID, agentIDs: Array(selectedAgents))
+        store.createThread(for: issueID, purpose: purpose, agentIDs: Array(selectedAgents))
         dismiss()
     }
 }
