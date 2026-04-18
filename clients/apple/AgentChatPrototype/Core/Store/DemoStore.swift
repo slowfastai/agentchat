@@ -15,6 +15,7 @@ private struct DemoStoreSnapshot: Codable {
     var selectedThreadID: UUID?
     var agentCustomNames: [String: String]
     var agentAvatarData: [String: Data]
+    var agentDistillations: [PersistedAgentDistillation]?
 }
 
 private struct PersistedThreadTimeline: Codable {
@@ -22,19 +23,24 @@ private struct PersistedThreadTimeline: Codable {
     var items: [TimelineItem]
 }
 
-struct DistilledArtifactDraft {
+private struct PersistedAgentDistillation: Codable {
+    var threadID: UUID
+    var result: AgentDistillationResult
+}
+
+struct DistilledArtifactDraft: Codable {
     var kind: IssueArtifactKind
     var title: String
     var summary: String
     var pathOrURL: String
 }
 
-struct DistilledDecisionDraft {
+struct DistilledDecisionDraft: Codable {
     var title: String
     var rationale: String
 }
 
-struct DistilledIssueDraft {
+struct DistilledIssueDraft: Codable {
     var title: String
     var summary: String
     var status: IssueStatus
@@ -42,7 +48,7 @@ struct DistilledIssueDraft {
     var assignees: [ParticipantRef]
 }
 
-private struct AgentDistillationResult {
+private struct AgentDistillationResult: Codable {
     var summary: String?
     var decision: DistilledDecisionDraft?
     var artifact: DistilledArtifactDraft?
@@ -567,6 +573,7 @@ final class DemoStore: ObservableObject {
         
         for threadID in deletedThreadIDs {
             timelineByThread.removeValue(forKey: threadID)
+            agentDistillationByThreadID.removeValue(forKey: threadID)
         }
         
         if let selectedIssueID, projectIssueIDs.contains(selectedIssueID) {
@@ -735,6 +742,7 @@ final class DemoStore: ObservableObject {
 
     func clearAgentDistillation(for threadID: UUID) {
         agentDistillationByThreadID.removeValue(forKey: threadID)
+        schedulePersistence()
     }
 
     func resetPrototypeData() {
@@ -749,6 +757,7 @@ final class DemoStore: ObservableObject {
         artifacts = []
         decisions = []
         timelineByThread = [:]
+        agentDistillationByThreadID = [:]
         selectedProjectID = nil
         selectedIssueID = nil
         selectedThreadID = nil
@@ -1020,6 +1029,7 @@ final class DemoStore: ObservableObject {
             }
 
             agentDistillationByThreadID[threadID] = parsed
+            schedulePersistence()
         } catch {
             return
         }
@@ -2332,7 +2342,10 @@ final class DemoStore: ObservableObject {
                 selectedIssueID: selectedIssueID,
                 selectedThreadID: selectedThreadID,
                 agentCustomNames: agentCustomNames,
-                agentAvatarData: agentAvatarData
+                agentAvatarData: agentAvatarData,
+                agentDistillations: agentDistillationByThreadID
+                    .map { PersistedAgentDistillation(threadID: $0.key, result: $0.value) }
+                    .sorted { $0.threadID.uuidString < $1.threadID.uuidString }
             )
             let data = try JSONEncoder.prototypeStoreEncoder.encode(snapshot)
             UserDefaults.standard.set(data, forKey: snapshotKey)
@@ -2362,6 +2375,9 @@ final class DemoStore: ObservableObject {
             selectedThreadID = snapshot.selectedThreadID
             agentCustomNames = snapshot.agentCustomNames
             agentAvatarData = snapshot.agentAvatarData
+            agentDistillationByThreadID = Dictionary(
+                uniqueKeysWithValues: (snapshot.agentDistillations ?? []).map { ($0.threadID, $0.result) }
+            )
             return !projects.isEmpty
         } catch {
             UserDefaults.standard.removeObject(forKey: snapshotKey)
