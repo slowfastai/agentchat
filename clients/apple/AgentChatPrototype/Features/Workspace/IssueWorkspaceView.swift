@@ -327,8 +327,12 @@ private struct ThreadEmptyState: View {
 }
 
 private struct IssueInspectorPanel: View {
+    @EnvironmentObject private var store: DemoStore
     let issue: Issue
     let activeThread: Thread?
+
+    @State private var showCreateArtifact = false
+    @State private var showCreateDecision = false
 
     var body: some View {
         CardSurface(accent: .gray) {
@@ -353,6 +357,18 @@ private struct IssueInspectorPanel: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
+
+                            HStack(spacing: 8) {
+                                Button("Add Artifact") {
+                                    showCreateArtifact = true
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button("Add Decision") {
+                                    showCreateDecision = true
+                                }
+                                .buttonStyle(.bordered)
+                            }
                         } else {
                             Text("No active thread")
                                 .font(.subheadline)
@@ -361,14 +377,58 @@ private struct IssueInspectorPanel: View {
                     }
 
                     inspectorSection("Artifacts", systemImage: "shippingbox") {
-                        PlaceholderInspectorRow(text: "Changed files, branches, PRs, logs, and screenshots will attach here.")
+                        Button {
+                            showCreateArtifact = true
+                        } label: {
+                            Label("Add Artifact", systemImage: "plus")
+                        }
+                        .buttonStyle(.bordered)
+
+                        let issueArtifacts = store.artifacts(for: issue.id)
+                        if issueArtifacts.isEmpty {
+                            PlaceholderInspectorRow(text: "No artifacts yet")
+                        } else {
+                            VStack(spacing: AppSpacing.sm) {
+                                ForEach(issueArtifacts) { artifact in
+                                    IssueArtifactCard(artifact: artifact, thread: artifact.threadID.flatMap(store.thread(for:)))
+                                }
+                            }
+                        }
                     }
 
                     inspectorSection("Decisions", systemImage: "checkmark.seal") {
-                        PlaceholderInspectorRow(text: "Thread summaries and decisions will be saved back to the issue.")
+                        Button {
+                            showCreateDecision = true
+                        } label: {
+                            Label("Add Decision", systemImage: "plus")
+                        }
+                        .buttonStyle(.bordered)
+
+                        let issueDecisions = store.decisions(for: issue.id)
+                        if issueDecisions.isEmpty {
+                            PlaceholderInspectorRow(text: "No decisions yet")
+                        } else {
+                            VStack(spacing: AppSpacing.sm) {
+                                ForEach(issueDecisions) { decision in
+                                    IssueDecisionCard(decision: decision, thread: decision.threadID.flatMap(store.thread(for:)))
+                                }
+                            }
+                        }
                     }
                 }
             }
+        }
+        .sheet(isPresented: $showCreateArtifact) {
+            CreateArtifactSheet(
+                issueID: issue.id,
+                thread: activeThread
+            )
+        }
+        .sheet(isPresented: $showCreateDecision) {
+            CreateDecisionSheet(
+                issueID: issue.id,
+                thread: activeThread
+            )
         }
     }
 
@@ -388,6 +448,82 @@ private struct IssueInspectorPanel: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.bottom, AppSpacing.sm)
+    }
+}
+
+private struct IssueArtifactCard: View {
+    let artifact: IssueArtifact
+    let thread: Thread?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: artifact.kind.systemImage)
+                    .foregroundStyle(artifact.kind.accent.color)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(artifact.title)
+                        .font(.subheadline.weight(.semibold))
+                    HStack(spacing: 8) {
+                        StatusBadge(text: artifact.kind.title, color: artifact.kind.accent)
+                        if let thread {
+                            PillView(text: thread.title, color: thread.purpose.badgeColor)
+                        }
+                    }
+                }
+                Spacer(minLength: 0)
+                Text(AppFormatters.relativeString(from: artifact.createdAt))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !artifact.summary.isEmpty {
+                Text(artifact.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let pathOrURL = artifact.pathOrURL {
+                Text(pathOrURL)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(artifact.kind.accent.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct IssueDecisionCard: View {
+    let decision: IssueDecision
+    let thread: Thread?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "checkmark.seal")
+                    .foregroundStyle(ColorToken.green.color)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(decision.title)
+                        .font(.subheadline.weight(.semibold))
+                    if let thread {
+                        PillView(text: thread.title, color: thread.purpose.badgeColor)
+                    }
+                }
+                Spacer(minLength: 0)
+                Text(AppFormatters.relativeString(from: decision.createdAt))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text(decision.rationale)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ColorToken.green.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 

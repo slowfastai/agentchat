@@ -7,6 +7,8 @@ final class DemoStore: ObservableObject {
     @Published var agents: [AgentProfile] = []
     @Published var sessions: [WorkspaceSession] = []
     @Published var threads: [Thread] = []
+    @Published var artifacts: [IssueArtifact] = []
+    @Published var decisions: [IssueDecision] = []
     @Published var timelineByThread: [UUID: [TimelineItem]] = [:]
     @Published var selectedProjectID: UUID?
     @Published var selectedIssueID: UUID?
@@ -168,6 +170,18 @@ final class DemoStore: ObservableObject {
             .sorted { $0.startedAt > $1.startedAt }
     }
 
+    func artifacts(for issueID: UUID) -> [IssueArtifact] {
+        artifacts
+            .filter { $0.issueID == issueID }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    func decisions(for issueID: UUID) -> [IssueDecision] {
+        decisions
+            .filter { $0.issueID == issueID }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
     func threads(for issueID: UUID) -> [Thread] {
         threads.filter { $0.issueID == issueID }
             .sorted { $0.updatedAt > $1.updatedAt }
@@ -271,6 +285,73 @@ final class DemoStore: ObservableObject {
         }
     }
 
+    func addArtifact(
+        issueID: UUID,
+        threadID: UUID?,
+        kind: IssueArtifactKind,
+        title: String,
+        summary: String,
+        pathOrURL: String?
+    ) {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { return }
+
+        let artifact = IssueArtifact(
+            id: UUID(),
+            issueID: issueID,
+            threadID: threadID,
+            kind: kind,
+            title: trimmedTitle,
+            summary: summary.trimmingCharacters(in: .whitespacesAndNewlines),
+            pathOrURL: normalizedOptionalString(pathOrURL),
+            createdAt: Date()
+        )
+        artifacts.append(artifact)
+
+        updateIssue(issueID: issueID) { issue in
+            issue.updatedAt = artifact.createdAt
+            issue.latestActivityText = "\(kind.title): \(artifact.title)"
+        }
+        if let threadID {
+            updateThread(threadID: threadID) { thread in
+                thread.updatedAt = artifact.createdAt
+                thread.latestActivityText = "Saved artifact: \(artifact.title)"
+            }
+        }
+    }
+
+    func addDecision(
+        issueID: UUID,
+        threadID: UUID?,
+        title: String,
+        rationale: String
+    ) {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedRationale = rationale.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty, !trimmedRationale.isEmpty else { return }
+
+        let decision = IssueDecision(
+            id: UUID(),
+            issueID: issueID,
+            threadID: threadID,
+            title: trimmedTitle,
+            rationale: trimmedRationale,
+            createdAt: Date()
+        )
+        decisions.append(decision)
+
+        updateIssue(issueID: issueID) { issue in
+            issue.updatedAt = decision.createdAt
+            issue.latestActivityText = "Decision: \(decision.title)"
+        }
+        if let threadID {
+            updateThread(threadID: threadID) { thread in
+                thread.updatedAt = decision.createdAt
+                thread.latestActivityText = "Saved decision: \(decision.title)"
+            }
+        }
+    }
+
     func deleteProject(_ projectID: UUID) {
         guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }) else { return }
         
@@ -287,6 +368,12 @@ final class DemoStore: ObservableObject {
         
         sessions.removeAll { session in
             projectIssueIDs.contains(session.issueID)
+        }
+        artifacts.removeAll { artifact in
+            projectIssueIDs.contains(artifact.issueID)
+        }
+        decisions.removeAll { decision in
+            projectIssueIDs.contains(decision.issueID)
         }
         
         for threadID in deletedThreadIDs {
@@ -584,6 +671,48 @@ final class DemoStore: ObservableObject {
             skillThread
         ]
         selectedThreadID = relayReviewThread.id
+
+        artifacts = [
+            IssueArtifact(
+                id: UUID(),
+                issueID: issueA.id,
+                threadID: relayReviewThread.id,
+                kind: .changedFile,
+                title: "daemon/server/src/relay.rs",
+                summary: "Replay-safe rehydrate path now stays scoped to the active thread lifecycle.",
+                pathOrURL: "daemon/server/src/relay.rs",
+                createdAt: Date().addingTimeInterval(-180)
+            ),
+            IssueArtifact(
+                id: UUID(),
+                issueID: issueB.id,
+                threadID: shutdownDebugThread.id,
+                kind: .testLog,
+                title: "Shutdown cleanup notes",
+                summary: "Disconnect cleanup still races if the session mapping is released before cancellation settles.",
+                pathOrURL: nil,
+                createdAt: Date().addingTimeInterval(-260)
+            )
+        ]
+
+        decisions = [
+            IssueDecision(
+                id: UUID(),
+                issueID: issueA.id,
+                threadID: relayReviewThread.id,
+                title: "Thread owns replay context",
+                rationale: "Replay handling should attach to thread state so Issue history stays explainable after daemon session changes.",
+                createdAt: Date().addingTimeInterval(-150)
+            ),
+            IssueDecision(
+                id: UUID(),
+                issueID: issueC.id,
+                threadID: skillThread.id,
+                title: "Keep distillation manual in MVP",
+                rationale: "We should capture explicit, human-reviewed notes first before auto-distilling every completed thread.",
+                createdAt: Date().addingTimeInterval(-420)
+            )
+        ]
 
         sessions = [
             WorkspaceSession(
@@ -1049,6 +1178,13 @@ final class DemoStore: ObservableObject {
 
     private func agentSkillPathSegment(for agentName: String) -> String {
         agentName.lowercased().replacingOccurrences(of: " ", with: "-")
+    }
+
+    private func normalizedOptionalString(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
     }
 
     private func chunks(from text: String, wordsPerChunk: Int = 4) -> [String] {

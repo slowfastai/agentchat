@@ -424,6 +424,78 @@ struct SystemEvent: Hashable {
     var text: String
 }
 
+enum IssueArtifactKind: String, CaseIterable, Hashable, Identifiable {
+    case branch
+    case commit
+    case pullRequest
+    case changedFile
+    case testLog
+    case screenshot
+    case document
+    case note
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .branch: return "Branch"
+        case .commit: return "Commit"
+        case .pullRequest: return "Pull Request"
+        case .changedFile: return "Changed File"
+        case .testLog: return "Test Log"
+        case .screenshot: return "Screenshot"
+        case .document: return "Document"
+        case .note: return "Note"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .branch: return "arrow.triangle.branch"
+        case .commit: return "number"
+        case .pullRequest: return "arrow.triangle.pull"
+        case .changedFile: return "doc.text"
+        case .testLog: return "checklist"
+        case .screenshot: return "photo"
+        case .document: return "doc.richtext"
+        case .note: return "note.text"
+        }
+    }
+
+    var accent: ColorToken {
+        switch self {
+        case .branch: return .green
+        case .commit: return .orange
+        case .pullRequest: return .blue
+        case .changedFile: return .gray
+        case .testLog: return .purple
+        case .screenshot: return .orange
+        case .document: return .blue
+        case .note: return .gray
+        }
+    }
+}
+
+struct IssueArtifact: Identifiable, Hashable {
+    let id: UUID
+    var issueID: UUID
+    var threadID: UUID?
+    var kind: IssueArtifactKind
+    var title: String
+    var summary: String
+    var pathOrURL: String?
+    var createdAt: Date
+}
+
+struct IssueDecision: Identifiable, Hashable {
+    let id: UUID
+    var issueID: UUID
+    var threadID: UUID?
+    var title: String
+    var rationale: String
+    var createdAt: Date
+}
+
 struct WorkspaceCardModel: Identifiable, Hashable {
     let id: UUID
     var issueID: UUID
