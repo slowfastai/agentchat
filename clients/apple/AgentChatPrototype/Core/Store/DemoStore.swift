@@ -805,6 +805,16 @@ final class DemoStore: ObservableObject {
         )
     }
 
+    func saveDistilledDecision(issueID: UUID, threadID: UUID) {
+        guard let draft = distilledDecisionDraft(for: threadID) else { return }
+        addDecision(
+            issueID: issueID,
+            threadID: threadID,
+            title: draft.title,
+            rationale: draft.rationale
+        )
+    }
+
     func distilledArtifactDraft(for threadID: UUID) -> DistilledArtifactDraft? {
         guard let thread = thread(for: threadID) else { return nil }
 
@@ -833,6 +843,18 @@ final class DemoStore: ObservableObject {
         )
     }
 
+    func saveDistilledArtifact(issueID: UUID, threadID: UUID) {
+        guard let draft = distilledArtifactDraft(for: threadID) else { return }
+        addArtifact(
+            issueID: issueID,
+            threadID: threadID,
+            kind: draft.kind,
+            title: draft.title,
+            summary: draft.summary,
+            pathOrURL: draft.pathOrURL
+        )
+    }
+
     func distilledFollowUpIssueDraft(for threadID: UUID) -> DistilledIssueDraft? {
         guard let thread = thread(for: threadID),
               let issue = issue(for: thread.issueID)
@@ -858,6 +880,26 @@ final class DemoStore: ObservableObject {
             priority: issue.priority,
             assignees: thread.participants
         )
+    }
+
+    func createDistilledFollowUpIssue(sourceIssueID: UUID, threadID: UUID) {
+        guard let draft = distilledFollowUpIssueDraft(for: threadID),
+              let projectID = projectID(forIssueID: sourceIssueID),
+              let createdIssueID = addIssue(
+                to: projectID,
+                title: draft.title,
+                summary: draft.summary,
+                status: draft.status,
+                priority: draft.priority,
+                assignees: draft.assignees
+              )
+        else {
+            return
+        }
+
+        selectedProjectID = projectID
+        selectedIssueID = createdIssueID
+        selectedThreadID = nil
     }
 
     func seed() {

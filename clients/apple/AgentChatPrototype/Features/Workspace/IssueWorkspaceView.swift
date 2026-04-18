@@ -519,8 +519,8 @@ private struct IssueInspectorPanel: View {
                                     DistillPreviewCard(
                                         title: "Issue Summary",
                                         preview: summaryPreview,
-                                        actionTitle: "Apply",
-                                        action: onDistillSummary
+                                        primaryActionTitle: "Apply",
+                                        primaryAction: onDistillSummary
                                     )
                                 }
 
@@ -528,8 +528,12 @@ private struct IssueInspectorPanel: View {
                                     DistillPreviewCard(
                                         title: "Decision Draft",
                                         preview: "\(decisionDraft.title)\n\n\(decisionDraft.rationale)",
-                                        actionTitle: "Open Draft",
-                                        action: onDraftDecision
+                                        primaryActionTitle: "Save",
+                                        primaryAction: {
+                                            store.saveDistilledDecision(issueID: issue.id, threadID: activeThread.id)
+                                        },
+                                        secondaryActionTitle: "Edit",
+                                        secondaryAction: onDraftDecision
                                     )
                                 }
 
@@ -537,8 +541,12 @@ private struct IssueInspectorPanel: View {
                                     DistillPreviewCard(
                                         title: "Artifact Draft",
                                         preview: "\(artifactDraft.title)\n\n\(artifactDraft.summary)",
-                                        actionTitle: "Open Draft",
-                                        action: onDraftArtifact
+                                        primaryActionTitle: "Save",
+                                        primaryAction: {
+                                            store.saveDistilledArtifact(issueID: issue.id, threadID: activeThread.id)
+                                        },
+                                        secondaryActionTitle: "Edit",
+                                        secondaryAction: onDraftArtifact
                                     )
                                 }
 
@@ -546,8 +554,12 @@ private struct IssueInspectorPanel: View {
                                     DistillPreviewCard(
                                         title: "Follow-up Issue",
                                         preview: "\(followUpDraft.title)\n\n\(followUpDraft.summary)",
-                                        actionTitle: "Create",
-                                        action: onCreateFollowUp
+                                        primaryActionTitle: "Create",
+                                        primaryAction: {
+                                            store.createDistilledFollowUpIssue(sourceIssueID: issue.id, threadID: activeThread.id)
+                                        },
+                                        secondaryActionTitle: "Edit",
+                                        secondaryAction: onCreateFollowUp
                                     )
                                 }
 
@@ -649,8 +661,10 @@ private struct IssueInspectorPanel: View {
 private struct DistillPreviewCard: View {
     let title: String
     let preview: String
-    let actionTitle: String
-    let action: () -> Void
+    let primaryActionTitle: String
+    let primaryAction: () -> Void
+    var secondaryActionTitle: String? = nil
+    var secondaryAction: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -658,8 +672,14 @@ private struct DistillPreviewCard: View {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
                 Spacer()
-                Button(actionTitle, action: action)
-                    .buttonStyle(.bordered)
+                HStack(spacing: 8) {
+                    if let secondaryActionTitle, let secondaryAction {
+                        Button(secondaryActionTitle, action: secondaryAction)
+                            .buttonStyle(.bordered)
+                    }
+                    Button(primaryActionTitle, action: primaryAction)
+                        .buttonStyle(.bordered)
+                }
             }
 
             Text(preview)
