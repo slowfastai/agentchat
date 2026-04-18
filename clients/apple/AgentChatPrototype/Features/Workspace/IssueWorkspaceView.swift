@@ -60,7 +60,13 @@ struct IssueWorkspaceView: View {
                     if let activeThread {
                         ChatTimelineColumn(
                             thread: activeThread,
-                            items: store.timeline(forThreadID: activeThread.id)
+                            items: store.timeline(forThreadID: activeThread.id),
+                            isRefreshingFromDaemon: store.isRefreshingThread(activeThread.id),
+                            onRefreshFromDaemon: {
+                                Task {
+                                    await store.refreshThreadFromDaemon(threadID: activeThread.id)
+                                }
+                            }
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
@@ -252,6 +258,8 @@ private struct IssueThreadRail: View {
 private struct ChatTimelineColumn: View {
     let thread: Thread
     let items: [TimelineItem]
+    let isRefreshingFromDaemon: Bool
+    let onRefreshFromDaemon: () -> Void
 
     var body: some View {
         CardSurface(accent: .blue) {
@@ -269,7 +277,22 @@ private struct ChatTimelineColumn: View {
                     }
 
                     Spacer()
-                    StatusBadge(text: thread.state.title, color: thread.state.badgeColor)
+                    HStack(spacing: 8) {
+                        if thread.daemonThreadID != nil {
+                            Button {
+                                onRefreshFromDaemon()
+                            } label: {
+                                if isRefreshingFromDaemon {
+                                    Label("Refreshing", systemImage: "arrow.clockwise")
+                                } else {
+                                    Label("Refresh from daemon", systemImage: "arrow.clockwise")
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(isRefreshingFromDaemon)
+                        }
+                        StatusBadge(text: thread.state.title, color: thread.state.badgeColor)
+                    }
                 }
 
                 ScrollViewReader { proxy in
@@ -359,6 +382,16 @@ private struct IssueInspectorPanel: View {
                             }
 
                             HStack(spacing: 8) {
+                                if activeThread.daemonThreadID != nil {
+                                    Button("Refresh") {
+                                        Task {
+                                            await store.refreshThreadFromDaemon(threadID: activeThread.id)
+                                        }
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(store.isRefreshingThread(activeThread.id))
+                                }
+
                                 Button("Add Artifact") {
                                     showCreateArtifact = true
                                 }

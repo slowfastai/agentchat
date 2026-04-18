@@ -41,7 +41,7 @@ enum SidebarDestination: String, CaseIterable, Hashable, Identifiable {
     }
 }
 
-enum ColorToken: String, Hashable, CaseIterable {
+enum ColorToken: String, Hashable, CaseIterable, Codable {
     case blue
     case purple
     case green
@@ -78,7 +78,7 @@ enum SwitcherMode: String, CaseIterable, Hashable, Identifiable {
     var title: String { rawValue.capitalized }
 }
 
-struct Project: Identifiable, Hashable {
+struct Project: Identifiable, Hashable, Codable {
     let id: UUID
     var name: String
     var repoPath: String
@@ -86,7 +86,7 @@ struct Project: Identifiable, Hashable {
     var issues: [Issue]
 }
 
-struct Issue: Identifiable, Hashable {
+struct Issue: Identifiable, Hashable, Codable {
     let id: UUID
     var number: Int
     var title: String
@@ -114,7 +114,7 @@ extension Issue {
     }
 }
 
-enum IssueStatus: String, CaseIterable, Hashable {
+enum IssueStatus: String, CaseIterable, Hashable, Codable {
     case backlog
     case todo
     case inProgress
@@ -144,7 +144,7 @@ enum IssueStatus: String, CaseIterable, Hashable {
     }
 }
 
-enum IssuePriority: String, CaseIterable, Hashable {
+enum IssuePriority: String, CaseIterable, Hashable, Codable {
     case low
     case medium
     case high
@@ -153,8 +153,9 @@ enum IssuePriority: String, CaseIterable, Hashable {
     var title: String { rawValue.capitalized }
 }
 
-struct AgentProfile: Identifiable, Hashable {
+struct AgentProfile: Identifiable, Hashable, Codable {
     let id: UUID
+    var daemonAgentID: String?
     var name: String
     var kind: AgentKind
     var accent: ColorToken
@@ -163,7 +164,7 @@ struct AgentProfile: Identifiable, Hashable {
     var shortDescription: String
 }
 
-enum AgentKind: String, CaseIterable, Hashable {
+enum AgentKind: String, CaseIterable, Hashable, Codable {
     case claude
     case codex
     case pi
@@ -188,7 +189,7 @@ extension AgentKind {
     }
 }
 
-struct ParticipantRef: Identifiable, Hashable {
+struct ParticipantRef: Identifiable, Hashable, Codable {
     let id: UUID
     var displayName: String
     var role: ParticipantRole
@@ -200,7 +201,7 @@ enum ParticipantRole: Hashable {
     case agent(AgentKind)
 }
 
-struct WorkspaceSession: Identifiable, Hashable {
+struct WorkspaceSession: Identifiable, Hashable, Codable {
     let id: UUID
     var issueID: UUID
     var threadID: UUID
@@ -213,7 +214,7 @@ struct WorkspaceSession: Identifiable, Hashable {
     var activeToolName: String?
 }
 
-enum SessionState: String, CaseIterable, Hashable {
+enum SessionState: String, CaseIterable, Hashable, Codable {
     case idle
     case running
     case waitingInput
@@ -241,7 +242,7 @@ enum SessionState: String, CaseIterable, Hashable {
     }
 }
 
-enum ThreadState: String, CaseIterable, Hashable {
+enum ThreadState: String, CaseIterable, Hashable, Codable {
     case idle
     case active
     case completed
@@ -263,7 +264,7 @@ enum ThreadState: String, CaseIterable, Hashable {
     }
 }
 
-enum ThreadPurpose: String, CaseIterable, Hashable, Identifiable {
+enum ThreadPurpose: String, CaseIterable, Hashable, Identifiable, Codable {
     case discussion
     case research
     case implementation
@@ -299,9 +300,10 @@ enum ThreadPurpose: String, CaseIterable, Hashable, Identifiable {
     }
 }
 
-struct Thread: Identifiable, Hashable {
+struct Thread: Identifiable, Hashable, Codable {
     let id: UUID
     var issueID: UUID
+    var daemonThreadID: String?
     var title: String
     var purpose: ThreadPurpose
     var participants: [ParticipantRef]
@@ -324,7 +326,7 @@ extension Thread {
     }
 }
 
-struct TimelineItem: Identifiable, Hashable {
+struct TimelineItem: Identifiable, Hashable, Codable {
     let id: UUID
     var issueID: UUID
     var threadID: UUID
@@ -364,19 +366,19 @@ extension TimelinePayload {
     }
 }
 
-struct ChatMessage: Hashable {
+struct ChatMessage: Hashable, Codable {
     var senderName: String
     var senderRole: ParticipantRole
     var text: String
     var isStreaming: Bool
 }
 
-struct ThinkingEvent: Hashable {
+struct ThinkingEvent: Hashable, Codable {
     var agentName: String
     var text: String
 }
 
-struct ToolCallEvent: Hashable {
+struct ToolCallEvent: Hashable, Codable {
     var agentName: String
     var toolName: String
     var title: String
@@ -384,7 +386,7 @@ struct ToolCallEvent: Hashable {
     var contentPreview: String?
 }
 
-enum ToolStatus: String, CaseIterable, Hashable {
+enum ToolStatus: String, CaseIterable, Hashable, Codable {
     case queued
     case inProgress
     case completed
@@ -409,22 +411,22 @@ enum ToolStatus: String, CaseIterable, Hashable {
     }
 }
 
-struct PlanEvent: Hashable {
+struct PlanEvent: Hashable, Codable {
     var agentName: String
     var title: String
     var steps: [String]
 }
 
-struct TurnEndEvent: Hashable {
+struct TurnEndEvent: Hashable, Codable {
     var agentName: String
     var reason: String
 }
 
-struct SystemEvent: Hashable {
+struct SystemEvent: Hashable, Codable {
     var text: String
 }
 
-enum IssueArtifactKind: String, CaseIterable, Hashable, Identifiable {
+enum IssueArtifactKind: String, CaseIterable, Hashable, Identifiable, Codable {
     case branch
     case commit
     case pullRequest
@@ -476,7 +478,7 @@ enum IssueArtifactKind: String, CaseIterable, Hashable, Identifiable {
     }
 }
 
-struct IssueArtifact: Identifiable, Hashable {
+struct IssueArtifact: Identifiable, Hashable, Codable {
     let id: UUID
     var issueID: UUID
     var threadID: UUID?
@@ -487,7 +489,7 @@ struct IssueArtifact: Identifiable, Hashable {
     var createdAt: Date
 }
 
-struct IssueDecision: Identifiable, Hashable {
+struct IssueDecision: Identifiable, Hashable, Codable {
     let id: UUID
     var issueID: UUID
     var threadID: UUID?
@@ -581,4 +583,109 @@ struct SkillCardModel: Identifiable, Hashable {
     var updatedAt: Date
     var scope: SkillScope
     var accent: ColorToken
+}
+
+extension ParticipantRole: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case agentKind
+    }
+
+    private enum Kind: String, Codable {
+        case human
+        case agent
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(Kind.self, forKey: .type)
+        switch type {
+        case .human:
+            self = .human
+        case .agent:
+            self = .agent(try container.decode(AgentKind.self, forKey: .agentKind))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .human:
+            try container.encode(Kind.human, forKey: .type)
+        case .agent(let kind):
+            try container.encode(Kind.agent, forKey: .type)
+            try container.encode(kind, forKey: .agentKind)
+        }
+    }
+}
+
+extension TimelinePayload: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case system
+        case userMessage
+        case agentMessage
+        case thinking
+        case toolCall
+        case plan
+        case turnEnd
+    }
+
+    private enum Kind: String, Codable {
+        case system
+        case userMessage
+        case agentMessage
+        case thinking
+        case toolCall
+        case plan
+        case turnEnd
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(Kind.self, forKey: .type)
+        switch type {
+        case .system:
+            self = .system(try container.decode(SystemEvent.self, forKey: .system))
+        case .userMessage:
+            self = .userMessage(try container.decode(ChatMessage.self, forKey: .userMessage))
+        case .agentMessage:
+            self = .agentMessage(try container.decode(ChatMessage.self, forKey: .agentMessage))
+        case .thinking:
+            self = .thinking(try container.decode(ThinkingEvent.self, forKey: .thinking))
+        case .toolCall:
+            self = .toolCall(try container.decode(ToolCallEvent.self, forKey: .toolCall))
+        case .plan:
+            self = .plan(try container.decode(PlanEvent.self, forKey: .plan))
+        case .turnEnd:
+            self = .turnEnd(try container.decode(TurnEndEvent.self, forKey: .turnEnd))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .system(let event):
+            try container.encode(Kind.system, forKey: .type)
+            try container.encode(event, forKey: .system)
+        case .userMessage(let message):
+            try container.encode(Kind.userMessage, forKey: .type)
+            try container.encode(message, forKey: .userMessage)
+        case .agentMessage(let message):
+            try container.encode(Kind.agentMessage, forKey: .type)
+            try container.encode(message, forKey: .agentMessage)
+        case .thinking(let event):
+            try container.encode(Kind.thinking, forKey: .type)
+            try container.encode(event, forKey: .thinking)
+        case .toolCall(let event):
+            try container.encode(Kind.toolCall, forKey: .type)
+            try container.encode(event, forKey: .toolCall)
+        case .plan(let event):
+            try container.encode(Kind.plan, forKey: .type)
+            try container.encode(event, forKey: .plan)
+        case .turnEnd(let event):
+            try container.encode(Kind.turnEnd, forKey: .type)
+            try container.encode(event, forKey: .turnEnd)
+        }
+    }
 }

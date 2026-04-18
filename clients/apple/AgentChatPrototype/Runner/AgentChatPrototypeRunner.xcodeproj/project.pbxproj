@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0ADDEF70B491C1839A16E186 /* PrototypeDaemonAgentBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CF5DC6388E5591E8287BBBA /* PrototypeDaemonAgentBridge.swift */; };
 		0AFE677CC88A5F5522430F68 /* SwitcherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DF695AA6201F776A1721D9A /* SwitcherView.swift */; };
 		1918BF42D94E1AF883052AA6 /* DemoStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D59AB66A0B12D6B5B93E8A63 /* DemoStore.swift */; };
 		1F46EE64EF99EC4656408C2F /* IssueWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 796CE19995A917AA0195620B /* IssueWorkspaceView.swift */; };
@@ -38,6 +39,7 @@
 		8266CD4DE06F9BF47B2A9947 /* Formatters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Formatters.swift; sourceTree = "<group>"; };
 		93ECCF4DC9404BEE189E4A29 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
 		97FD524EED3DF60CF22A084E /* ProjectListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectListView.swift; sourceTree = "<group>"; };
+		9CF5DC6388E5591E8287BBBA /* PrototypeDaemonAgentBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrototypeDaemonAgentBridge.swift; sourceTree = "<group>"; };
 		BEC9FB7E948F8013784AB0D0 /* AgentListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentListView.swift; sourceTree = "<group>"; };
 		C973F69634045DD2E8088565 /* ChatListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatListView.swift; sourceTree = "<group>"; };
 		CA298C7E515A2EC6ECF70F24 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
@@ -63,6 +65,7 @@
 			isa = PBXGroup;
 			children = (
 				D59AB66A0B12D6B5B93E8A63 /* DemoStore.swift */,
+				9CF5DC6388E5591E8287BBBA /* PrototypeDaemonAgentBridge.swift */,
 			);
 			name = Store;
 			path = ../Core/Store;
@@ -258,6 +261,7 @@
 				1F46EE64EF99EC4656408C2F /* IssueWorkspaceView.swift in Sources */,
 				9CA7A0695F48279B81C0C15B /* ProjectDashboardView.swift in Sources */,
 				894049A3F3CD9BA7BA4CA50E /* ProjectListView.swift in Sources */,
+				0ADDEF70B491C1839A16E186 /* PrototypeDaemonAgentBridge.swift in Sources */,
 				57E883B1CD47C3FE13D0AA30 /* RootView.swift in Sources */,
 				0AFE677CC88A5F5522430F68 /* SwitcherView.swift in Sources */,
 			);

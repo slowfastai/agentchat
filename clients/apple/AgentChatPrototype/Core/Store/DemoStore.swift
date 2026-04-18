@@ -1,25 +1,67 @@
 import Foundation
 import SwiftUI
+import CryptoKit
+
+private struct DemoStoreSnapshot: Codable {
+    var projects: [Project]
+    var agents: [AgentProfile]
+    var sessions: [WorkspaceSession]
+    var threads: [Thread]
+    var artifacts: [IssueArtifact]
+    var decisions: [IssueDecision]
+    var timelines: [PersistedThreadTimeline]
+    var selectedProjectID: UUID?
+    var selectedIssueID: UUID?
+    var selectedThreadID: UUID?
+    var agentCustomNames: [String: String]
+    var agentAvatarData: [String: Data]
+}
+
+private struct PersistedThreadTimeline: Codable {
+    var threadID: UUID
+    var items: [TimelineItem]
+}
 
 @MainActor
 final class DemoStore: ObservableObject {
-    @Published var projects: [Project] = []
-    @Published var agents: [AgentProfile] = []
-    @Published var sessions: [WorkspaceSession] = []
-    @Published var threads: [Thread] = []
-    @Published var artifacts: [IssueArtifact] = []
-    @Published var decisions: [IssueDecision] = []
-    @Published var timelineByThread: [UUID: [TimelineItem]] = [:]
-    @Published var selectedProjectID: UUID?
-    @Published var selectedIssueID: UUID?
-    @Published var selectedThreadID: UUID?
+    @Published var projects: [Project] = [] { didSet { schedulePersistence() } }
+    @Published var agents: [AgentProfile] = [] { didSet { schedulePersistence() } }
+    @Published var sessions: [WorkspaceSession] = [] { didSet { schedulePersistence() } }
+    @Published var threads: [Thread] = [] { didSet { schedulePersistence() } }
+    @Published var artifacts: [IssueArtifact] = [] { didSet { schedulePersistence() } }
+    @Published var decisions: [IssueDecision] = [] { didSet { schedulePersistence() } }
+    @Published var timelineByThread: [UUID: [TimelineItem]] = [:] { didSet { schedulePersistence() } }
+    @Published var selectedProjectID: UUID? { didSet { schedulePersistence() } }
+    @Published var selectedIssueID: UUID? { didSet { schedulePersistence() } }
+    @Published var selectedThreadID: UUID? { didSet { schedulePersistence() } }
     
-    @Published var agentCustomNames: [String: String] = [:]
-    @Published var agentAvatarData: [String: Data] = [:]
+    @Published var agentCustomNames: [String: String] = [:] { didSet { schedulePersistence() } }
+    @Published var agentAvatarData: [String: Data] = [:] { didSet { schedulePersistence() } }
     @Published var connectingAgentIDs: Set<String> = []
+    @Published var isRefreshingAgentsFromDaemon = false
+    @Published var daemonStatusText = "Using seeded prototype agents"
+    @Published var daemonStatusAccent: ColorToken = .gray
+    @Published var refreshingThreadIDs: Set<UUID> = []
+
+    private let snapshotKey = "AgentChatPrototype.DemoStoreSnapshot.v1"
+    private var isHydratingSnapshot = false
+    private var persistenceTask: Task<Void, Never>?
 
     init() {
-        seed()
+        isHydratingSnapshot = true
+        let restored = restoreSnapshot()
+        if !restored {
+            seed()
+        }
+        normalizeSelectionState()
+        isHydratingSnapshot = false
+        if !restored {
+            schedulePersistence()
+        }
+        Task {
+            await refreshAgentsFromDaemon()
+            await refreshDaemonBackedThreads()
+        }
     }
     
     func updateAgent(id agentID: String, name: String?, avatarData: Data?) {
@@ -48,12 +90,63 @@ final class DemoStore: ObservableObject {
     func connectToAgent(id agentID: String) {
         guard !connectingAgentIDs.contains(agentID) else { return }
         connectingAgentIDs.insert(agentID)
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            self?.connectingAgentIDs.remove(agentID)
-            if let index = self?.agents.firstIndex(where: { $0.id.uuidString == agentID }) {
-                self?.agents[index].isOnline = true
+
+        Task {
+            await refreshAgentsFromDaemon()
+            connectingAgentIDs.remove(agentID)
+            if let index = agents.firstIndex(where: { $0.id.uuidString == agentID }) {
+                agents[index].isOnline = true
             }
+        }
+    }
+
+    func refreshAgentsFromDaemon() async {
+        guard !isRefreshingAgentsFromDaemon else { return }
+
+        isRefreshingAgentsFromDaemon = true
+        daemonStatusText = "Checking local daemon..."
+        daemonStatusAccent = .orange
+        defer {
+            isRefreshingAgentsFromDaemon = false
+        }
+
+        do {
+            let fetchedAgents = try await PrototypeDaemonAgentBridge.fetchAgents()
+            let customNames = agentCustomNames
+            let avatarData = agentAvatarData
+
+            agents = fetchedAgents.map { agent in
+                let stableID = Self.stableAgentUUID(for: agent.agentID)
+                let accent = Self.accentToken(for: agent)
+                let kind = Self.agentKind(for: agent)
+
+                return AgentProfile(
+                    id: stableID,
+                    daemonAgentID: agent.agentID,
+                    name: customNames[stableID.uuidString] ?? agent.name,
+                    kind: kind,
+                    accent: accent,
+                    isOnline: agent.status == "online",
+                    capabilityTags: agent.capabilities,
+                    shortDescription: agent.capabilities.isEmpty
+                        ? "\(agent.name) from local daemon"
+                        : agent.capabilities.joined(separator: " · ")
+                )
+            }
+
+            for agent in agents {
+                if let data = avatarData[agent.id.uuidString] {
+                    agentAvatarData[agent.id.uuidString] = data
+                }
+            }
+
+            daemonStatusText = fetchedAgents.isEmpty
+                ? "Daemon connected, no agents configured"
+                : "Connected to daemon • \(fetchedAgents.count) agent\(fetchedAgents.count == 1 ? "" : "s")"
+            daemonStatusAccent = fetchedAgents.isEmpty ? .orange : .green
+        } catch {
+            daemonStatusText = "Daemon unavailable • \(error.localizedDescription)"
+            daemonStatusAccent = .red
         }
     }
 
@@ -287,6 +380,17 @@ final class DemoStore: ObservableObject {
                 break
             }
         }
+
+        if participants.count == 1,
+           let selectedAgent = agents.first(where: { $0.id == agentIDs.first }),
+           let daemonAgentID = selectedAgent.daemonAgentID {
+            Task {
+                await attachRemoteThreadIfPossible(
+                    localThreadID: thread.id,
+                    daemonAgentID: daemonAgentID
+                )
+            }
+        }
     }
 
     func addArtifact(
@@ -515,13 +619,120 @@ final class DemoStore: ObservableObject {
         }
 
         Task {
-            await simulateResponses(threadID: threadID, input: trimmed, targets: resolvedTargets)
+            if let daemonThreadID = thread.daemonThreadID {
+                await sendRemoteMessageIfPossible(
+                    localThreadID: threadID,
+                    daemonThreadID: daemonThreadID,
+                    input: trimmed,
+                    fallbackTargets: resolvedTargets
+                )
+            } else {
+                await simulateResponses(threadID: threadID, input: trimmed, targets: resolvedTargets)
+            }
+        }
+    }
+
+    func isRefreshingThread(_ threadID: UUID) -> Bool {
+        refreshingThreadIDs.contains(threadID)
+    }
+
+    func resetPrototypeData() {
+        persistenceTask?.cancel()
+        UserDefaults.standard.removeObject(forKey: snapshotKey)
+
+        isHydratingSnapshot = true
+        projects = []
+        agents = []
+        sessions = []
+        threads = []
+        artifacts = []
+        decisions = []
+        timelineByThread = [:]
+        selectedProjectID = nil
+        selectedIssueID = nil
+        selectedThreadID = nil
+        agentCustomNames = [:]
+        agentAvatarData = [:]
+        isHydratingSnapshot = false
+
+        seed()
+        normalizeSelectionState()
+        schedulePersistence()
+
+        Task {
+            await refreshAgentsFromDaemon()
+            await refreshDaemonBackedThreads()
+        }
+    }
+
+    func refreshThreadFromDaemon(threadID: UUID) async {
+        guard !refreshingThreadIDs.contains(threadID),
+              let currentThread = thread(for: threadID),
+              let daemonThreadID = currentThread.daemonThreadID
+        else {
+            return
+        }
+
+        refreshingThreadIDs.insert(threadID)
+        defer {
+            refreshingThreadIDs.remove(threadID)
+        }
+
+        do {
+            let replayEntries = try await PrototypeDaemonAgentBridge.replayRemoteThread(threadID: daemonThreadID)
+            let mappedItems = replayTimelineItems(
+                replayEntries,
+                issueID: currentThread.issueID,
+                threadID: threadID
+            )
+
+            timelineByThread[threadID] = mappedItems
+
+            let latestPreview = latestReplayPreview(from: mappedItems) ?? "Daemon replay synced"
+            let hasTurnEnd = mappedItems.contains {
+                if case .turnEnd = $0.payload {
+                    return true
+                }
+                return false
+            }
+            let lastToolTitle = mappedItems.reversed().compactMap { item -> String? in
+                if case .toolCall(let event) = item.payload {
+                    return event.title
+                }
+                return nil
+            }.first
+
+            updateThread(threadID: threadID) { thread in
+                thread.state = hasTurnEnd ? .completed : .active
+                thread.latestActivityText = latestPreview
+                thread.updatedAt = Date()
+            }
+
+            updateIssue(issueID: currentThread.issueID) { issue in
+                issue.status = hasTurnEnd ? .review : .inProgress
+                issue.latestActivityText = latestPreview
+                issue.updatedAt = Date()
+            }
+
+            for index in sessions.indices where sessions[index].threadID == threadID {
+                sessions[index].state = hasTurnEnd ? .completed : .running
+                sessions[index].latestEventText = latestPreview
+                sessions[index].activeToolName = lastToolTitle
+            }
+        } catch {
+            append(
+                payload: .system(SystemEvent(text: "Daemon replay failed. Keeping local timeline intact.")),
+                issueID: currentThread.issueID,
+                threadID: threadID,
+                sessionID: nil
+            )
         }
     }
 
     func seed() {
         let claude = AgentProfile(
             id: UUID(),
+            daemonAgentID: "claude",
             name: "Claude",
             kind: .claude,
             accent: .blue,
@@ -531,6 +742,7 @@ final class DemoStore: ObservableObject {
         )
         let codex = AgentProfile(
             id: UUID(),
+            daemonAgentID: "codex",
             name: "Codex",
             kind: .codex,
             accent: .green,
@@ -540,6 +752,7 @@ final class DemoStore: ObservableObject {
         )
         let pi = AgentProfile(
             id: UUID(),
+            daemonAgentID: "pi",
             name: "Pi",
             kind: .pi,
             accent: .purple,
@@ -1216,5 +1429,458 @@ final class DemoStore: ObservableObject {
 
     private func pause(milliseconds: UInt64) async {
         try? await Task.sleep(nanoseconds: milliseconds * 1_000_000)
+    }
+
+    private func attachRemoteThreadIfPossible(localThreadID: UUID, daemonAgentID: String) async {
+        guard let thread = thread(for: localThreadID) else { return }
+
+        do {
+            let handle = try await PrototypeDaemonAgentBridge.createRemoteThread(
+                title: thread.title,
+                agentID: daemonAgentID
+            )
+            updateThread(threadID: localThreadID) { thread in
+                thread.daemonThreadID = handle.threadID
+                thread.latestActivityText = "Connected to daemon thread \(handle.threadID)"
+                thread.updatedAt = Date()
+            }
+            append(
+                payload: .system(SystemEvent(text: "Connected to local daemon thread \(handle.threadID).")),
+                issueID: thread.issueID,
+                threadID: localThreadID,
+                sessionID: nil
+            )
+        } catch {
+            append(
+                payload: .system(SystemEvent(text: "Daemon thread setup failed. Using prototype mode instead.")),
+                issueID: thread.issueID,
+                threadID: localThreadID,
+                sessionID: nil
+            )
+        }
+    }
+
+    private func sendRemoteMessageIfPossible(
+        localThreadID: UUID,
+        daemonThreadID: String,
+        input: String,
+        fallbackTargets: [String]
+    ) async {
+        guard let thread = thread(for: localThreadID) else { return }
+
+        do {
+            let assistantMessages = try await PrototypeDaemonAgentBridge.sendRemoteThreadMessage(
+                threadID: daemonThreadID,
+                content: input
+            )
+
+            if assistantMessages.isEmpty {
+                await simulateResponses(threadID: localThreadID, input: input, targets: fallbackTargets)
+                return
+            }
+
+            for message in assistantMessages {
+                if !message.thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    append(
+                        payload: .thinking(
+                            ThinkingEvent(
+                                agentName: displayName(forDaemonAgentID: message.agentID),
+                                text: message.thinking
+                            )
+                        ),
+                        issueID: thread.issueID,
+                        threadID: localThreadID,
+                        sessionID: nil
+                    )
+                }
+
+                if let planBody = message.planBody,
+                   !planBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    append(
+                        payload: .plan(
+                            PlanEvent(
+                                agentName: displayName(forDaemonAgentID: message.agentID),
+                                title: "Daemon plan update",
+                                steps: planBody
+                                    .split(separator: "\n")
+                                    .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                                    .filter { !$0.isEmpty }
+                            )
+                        ),
+                        issueID: thread.issueID,
+                        threadID: localThreadID,
+                        sessionID: nil
+                    )
+                }
+
+                for tool in message.toolActivities {
+                    append(
+                        payload: .toolCall(
+                            ToolCallEvent(
+                                agentName: displayName(forDaemonAgentID: message.agentID),
+                                toolName: tool.id,
+                                title: tool.title,
+                                status: toolStatus(from: tool.status),
+                                contentPreview: tool.content
+                            )
+                        ),
+                        issueID: thread.issueID,
+                        threadID: localThreadID,
+                        sessionID: nil
+                    )
+                }
+
+                append(
+                    payload: .agentMessage(
+                        ChatMessage(
+                            senderName: displayName(forDaemonAgentID: message.agentID),
+                            senderRole: .agent(agentKindForDaemonAgentID(message.agentID)),
+                            text: message.response,
+                            isStreaming: false
+                        )
+                    ),
+                    issueID: thread.issueID,
+                    threadID: localThreadID,
+                    sessionID: nil
+                )
+
+                append(
+                    payload: .turnEnd(
+                        TurnEndEvent(
+                            agentName: displayName(forDaemonAgentID: message.agentID),
+                            reason: message.stopReason ?? "EndTurn"
+                        )
+                    ),
+                    issueID: thread.issueID,
+                    threadID: localThreadID,
+                    sessionID: nil
+                )
+
+                updateThread(threadID: localThreadID) { thread in
+                    thread.state = .completed
+                    thread.latestActivityText = "\(displayName(forDaemonAgentID: message.agentID)): \(message.response)"
+                    thread.updatedAt = Date()
+                }
+                updateIssue(issueID: thread.issueID) { issue in
+                    issue.status = .review
+                    issue.latestActivityText = "\(displayName(forDaemonAgentID: message.agentID)): \(message.response)"
+                    issue.updatedAt = Date()
+                }
+            }
+        } catch {
+            append(
+                payload: .system(SystemEvent(text: "Daemon message failed. Falling back to prototype response flow.")),
+                issueID: thread.issueID,
+                threadID: localThreadID,
+                sessionID: nil
+            )
+            await simulateResponses(threadID: localThreadID, input: input, targets: fallbackTargets)
+        }
+    }
+
+    private func replayTimelineItems(
+        _ entries: [PrototypeRemoteTimelineEntry],
+        issueID: UUID,
+        threadID: UUID
+    ) -> [TimelineItem] {
+        let sortedEntries = entries.sorted { lhs, rhs in
+            if lhs.threadSeq == rhs.threadSeq {
+                return replaySortOrder(for: lhs.kind) < replaySortOrder(for: rhs.kind)
+            }
+            return lhs.threadSeq < rhs.threadSeq
+        }
+
+        let anchor = Date()
+        return sortedEntries.enumerated().map { index, entry in
+            TimelineItem(
+                id: UUID(),
+                issueID: issueID,
+                threadID: threadID,
+                sessionID: nil,
+                timestamp: anchor.addingTimeInterval(Double(index)),
+                payload: timelinePayload(from: entry.kind)
+            )
+        }
+    }
+
+    private func timelinePayload(from kind: PrototypeRemoteTimelineKind) -> TimelinePayload {
+        switch kind {
+        case .userMessage(let senderName, let content):
+            return .userMessage(
+                ChatMessage(
+                    senderName: senderName,
+                    senderRole: .human,
+                    text: content,
+                    isStreaming: false
+                )
+            )
+        case .thinking(let agentID, let text):
+            return .thinking(
+                ThinkingEvent(
+                    agentName: displayName(forDaemonAgentID: agentID),
+                    text: text
+                )
+            )
+        case .plan(let agentID, let body):
+            let steps = body
+                .split(separator: "\n")
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            return .plan(
+                PlanEvent(
+                    agentName: displayName(forDaemonAgentID: agentID),
+                    title: "Daemon plan update",
+                    steps: steps.isEmpty ? [body] : steps
+                )
+            )
+        case .tool(let agentID, let activity):
+            return .toolCall(
+                ToolCallEvent(
+                    agentName: displayName(forDaemonAgentID: agentID),
+                    toolName: activity.id,
+                    title: activity.title,
+                    status: toolStatus(from: activity.status),
+                    contentPreview: activity.content
+                )
+            )
+        case .assistantMessage(let agentID, let content):
+            return .agentMessage(
+                ChatMessage(
+                    senderName: displayName(forDaemonAgentID: agentID),
+                    senderRole: .agent(agentKindForDaemonAgentID(agentID)),
+                    text: content,
+                    isStreaming: false
+                )
+            )
+        case .turnEnd(let agentID, let reason):
+            return .turnEnd(
+                TurnEndEvent(
+                    agentName: displayName(forDaemonAgentID: agentID),
+                    reason: reason
+                )
+            )
+        case .system(let text):
+            return .system(SystemEvent(text: text))
+        }
+    }
+
+    private func replaySortOrder(for kind: PrototypeRemoteTimelineKind) -> Int {
+        switch kind {
+        case .system:
+            return 0
+        case .userMessage:
+            return 1
+        case .thinking:
+            return 2
+        case .plan:
+            return 3
+        case .tool:
+            return 4
+        case .assistantMessage:
+            return 5
+        case .turnEnd:
+            return 6
+        }
+    }
+
+    private func latestReplayPreview(from items: [TimelineItem]) -> String? {
+        for item in items.reversed() {
+            switch item.payload {
+            case .turnEnd:
+                continue
+            default:
+                return item.payload.summaryText
+            }
+        }
+        return items.last?.payload.summaryText
+    }
+
+    private static func stableAgentUUID(for agentID: String) -> UUID {
+        let digest = SHA256.hash(data: Data(agentID.utf8))
+        let bytes = Array(digest.prefix(16))
+        let uuid = uuid_t(bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15])
+        return UUID(uuid: uuid)
+    }
+
+    private static func agentKind(for agent: PrototypeDaemonAgentWire) -> AgentKind {
+        let token = "\(agent.agentID) \(agent.kind) \(agent.name)".lowercased()
+        if token.contains("claude") {
+            return .claude
+        }
+        if token.contains("codex") {
+            return .codex
+        }
+        if token.contains("pi") {
+            return .pi
+        }
+        if token.contains("opencode") || (token.contains("open") && token.contains("code")) {
+            return .opencode
+        }
+        return .human
+    }
+
+    private static func accentToken(for agent: PrototypeDaemonAgentWire) -> ColorToken {
+        switch agentKind(for: agent) {
+        case .claude:
+            return .blue
+        case .codex:
+            return .green
+        case .pi:
+            return .purple
+        case .opencode:
+            return .orange
+        case .human:
+            return .gray
+        }
+    }
+
+    private func displayName(forDaemonAgentID daemonAgentID: String) -> String {
+        agents.first(where: { $0.daemonAgentID == daemonAgentID })?.name
+            ?? humanizedDaemonAgentID(daemonAgentID)
+    }
+
+    private func agentKindForDaemonAgentID(_ daemonAgentID: String) -> AgentKind {
+        agents.first(where: { $0.daemonAgentID == daemonAgentID })?.kind
+            ?? Self.agentKind(for: PrototypeDaemonAgentWire(
+                agentID: daemonAgentID,
+                name: daemonAgentID,
+                kind: daemonAgentID,
+                status: "online",
+                capabilities: []
+            ))
+    }
+
+    private func humanizedDaemonAgentID(_ daemonAgentID: String) -> String {
+        daemonAgentID
+            .replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+            .split(separator: " ")
+            .map { $0.capitalized }
+            .joined(separator: " ")
+    }
+
+    private func toolStatus(from status: String) -> ToolStatus {
+        switch status.lowercased() {
+        case "queued":
+            return .queued
+        case "failed":
+            return .failed
+        case "completed":
+            return .completed
+        default:
+            return .inProgress
+        }
+    }
+
+    private func refreshDaemonBackedThreads() async {
+        let daemonThreadIDs = threads.compactMap { thread in
+            thread.daemonThreadID == nil ? nil : thread.id
+        }
+        for threadID in daemonThreadIDs {
+            await refreshThreadFromDaemon(threadID: threadID)
+        }
+    }
+
+    private func schedulePersistence() {
+        guard !isHydratingSnapshot else { return }
+        persistenceTask?.cancel()
+        persistenceTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard let self else { return }
+            self.persistSnapshot()
+        }
+    }
+
+    private func persistSnapshot() {
+        guard !isHydratingSnapshot else { return }
+
+        do {
+            let snapshot = DemoStoreSnapshot(
+                projects: projects,
+                agents: agents,
+                sessions: sessions,
+                threads: threads,
+                artifacts: artifacts,
+                decisions: decisions,
+                timelines: timelineByThread.map { PersistedThreadTimeline(threadID: $0.key, items: $0.value) }
+                    .sorted { $0.threadID.uuidString < $1.threadID.uuidString },
+                selectedProjectID: selectedProjectID,
+                selectedIssueID: selectedIssueID,
+                selectedThreadID: selectedThreadID,
+                agentCustomNames: agentCustomNames,
+                agentAvatarData: agentAvatarData
+            )
+            let data = try JSONEncoder.prototypeStoreEncoder.encode(snapshot)
+            UserDefaults.standard.set(data, forKey: snapshotKey)
+        } catch {
+            UserDefaults.standard.removeObject(forKey: snapshotKey)
+        }
+    }
+
+    private func restoreSnapshot() -> Bool {
+        guard let data = UserDefaults.standard.data(forKey: snapshotKey) else {
+            return false
+        }
+
+        do {
+            let snapshot = try JSONDecoder.prototypeStoreDecoder.decode(DemoStoreSnapshot.self, from: data)
+            projects = snapshot.projects
+            agents = snapshot.agents
+            sessions = snapshot.sessions
+            threads = snapshot.threads
+            artifacts = snapshot.artifacts
+            decisions = snapshot.decisions
+            timelineByThread = Dictionary(
+                uniqueKeysWithValues: snapshot.timelines.map { ($0.threadID, $0.items) }
+            )
+            selectedProjectID = snapshot.selectedProjectID
+            selectedIssueID = snapshot.selectedIssueID
+            selectedThreadID = snapshot.selectedThreadID
+            agentCustomNames = snapshot.agentCustomNames
+            agentAvatarData = snapshot.agentAvatarData
+            return !projects.isEmpty
+        } catch {
+            UserDefaults.standard.removeObject(forKey: snapshotKey)
+            return false
+        }
+    }
+
+    private func normalizeSelectionState() {
+        if selectedProjectID == nil || project(for: selectedProjectID ?? UUID()) == nil {
+            selectedProjectID = projects.first?.id
+        }
+
+        let allIssueIDs = Set(allIssues.map(\.id))
+        if let selectedIssueID, !allIssueIDs.contains(selectedIssueID) {
+            self.selectedIssueID = nil
+        }
+        if selectedIssueID == nil {
+            selectedIssueID = currentProject?.issues.first?.id
+        }
+
+        let allThreadIDs = Set(threads.map(\.id))
+        if let selectedThreadID, !allThreadIDs.contains(selectedThreadID) {
+            self.selectedThreadID = nil
+        }
+        if selectedThreadID == nil, let selectedIssueID {
+            self.selectedThreadID = threads(for: selectedIssueID).first?.id
+        }
+    }
+}
+
+private extension JSONEncoder {
+    static var prototypeStoreEncoder: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        return encoder
+    }
+}
+
+private extension JSONDecoder {
+    static var prototypeStoreDecoder: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
     }
 }

@@ -11,7 +11,12 @@ struct ThreadCard: View {
                     Text(thread.title)
                         .font(.headline)
                     Spacer()
-                    StatusBadge(text: thread.state.title, color: thread.state.badgeColor)
+                    HStack(spacing: 8) {
+                        if thread.daemonThreadID != nil {
+                            PillView(text: "Daemon", color: .green)
+                        }
+                        StatusBadge(text: thread.state.title, color: thread.state.badgeColor)
+                    }
                 }
 
                 StatusBadge(text: thread.purpose.title, color: thread.purpose.badgeColor)

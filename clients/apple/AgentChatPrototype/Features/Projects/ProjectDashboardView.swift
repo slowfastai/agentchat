@@ -5,6 +5,26 @@ struct ProjectDashboardView: View {
     let projectID: UUID
     @Binding var selectedIssueID: UUID?
 
+    @State private var focus: DashboardFocus = .all
+
+    private enum DashboardFocus: String, CaseIterable, Identifiable {
+        case all
+        case active
+        case review
+        case outputs
+
+        var id: Self { self }
+
+        var title: String {
+            switch self {
+            case .all: return "All"
+            case .active: return "Active"
+            case .review: return "Review"
+            case .outputs: return "Outputs"
+            }
+        }
+    }
+
     private var project: Project? {
         store.project(for: projectID)
     }
@@ -59,56 +79,20 @@ struct ProjectDashboardView: View {
                             runningThreadCount: runningThreads.count
                         )
 
-                        ProjectDashboardSection(title: "Open Issues", systemImage: "list.bullet.rectangle") {
-                            if openIssues.isEmpty {
-                                ProjectDashboardEmptyState(text: "No open issues")
-                            } else {
-                                VStack(spacing: AppSpacing.sm) {
-                                    ForEach(openIssues.prefix(6)) { issue in
-                                        NavigationLink {
-                                            IssueWorkspaceView(issueID: issue.id)
-                                        } label: {
-                                            ProjectIssueRow(issue: issue)
-                                        }
-                                        .buttonStyle(.plain)
-                                        .simultaneousGesture(TapGesture().onEnded {
-                                            selectedIssueID = issue.id
-                                        })
-                                    }
-                                }
+                        Picker("Focus", selection: $focus) {
+                            ForEach(DashboardFocus.allCases) { focus in
+                                Text(focus.title).tag(focus)
                             }
                         }
+                        .pickerStyle(.segmented)
 
-                        ProjectDashboardSection(title: "Running Threads", systemImage: "bolt.horizontal.circle") {
-                            if runningThreads.isEmpty {
-                                ProjectDashboardEmptyState(text: "No active threads")
-                            } else {
-                                VStack(spacing: AppSpacing.sm) {
-                                    ForEach(runningThreads.prefix(5)) { thread in
-                                        if let issue = store.issue(for: thread.issueID) {
-                                            NavigationLink {
-                                                IssueWorkspaceView(issueID: issue.id)
-                                            } label: {
-                                                RunningThreadRow(thread: thread, issue: issue)
-                                            }
-                                            .buttonStyle(.plain)
-                                            .simultaneousGesture(TapGesture().onEnded {
-                                                selectedIssueID = issue.id
-                                                store.selectThread(thread.id)
-                                            })
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        HStack(alignment: .top, spacing: AppSpacing.md) {
-                            ProjectDashboardSection(title: "Needs Review", systemImage: "checkmark.circle") {
-                                if reviewIssues.isEmpty {
-                                    ProjectDashboardEmptyState(text: "Nothing waiting for review")
+                        if focus != .outputs {
+                            ProjectDashboardSection(title: "Open Issues", systemImage: "list.bullet.rectangle") {
+                                if openIssues.isEmpty {
+                                    ProjectDashboardEmptyState(text: "No open issues")
                                 } else {
                                     VStack(spacing: AppSpacing.sm) {
-                                        ForEach(reviewIssues.prefix(4)) { issue in
+                                        ForEach(openIssues.prefix(6)) { issue in
                                             NavigationLink {
                                                 IssueWorkspaceView(issueID: issue.id)
                                             } label: {
@@ -116,13 +100,61 @@ struct ProjectDashboardView: View {
                                             }
                                             .buttonStyle(.plain)
                                             .simultaneousGesture(TapGesture().onEnded {
-                                                selectedIssueID = issue.id
+                                                openIssue(issue.id)
                                             })
                                         }
                                     }
                                 }
                             }
-                            .frame(maxWidth: .infinity)
+                        }
+
+                        if focus == .all || focus == .active {
+                            ProjectDashboardSection(title: "Running Threads", systemImage: "bolt.horizontal.circle") {
+                                if runningThreads.isEmpty {
+                                    ProjectDashboardEmptyState(text: "No active threads")
+                                } else {
+                                    VStack(spacing: AppSpacing.sm) {
+                                        ForEach(runningThreads.prefix(5)) { thread in
+                                            if let issue = store.issue(for: thread.issueID) {
+                                                NavigationLink {
+                                                    IssueWorkspaceView(issueID: issue.id)
+                                                } label: {
+                                                    RunningThreadRow(thread: thread, issue: issue)
+                                                }
+                                                .buttonStyle(.plain)
+                                                .simultaneousGesture(TapGesture().onEnded {
+                                                    openIssue(issue.id, selectingThreadID: thread.id)
+                                                })
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        HStack(alignment: .top, spacing: AppSpacing.md) {
+                            if focus != .outputs {
+                                ProjectDashboardSection(title: "Needs Review", systemImage: "checkmark.circle") {
+                                    if reviewIssues.isEmpty {
+                                        ProjectDashboardEmptyState(text: "Nothing waiting for review")
+                                    } else {
+                                        VStack(spacing: AppSpacing.sm) {
+                                            ForEach(reviewIssues.prefix(4)) { issue in
+                                                NavigationLink {
+                                                    IssueWorkspaceView(issueID: issue.id)
+                                                } label: {
+                                                    ProjectIssueRow(issue: issue)
+                                                }
+                                                .buttonStyle(.plain)
+                                                .simultaneousGesture(TapGesture().onEnded {
+                                                    openIssue(issue.id)
+                                                })
+                                            }
+                                        }
+                                    }
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
 
                             ProjectDashboardSection(title: "Recent Outputs", systemImage: "shippingbox") {
                                 if recentArtifacts.isEmpty && recentDecisions.isEmpty {
@@ -130,10 +162,20 @@ struct ProjectDashboardView: View {
                                 } else {
                                     VStack(spacing: AppSpacing.sm) {
                                         ForEach(recentArtifacts.prefix(3)) { artifact in
-                                            ProjectArtifactRow(artifact: artifact, issue: store.issue(for: artifact.issueID))
+                                            Button {
+                                                openIssue(artifact.issueID, selectingThreadID: artifact.threadID)
+                                            } label: {
+                                                ProjectArtifactRow(artifact: artifact, issue: store.issue(for: artifact.issueID))
+                                            }
+                                            .buttonStyle(.plain)
                                         }
                                         ForEach(recentDecisions.prefix(3)) { decision in
-                                            ProjectDecisionRow(decision: decision, issue: store.issue(for: decision.issueID))
+                                            Button {
+                                                openIssue(decision.issueID, selectingThreadID: decision.threadID)
+                                            } label: {
+                                                ProjectDecisionRow(decision: decision, issue: store.issue(for: decision.issueID))
+                                            }
+                                            .buttonStyle(.plain)
                                         }
                                     }
                                 }
@@ -152,6 +194,13 @@ struct ProjectDashboardView: View {
                 message: "Pick a project to review its issues, active threads, and recent outputs.",
                 systemImage: "folder"
             )
+        }
+    }
+
+    private func openIssue(_ issueID: UUID, selectingThreadID threadID: UUID? = nil) {
+        selectedIssueID = issueID
+        if let threadID {
+            store.selectThread(threadID)
         }
     }
 }
