@@ -70,5 +70,6 @@ fastlane/test_output
 # macOS
 .DS_Store
 
-docs/
+docs/*
+!docs/agentchat-three-layer-design.md
 product_design.md
