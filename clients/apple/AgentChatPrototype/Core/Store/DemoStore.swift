@@ -133,6 +133,10 @@ final class DemoStore: ObservableObject {
         allIssues.first(where: { $0.id == issueID })
     }
 
+    func project(for projectID: UUID) -> Project? {
+        projects.first(where: { $0.id == projectID })
+    }
+
     func thread(for threadID: UUID) -> Thread? {
         threads.first(where: { $0.id == threadID })
     }

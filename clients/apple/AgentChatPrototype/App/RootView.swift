@@ -77,13 +77,16 @@ struct RootView: View {
         } detail: {
             switch destination ?? .projects {
             case .projects:
-                if let selectedIssueID = store.selectedIssueID {
-                    IssueWorkspaceView(issueID: selectedIssueID)
+                if let selectedProjectID = store.selectedProjectID {
+                    ProjectDashboardView(
+                        projectID: selectedProjectID,
+                        selectedIssueID: $store.selectedIssueID
+                    )
                 } else {
                     EmptyStateView(
-                        title: "Select an issue",
-                        message: "Pick an issue from a project to open the workspace.",
-                        systemImage: "rectangle.and.text.magnifyingglass"
+                        title: "Select a project",
+                        message: "Pick a project to review open issues, active threads, and recent outputs.",
+                        systemImage: "folder"
                     )
                 }
             case .inbox, .switcher:
