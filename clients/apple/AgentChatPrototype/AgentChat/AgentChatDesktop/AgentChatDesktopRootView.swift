@@ -18,7 +18,6 @@ struct AgentChatDesktopRootView: View {
     @State private var draftsByThreadID: [String: String] = [:]
     @State private var showNewThreadSheet = false
     @State private var showAddAgentsSheet = false
-    @State private var showAgentEditSheet = false
     @State private var editingAgent: DaemonAgentSummary?
     @State private var showCommandPalette = false
     @State private var showQuickConnect = false
@@ -171,16 +170,15 @@ struct AgentChatDesktopRootView: View {
             }
             .environmentObject(store)
         }
-        .sheet(isPresented: $showAgentEditSheet) {
-            if let agent = editingAgent {
-                AgentEditSheet(
-                    agent: agent,
-                    initialSettings: store.agentSettings[agent.agentID] ?? AgentLocalSettings()
-                ) { name, avatarData, settings in
-                    store.updateAgentDisplayName(agent.agentID, displayName: name)
-                    store.updateAgentAvatar(agent.agentID, imageData: avatarData)
-                    store.updateAgentSettings(agent.agentID, settings: settings)
-                }
+        .sheet(item: $editingAgent) { agent in
+            AgentEditSheet(
+                agent: agent,
+                initialSettings: store.agentSettings[agent.agentID] ?? AgentLocalSettings()
+            ) { name, avatarData, settings in
+                store.updateAgentDisplayName(agent.agentID, displayName: name)
+                store.updateAgentAvatar(agent.agentID, imageData: avatarData)
+                store.updateAgentSettings(agent.agentID, settings: settings)
+                editingAgent = nil
             }
         }
         .overlay {
@@ -240,7 +238,7 @@ struct AgentChatDesktopRootView: View {
             scheduleComposerFocus()
         }
         .onChange(of: selectedTab) { _, newValue in
-            if newValue == DesktopTab.settings.rawValue && !showSidebar {
+            if (newValue == DesktopTab.agents.rawValue || newValue == DesktopTab.settings.rawValue) && !showSidebar {
                 showSidebar = true
             }
         }
@@ -310,18 +308,24 @@ struct AgentChatDesktopRootView: View {
 
     private var agentsSidebarPanel: some View {
         List {
-            Section("Online Agents") {
-                if store.desktopOnlineAgents.isEmpty {
+            Section("Agents") {
+                if store.desktopAgents.isEmpty {
                     ContentUnavailableView(
-                        "No Agents Online",
+                        "No Agents",
                         systemImage: "person.2",
-                        description: Text("Reconnect to your daemon to load available agents.")
+                        description: Text("Reconnect to your daemon to discover agents.")
                     )
                 } else {
-                    ForEach(store.desktopOnlineAgents) { agent in
-                        AgentSidebarRow(agent: agent) {
-                            store.connectToAgent(id: agent.agentID)
-                        }
+                    ForEach(store.desktopAgents) { agent in
+                        AgentSidebarRow(
+                            agent: agent,
+                            onEdit: {
+                                editingAgent = agent
+                            },
+                            onReconnect: {
+                                store.connectToAgent(id: agent.agentID)
+                            }
+                        )
                     }
                 }
             }

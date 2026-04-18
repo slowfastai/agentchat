@@ -156,6 +156,10 @@ extension DaemonChatStore {
         AgentRoster.sorted(agents).filter(\.isOnline)
     }
 
+    var desktopAgents: [DaemonAgentSummary] {
+        AgentRoster.sorted(agents)
+    }
+
     var desktopConnectionErrorSummary: String? {
         guard let errorMessage else { return nil }
         return errorMessage.desktopTrimmedLines.first
