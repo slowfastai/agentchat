@@ -60,6 +60,18 @@ struct ProjectDashboardView: View {
             .sorted { $0.createdAt > $1.createdAt }
     }
 
+    private var recentDistilledSummaryIssues: [Issue] {
+        issues
+            .filter { $0.latestActivityText == "Issue summary distilled from thread" }
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private var recentFollowUpIssues: [Issue] {
+        issues
+            .filter { $0.summary.contains("Parent issue: #") }
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
     var body: some View {
         if let project {
             NavigationStack {
@@ -156,11 +168,30 @@ struct ProjectDashboardView: View {
                                 .frame(maxWidth: .infinity)
                             }
 
-                            ProjectDashboardSection(title: "Recent Outputs", systemImage: "shippingbox") {
-                                if recentArtifacts.isEmpty && recentDecisions.isEmpty {
-                                    ProjectDashboardEmptyState(text: "No artifacts or decisions yet")
+                            ProjectDashboardSection(title: "Recent Distillations & Outputs", systemImage: "shippingbox") {
+                                if recentDistilledSummaryIssues.isEmpty &&
+                                    recentFollowUpIssues.isEmpty &&
+                                    recentArtifacts.isEmpty &&
+                                    recentDecisions.isEmpty {
+                                    ProjectDashboardEmptyState(text: "No distilled outputs yet")
                                 } else {
                                     VStack(spacing: AppSpacing.sm) {
+                                        ForEach(recentDistilledSummaryIssues.prefix(2)) { issue in
+                                            Button {
+                                                openIssue(issue.id)
+                                            } label: {
+                                                ProjectDistilledSummaryRow(issue: issue)
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                        ForEach(recentFollowUpIssues.prefix(2)) { issue in
+                                            Button {
+                                                openIssue(issue.id)
+                                            } label: {
+                                                ProjectFollowUpIssueRow(issue: issue)
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
                                         ForEach(recentArtifacts.prefix(3)) { artifact in
                                             Button {
                                                 openIssue(artifact.issueID, selectingThreadID: artifact.threadID)
@@ -409,6 +440,58 @@ private struct ProjectDecisionRow: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(ColorToken.green.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct ProjectDistilledSummaryRow: View {
+    let issue: Issue
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .foregroundStyle(ColorToken.purple.color)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Issue Summary Updated")
+                    .font(.subheadline.weight(.semibold))
+                Text("#\(issue.number) \(issue.title)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(issue.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ColorToken.purple.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct ProjectFollowUpIssueRow: View {
+    let issue: Issue
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "arrowshape.turn.up.right")
+                .foregroundStyle(ColorToken.orange.color)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Follow-up Issue")
+                    .font(.subheadline.weight(.semibold))
+                Text("#\(issue.number) \(issue.title)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(issue.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ColorToken.orange.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
