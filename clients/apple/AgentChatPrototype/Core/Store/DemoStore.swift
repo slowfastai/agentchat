@@ -775,6 +775,11 @@ final class DemoStore: ObservableObject {
         )
     }
 
+    func distilledIssueSummaryText(for threadID: UUID) -> String? {
+        let summary = distilledSummary(for: threadID)
+        return summary.isEmpty ? nil : summary
+    }
+
     func distilledDecisionDraft(for threadID: UUID) -> DistilledDecisionDraft? {
         guard let thread = thread(for: threadID) else { return nil }
 

@@ -102,7 +102,29 @@ struct IssueWorkspaceView: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
 
-                    IssueInspectorPanel(issue: issue, activeThread: activeThread)
+                    IssueInspectorPanel(
+                        issue: issue,
+                        activeThread: activeThread,
+                        onDistillSummary: {
+                            guard let activeThread else { return }
+                            store.distillThreadIntoIssueSummary(issueID: issue.id, threadID: activeThread.id)
+                        },
+                        onDraftDecision: {
+                            guard let activeThread else { return }
+                            distilledDecisionDraft = store.distilledDecisionDraft(for: activeThread.id)
+                            showDistilledDecisionSheet = distilledDecisionDraft != nil
+                        },
+                        onDraftArtifact: {
+                            guard let activeThread else { return }
+                            distilledArtifactDraft = store.distilledArtifactDraft(for: activeThread.id)
+                            showDistilledArtifactSheet = distilledArtifactDraft != nil
+                        },
+                        onCreateFollowUp: {
+                            guard let activeThread else { return }
+                            distilledFollowUpDraft = store.distilledFollowUpIssueDraft(for: activeThread.id)
+                            showFollowUpIssueSheet = distilledFollowUpDraft != nil
+                        }
+                    )
                         .frame(width: 320)
                 }
                 .padding(.horizontal, AppSpacing.lg)
@@ -419,6 +441,10 @@ private struct IssueInspectorPanel: View {
     @EnvironmentObject private var store: DemoStore
     let issue: Issue
     let activeThread: Thread?
+    let onDistillSummary: () -> Void
+    let onDraftDecision: () -> Void
+    let onDraftArtifact: () -> Void
+    let onCreateFollowUp: () -> Void
 
     @State private var showCreateArtifact = false
     @State private var showCreateDecision = false
@@ -478,6 +504,59 @@ private struct IssueInspectorPanel: View {
                             Text("No active thread")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    inspectorSection("Distill Preview", systemImage: "wand.and.stars") {
+                        if let activeThread {
+                            let summaryPreview = store.distilledIssueSummaryText(for: activeThread.id)
+                            let decisionDraft = store.distilledDecisionDraft(for: activeThread.id)
+                            let artifactDraft = store.distilledArtifactDraft(for: activeThread.id)
+                            let followUpDraft = store.distilledFollowUpIssueDraft(for: activeThread.id)
+
+                            VStack(spacing: AppSpacing.sm) {
+                                if let summaryPreview {
+                                    DistillPreviewCard(
+                                        title: "Issue Summary",
+                                        preview: summaryPreview,
+                                        actionTitle: "Apply",
+                                        action: onDistillSummary
+                                    )
+                                }
+
+                                if let decisionDraft {
+                                    DistillPreviewCard(
+                                        title: "Decision Draft",
+                                        preview: "\(decisionDraft.title)\n\n\(decisionDraft.rationale)",
+                                        actionTitle: "Open Draft",
+                                        action: onDraftDecision
+                                    )
+                                }
+
+                                if let artifactDraft {
+                                    DistillPreviewCard(
+                                        title: "Artifact Draft",
+                                        preview: "\(artifactDraft.title)\n\n\(artifactDraft.summary)",
+                                        actionTitle: "Open Draft",
+                                        action: onDraftArtifact
+                                    )
+                                }
+
+                                if let followUpDraft {
+                                    DistillPreviewCard(
+                                        title: "Follow-up Issue",
+                                        preview: "\(followUpDraft.title)\n\n\(followUpDraft.summary)",
+                                        actionTitle: "Create",
+                                        action: onCreateFollowUp
+                                    )
+                                }
+
+                                if summaryPreview == nil, decisionDraft == nil, artifactDraft == nil, followUpDraft == nil {
+                                    PlaceholderInspectorRow(text: "No distillation preview available yet")
+                                }
+                            }
+                        } else {
+                            PlaceholderInspectorRow(text: "Select a thread to generate a draft")
                         }
                     }
 
@@ -564,6 +643,33 @@ private struct IssueInspectorPanel: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.bottom, AppSpacing.sm)
+    }
+}
+
+private struct DistillPreviewCard: View {
+    let title: String
+    let preview: String
+    let actionTitle: String
+    let action: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Button(actionTitle, action: action)
+                    .buttonStyle(.bordered)
+            }
+
+            Text(preview)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(5)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ColorToken.purple.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
