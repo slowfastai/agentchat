@@ -455,9 +455,32 @@ private struct IssueInspectorPanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: AppSpacing.md) {
                     inspectorSection("Context", systemImage: "doc.text") {
-                        Text(issue.summary)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(issue.summary)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+
+                            if let sourceIssueID = issue.sourceIssueID,
+                               let parentIssue = store.issue(for: sourceIssueID) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Derived From")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    Text("#\(parentIssue.number) \(parentIssue.title)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    if let sourceThreadID = issue.sourceThreadID,
+                                       let sourceThread = store.thread(for: sourceThreadID) {
+                                        Text(sourceThread.title)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(ColorToken.orange.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            }
+                        }
                     }
 
                     inspectorSection("Active Thread", systemImage: "bubble.left.and.bubble.right") {

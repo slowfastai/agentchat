@@ -91,6 +91,8 @@ struct Issue: Identifiable, Hashable, Codable {
     var number: Int
     var title: String
     var summary: String
+    var sourceIssueID: UUID? = nil
+    var sourceThreadID: UUID? = nil
     var status: IssueStatus
     var priority: IssuePriority
     var assignees: [ParticipantRef]
@@ -111,6 +113,10 @@ extension Issue {
                 return $0.displayName
             }
         }
+    }
+
+    var isFollowUpIssue: Bool {
+        sourceIssueID != nil
     }
 }
 

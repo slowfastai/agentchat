@@ -68,7 +68,7 @@ struct ProjectDashboardView: View {
 
     private var recentFollowUpIssues: [Issue] {
         issues
-            .filter { $0.summary.contains("Parent issue: #") }
+            .filter(\.isFollowUpIssue)
             .sorted { $0.updatedAt > $1.updatedAt }
     }
 
@@ -470,6 +470,7 @@ private struct ProjectDistilledSummaryRow: View {
 }
 
 private struct ProjectFollowUpIssueRow: View {
+    @EnvironmentObject private var store: DemoStore
     let issue: Issue
 
     var body: some View {
@@ -482,6 +483,12 @@ private struct ProjectFollowUpIssueRow: View {
                 Text("#\(issue.number) \(issue.title)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let sourceIssueID = issue.sourceIssueID,
+                   let parentIssue = store.issue(for: sourceIssueID) {
+                    Text("From #\(parentIssue.number) \(parentIssue.title)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 Text(issue.summary)
                     .font(.caption)
                     .foregroundStyle(.secondary)

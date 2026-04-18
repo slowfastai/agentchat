@@ -325,7 +325,16 @@ final class DemoStore: ObservableObject {
     }
 
     @discardableResult
-    func addIssue(to projectID: UUID, title: String, summary: String = "", status: IssueStatus = .backlog, priority: IssuePriority = .medium, assignees: [ParticipantRef] = []) -> UUID? {
+    func addIssue(
+        to projectID: UUID,
+        title: String,
+        summary: String = "",
+        sourceIssueID: UUID? = nil,
+        sourceThreadID: UUID? = nil,
+        status: IssueStatus = .backlog,
+        priority: IssuePriority = .medium,
+        assignees: [ParticipantRef] = []
+    ) -> UUID? {
         guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }) else { return nil }
         
         let maxNumber = projects.flatMap(\.issues).map(\.number).max() ?? 0
@@ -334,6 +343,8 @@ final class DemoStore: ObservableObject {
             number: maxNumber + 1,
             title: title,
             summary: summary,
+            sourceIssueID: sourceIssueID,
+            sourceThreadID: sourceThreadID,
             status: status,
             priority: priority,
             assignees: assignees,
@@ -889,6 +900,8 @@ final class DemoStore: ObservableObject {
                 to: projectID,
                 title: draft.title,
                 summary: draft.summary,
+                sourceIssueID: sourceIssueID,
+                sourceThreadID: threadID,
                 status: draft.status,
                 priority: draft.priority,
                 assignees: draft.assignees
