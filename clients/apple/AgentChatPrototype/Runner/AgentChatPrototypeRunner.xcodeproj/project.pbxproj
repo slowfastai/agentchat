@@ -22,6 +22,7 @@
 		9CA7A0695F48279B81C0C15B /* ProjectDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A9DB774EFE727CADB65F56E /* ProjectDashboardView.swift */; };
 		A97238C10936CC160D6BFADC /* CreateIssueSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D837F0BEF543B4C2F6F65AA7 /* CreateIssueSheet.swift */; };
 		AE3FC67AD3C1AF071F6139EF /* IssueOutputSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 183F5708000AB507F96F8A8F /* IssueOutputSheets.swift */; };
+		B00000000000000000000001 /* ConnectionPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* ConnectionPayload.swift */; };
 		CCD86A155FBD16A35BE5F57A /* IssueInboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC68B2E24A61658F7FCE8214 /* IssueInboxView.swift */; };
 		DD591BFE1703312609D54CF8 /* CreateThreadSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D49BC209218C630A721F8AD /* CreateThreadSheet.swift */; };
 		DEF80C9E558F092588A0E4C2 /* ChatListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C973F69634045DD2E8088565 /* ChatListView.swift */; };
@@ -42,6 +43,7 @@
 		97FD524EED3DF60CF22A084E /* ProjectListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectListView.swift; sourceTree = "<group>"; };
 		9CF5DC6388E5591E8287BBBA /* PrototypeDaemonAgentBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrototypeDaemonAgentBridge.swift; sourceTree = "<group>"; };
 		A1148E460D77978971B25BA5 /* DistillationPromptTemplate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DistillationPromptTemplate.swift; sourceTree = "<group>"; };
+		B10000000000000000000001 /* ConnectionPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../AgentChat/Shared/ConnectionPayload.swift; sourceTree = "<group>"; };
 		BEC9FB7E948F8013784AB0D0 /* AgentListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentListView.swift; sourceTree = "<group>"; };
 		C973F69634045DD2E8088565 /* ChatListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatListView.swift; sourceTree = "<group>"; };
 		CA298C7E515A2EC6ECF70F24 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
@@ -140,6 +142,7 @@
 				5C1645C0015855DD06BB468A /* Issues */,
 				5A9AF7E387C169985F6FBCE4 /* Models */,
 				61ACABBC469EAEE04DB3F0B0 /* Projects */,
+				B20000000000000000000001 /* Shared */,
 				2187062EE9711E9146806C1C /* Store */,
 				7D06FF4A08C219424AA54EA8 /* Switcher */,
 				E0CD7BA11121401922DB8347 /* Utils */,
@@ -164,6 +167,14 @@
 			);
 			name = DesignSystem;
 			path = ../DesignSystem;
+			sourceTree = "<group>";
+		};
+		B20000000000000000000001 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000001 /* ConnectionPayload.swift */,
+			);
+			name = Shared;
 			sourceTree = "<group>";
 		};
 		C350958C90C402F980138F84 /* App */ = {
@@ -253,6 +264,7 @@
 				EEE48912E51044C8533543E7 /* AgentListView.swift in Sources */,
 				3C98404DAD593E06A0DB463D /* AppModels.swift in Sources */,
 				DEF80C9E558F092588A0E4C2 /* ChatListView.swift in Sources */,
+				B00000000000000000000001 /* ConnectionPayload.swift in Sources */,
 				A97238C10936CC160D6BFADC /* CreateIssueSheet.swift in Sources */,
 				4EE63E08BCEBEC78EE266189 /* CreateProjectSheet.swift in Sources */,
 				DD591BFE1703312609D54CF8 /* CreateThreadSheet.swift in Sources */,

@@ -120,6 +120,9 @@ final class WorkspaceStore: ObservableObject {
     private var isHydratingSnapshot = false
     private var persistenceTask: Task<Void, Never>?
     private var agentDistillationByThreadID: [UUID: AgentDistillationResult] = [:]
+    private var daemonEndpoint: DaemonConnectionEndpoint {
+        .direct(urlString: daemonURL)
+    }
 
     init() {
         isHydratingSnapshot = true
@@ -176,8 +179,13 @@ final class WorkspaceStore: ObservableObject {
 
     func updateDaemonURL(_ value: String) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let resolvedURL = Self.workspaceDaemonURL(from: trimmed) else {
-            daemonStatusText = "Workspace requires a direct daemon URL"
+        guard let endpoint = DaemonConnectionEndpoint.workspaceEndpoint(from: trimmed) else {
+            daemonStatusText = "Workspace requires a daemon connection link"
+            daemonStatusAccent = .orange
+            return
+        }
+        guard let resolvedURL = endpoint.directURLString else {
+            daemonStatusText = "Workspace relay links are not implemented yet"
             daemonStatusAccent = .orange
             return
         }
@@ -186,18 +194,7 @@ final class WorkspaceStore: ObservableObject {
     }
 
     nonisolated static func workspaceDaemonURL(from value: String) -> String? {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        if trimmed.hasPrefix("ws://") || trimmed.hasPrefix("wss://") {
-            return trimmed
-        }
-        guard let payload = parseScannedDaemonConnectionPayload(from: trimmed) else {
-            return nil
-        }
-        if case .direct(let url, _) = payload {
-            return url
-        }
-        return nil
+        DaemonConnectionEndpoint.workspaceEndpoint(from: value)?.directURLString
     }
 
     func refreshAgentsFromDaemon() async {
@@ -211,7 +208,7 @@ final class WorkspaceStore: ObservableObject {
         }
 
         do {
-            let fetchedAgents = try await PrototypeDaemonAgentBridge.fetchAgents(from: daemonURL)
+            let fetchedAgents = try await PrototypeDaemonAgentBridge.fetchAgents(from: daemonEndpoint)
             let customNames = agentCustomNames
 
             agents = fetchedAgents.map { agent in
@@ -860,7 +857,7 @@ final class WorkspaceStore: ObservableObject {
         do {
             let replayEntries = try await PrototypeDaemonAgentBridge.replayRemoteThread(
                 threadID: daemonThreadID,
-                urlString: daemonURL
+                endpoint: daemonEndpoint
             )
             let mappedItems = replayTimelineItems(
                 replayEntries,
@@ -1099,7 +1096,7 @@ final class WorkspaceStore: ObservableObject {
                 agentID: distiller.daemonAgentID ?? distiller.name.lowercased(),
                 title: "Distill \(thread.title)",
                 content: prompt,
-                urlString: daemonURL
+                endpoint: daemonEndpoint
             )
             guard let response = message?.response,
                   let parsed = parseAgentDistillation(
@@ -1829,7 +1826,7 @@ final class WorkspaceStore: ObservableObject {
             let handle = try await PrototypeDaemonAgentBridge.createRemoteThread(
                 title: thread.title,
                 agentID: daemonAgentID,
-                urlString: daemonURL
+                endpoint: daemonEndpoint
             )
             updateThread(threadID: localThreadID) { thread in
                 thread.daemonThreadID = handle.threadID
@@ -1864,7 +1861,7 @@ final class WorkspaceStore: ObservableObject {
             let assistantMessages = try await PrototypeDaemonAgentBridge.sendRemoteThreadMessage(
                 threadID: daemonThreadID,
                 content: input,
-                urlString: daemonURL
+                endpoint: daemonEndpoint
             )
 
             if assistantMessages.isEmpty {

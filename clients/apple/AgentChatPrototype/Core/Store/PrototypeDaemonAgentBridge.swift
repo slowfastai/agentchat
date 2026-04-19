@@ -364,6 +364,7 @@ enum PrototypeDaemonAgentBridgeError: LocalizedError {
     case invalidResponse
     case unexpectedMessage(String)
     case daemonError(String)
+    case unsupportedEndpoint(String)
     case timedOut(String)
 
     var errorDescription: String? {
@@ -376,23 +377,52 @@ enum PrototypeDaemonAgentBridgeError: LocalizedError {
             return "Daemon returned unexpected message type: \(type)"
         case .daemonError(let message):
             return message
+        case .unsupportedEndpoint(let message):
+            return message
         case .timedOut(let operation):
             return "Timed out while waiting for \(operation)."
         }
     }
 }
 
-enum PrototypeDaemonAgentBridge {
-    nonisolated static let defaultURLString = "ws://127.0.0.1:9390"
-    nonisolated private static let assistantResponseTimeout: TimeInterval = 60
+nonisolated enum DaemonConnectionEndpoint: Equatable {
+    case direct(urlString: String)
+    case relay(RelayConnectionPayload)
 
-    static func fetchAgents(from urlString: String = defaultURLString) async throws -> [PrototypeDaemonAgentWire] {
-        guard let url = URL(string: urlString) else {
-            throw PrototypeDaemonAgentBridgeError.invalidURL(urlString)
+    static func workspaceEndpoint(from value: String) -> DaemonConnectionEndpoint? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if trimmed.hasPrefix("ws://") || trimmed.hasPrefix("wss://") {
+            return .direct(urlString: trimmed)
         }
 
-        let task = URLSession.shared.webSocketTask(with: url)
-        task.resume()
+        guard let payload = parseScannedDaemonConnectionPayload(from: trimmed) else {
+            return nil
+        }
+        switch payload {
+        case .direct(let url, _):
+            return .direct(urlString: url)
+        case .relay(let payload):
+            return .relay(payload)
+        }
+    }
+
+    var directURLString: String? {
+        if case .direct(let urlString) = self {
+            return urlString
+        }
+        return nil
+    }
+}
+
+enum PrototypeDaemonAgentBridge {
+    nonisolated static let defaultURLString = "ws://127.0.0.1:9390"
+    nonisolated static let defaultEndpoint = DaemonConnectionEndpoint.direct(urlString: defaultURLString)
+    nonisolated private static let assistantResponseTimeout: TimeInterval = 60
+
+    static func fetchAgents(from endpoint: DaemonConnectionEndpoint = defaultEndpoint) async throws -> [PrototypeDaemonAgentWire] {
+        let task = try webSocketTask(for: endpoint)
         defer {
             task.cancel(with: .normalClosure, reason: nil)
         }
@@ -422,14 +452,9 @@ enum PrototypeDaemonAgentBridge {
         title: String,
         workingDir: String = ".",
         agentID: String,
-        urlString: String = defaultURLString
+        endpoint: DaemonConnectionEndpoint = defaultEndpoint
     ) async throws -> PrototypeRemoteThreadHandle {
-        guard let url = URL(string: urlString) else {
-            throw PrototypeDaemonAgentBridgeError.invalidURL(urlString)
-        }
-
-        let task = URLSession.shared.webSocketTask(with: url)
-        task.resume()
+        let task = try webSocketTask(for: endpoint)
         defer {
             task.cancel(with: .normalClosure, reason: nil)
         }
@@ -453,18 +478,18 @@ enum PrototypeDaemonAgentBridge {
         title: String,
         content: String,
         workingDir: String = ".",
-        urlString: String = defaultURLString
+        endpoint: DaemonConnectionEndpoint = defaultEndpoint
     ) async throws -> PrototypeRemoteAssistantMessage? {
         let handle = try await createRemoteThread(
             title: title,
             workingDir: workingDir,
             agentID: agentID,
-            urlString: urlString
+            endpoint: endpoint
         )
         let messages = try await sendRemoteThreadMessage(
             threadID: handle.threadID,
             content: content,
-            urlString: urlString
+            endpoint: endpoint
         )
         return messages.last
     }
@@ -472,14 +497,9 @@ enum PrototypeDaemonAgentBridge {
     static func sendRemoteThreadMessage(
         threadID: String,
         content: String,
-        urlString: String = defaultURLString
+        endpoint: DaemonConnectionEndpoint = defaultEndpoint
     ) async throws -> [PrototypeRemoteAssistantMessage] {
-        guard let url = URL(string: urlString) else {
-            throw PrototypeDaemonAgentBridgeError.invalidURL(urlString)
-        }
-
-        let task = URLSession.shared.webSocketTask(with: url)
-        task.resume()
+        let task = try webSocketTask(for: endpoint)
         defer {
             task.cancel(with: .normalClosure, reason: nil)
         }
@@ -568,14 +588,9 @@ enum PrototypeDaemonAgentBridge {
 
     static func replayRemoteThread(
         threadID: String,
-        urlString: String = defaultURLString
+        endpoint: DaemonConnectionEndpoint = defaultEndpoint
     ) async throws -> [PrototypeRemoteTimelineEntry] {
-        guard let url = URL(string: urlString) else {
-            throw PrototypeDaemonAgentBridgeError.invalidURL(urlString)
-        }
-
-        let task = URLSession.shared.webSocketTask(with: url)
-        task.resume()
+        let task = try webSocketTask(for: endpoint)
         defer {
             task.cancel(with: .normalClosure, reason: nil)
         }
@@ -675,6 +690,22 @@ enum PrototypeDaemonAgentBridge {
             return replayEntries
         }
         throw PrototypeDaemonAgentBridgeError.timedOut("thread replay")
+    }
+
+    private static func webSocketTask(for endpoint: DaemonConnectionEndpoint) throws -> URLSessionWebSocketTask {
+        switch endpoint {
+        case .direct(let urlString):
+            guard let url = URL(string: urlString) else {
+                throw PrototypeDaemonAgentBridgeError.invalidURL(urlString)
+            }
+            let task = URLSession.shared.webSocketTask(with: url)
+            task.resume()
+            return task
+        case .relay:
+            throw PrototypeDaemonAgentBridgeError.unsupportedEndpoint(
+                "Workspace relay connections are not implemented yet. Use a direct ws:// or wss:// daemon URL."
+            )
+        }
     }
 
     private static func receiveText(from task: URLSessionWebSocketTask) async throws -> String {
