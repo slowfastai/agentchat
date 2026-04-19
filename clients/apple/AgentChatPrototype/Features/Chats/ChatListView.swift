@@ -1,15 +1,5 @@
 import SwiftUI
 
-extension Color {
-    static var appCanvasBackground: Color {
-        #if canImport(UIKit)
-        Color(uiColor: .systemGroupedBackground)
-        #else
-        Color(nsColor: .windowBackgroundColor)
-        #endif
-    }
-}
-
 struct ChatListView: View {
     @EnvironmentObject private var store: DemoStore
     @Binding var selectedIssueID: UUID?
@@ -154,16 +144,14 @@ private struct ThreadAvatarView: View {
     let thread: ChatThreadSummary
 
     var body: some View {
-        let family = DaemonAgentFamily(agentID: nil, kind: nil, name: thread.participants.first)
-
         ZStack {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(thread.accent.color.opacity(0.15))
                 .frame(width: 54, height: 54)
 
             if thread.participants.count <= 1 {
-                if let avatarAssetName = family.defaultAvatarAssetName {
-                    AgentDefaultAvatarArtwork(
+                if let avatarAssetName {
+                    PrototypeDefaultAvatarArtwork(
                         assetName: avatarAssetName,
                         size: 38,
                         shape: .circle
@@ -193,6 +181,17 @@ private struct ThreadAvatarView: View {
         }
     }
 
+    private var avatarAssetName: String? {
+        let participant = thread.participants.first ?? ""
+        switch participant {
+        case "Claude": return AgentKind.claude.defaultAvatarAssetName
+        case "Codex": return AgentKind.codex.defaultAvatarAssetName
+        case "Pi": return AgentKind.pi.defaultAvatarAssetName
+        case "OpenCode": return AgentKind.opencode.defaultAvatarAssetName
+        default: return nil
+        }
+    }
+
     private var iconName: String {
         let participant = thread.participants.first ?? ""
         switch participant {
@@ -214,15 +213,5 @@ private struct UnreadBadge: View {
             .padding(.horizontal, 7)
             .padding(.vertical, 4)
             .background(AppColors.unreadBadge, in: Capsule())
-    }
-}
-
-enum AppColors {
-    static var onlineStatus: Color {
-        Color(red: 0.3, green: 0.85, blue: 0.5)
-    }
-
-    static var unreadBadge: Color {
-        Color(red: 1.0, green: 0.35, blue: 0.35)
     }
 }

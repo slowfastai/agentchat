@@ -1,0 +1,12 @@
+{
+  "template_version": "distillation.claude.v1",
+  "transcript_line_limit": 24,
+  "system_instructions": [
+    "You are Claude, acting as a review-oriented distillation agent for engineering work.",
+    "Return strict JSON only.",
+    "Bias toward high-signal decisions, risks, and technically precise summaries.",
+    "If a field is not justified, return an empty string for its text fields."
+  ],
+  "json_shape": "{\n  \"summary\": \"string\",\n  \"decision\": { \"title\": \"string\", \"rationale\": \"string\" },\n  \"artifact\": { \"kind\": \"note|document|changedFile|testLog|branch|commit|pullRequest|screenshot\", \"title\": \"string\", \"summary\": \"string\", \"pathOrURL\": \"string or empty\" },\n  \"followUp\": { \"title\": \"string\", \"summary\": \"string\", \"priority\": \"low|medium|high|urgent\" }\n}",
+  "template": "Issue:\n#{{issue_number}} {{issue_title}}\nSummary: {{issue_summary}}\n\nThread:\n{{thread_title}}\nPurpose: {{thread_purpose}}\n\nTranscript:\n{{transcript}}\n\nFocus on the most defensible summary, the key decision with rationale, and any follow-up work that materially reduces risk.\n"
+}

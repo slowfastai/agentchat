@@ -70,15 +70,18 @@ struct LocalDaemonEnvironment {
     nonisolated static func make(
         from base: [String: String] = ProcessInfo.processInfo.environment,
         homeDirectoryPath: String = NSHomeDirectory(),
-        installLayout: LocalDaemonInstallLayout = .make()
+        installLayout: LocalDaemonInstallLayout? = nil
     ) -> LocalDaemonEnvironment {
+        let resolvedInstallLayout = installLayout ?? .make(
+            homeDirectoryURL: URL(fileURLWithPath: homeDirectoryPath, isDirectory: true)
+        )
         var values = base
         values["PATH"] = launchPath(
             existingPath: base["PATH"],
             homeDirectoryPath: homeDirectoryPath
         )
-        values["AGENTCHAT_HOME"] = nonEmptyValue(values["AGENTCHAT_HOME"]) ?? installLayout.agentChatHomeURL.path
-        values["AGENTCHAT_AGENTS_FILE"] = nonEmptyValue(values["AGENTCHAT_AGENTS_FILE"]) ?? installLayout.agentsFileURL.path
+        values["AGENTCHAT_HOME"] = nonEmptyValue(values["AGENTCHAT_HOME"]) ?? resolvedInstallLayout.agentChatHomeURL.path
+        values["AGENTCHAT_AGENTS_FILE"] = nonEmptyValue(values["AGENTCHAT_AGENTS_FILE"]) ?? resolvedInstallLayout.agentsFileURL.path
         return LocalDaemonEnvironment(values: values)
     }
 

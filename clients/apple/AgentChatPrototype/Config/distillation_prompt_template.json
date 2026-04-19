@@ -1,0 +1,12 @@
+{
+  "template_version": "distillation.v1",
+  "transcript_line_limit": 24,
+  "system_instructions": [
+    "You are helping distill an engineering thread into project-management outputs.",
+    "Return strict JSON only.",
+    "Keep each field concise and useful.",
+    "If a field is not justified, return an empty string for its text fields."
+  ],
+  "json_shape": "{\n  \"summary\": \"string\",\n  \"decision\": { \"title\": \"string\", \"rationale\": \"string\" },\n  \"artifact\": { \"kind\": \"note|document|changedFile|testLog|branch|commit|pullRequest|screenshot\", \"title\": \"string\", \"summary\": \"string\", \"pathOrURL\": \"string or empty\" },\n  \"followUp\": { \"title\": \"string\", \"summary\": \"string\", \"priority\": \"low|medium|high|urgent\" }\n}",
+  "template": "Issue:\n#{{issue_number}} {{issue_title}}\nSummary: {{issue_summary}}\n\nThread:\n{{thread_title}}\nPurpose: {{thread_purpose}}\n\nTranscript:\n{{transcript}}\n"
+}

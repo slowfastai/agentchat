@@ -9,6 +9,7 @@ struct CreateProjectSheet: View {
     @State private var projectName = ""
     @State private var repoPath = ""
     @State private var selectedColor: ColorToken = .blue
+    @State private var distillationTemplateFamily: DistillationTemplateFamily = .default
     @State private var isValid = false
 
     var body: some View {
@@ -23,7 +24,7 @@ struct CreateProjectSheet: View {
             
             footer
         }
-        .frame(width: 480, height: 340)
+        .frame(width: 480, height: 420)
         .onChange(of: projectName) { _, _ in validateForm() }
         .onChange(of: repoPath) { _, _ in validateForm() }
     }
@@ -86,6 +87,17 @@ struct CreateProjectSheet: View {
             } header: {
                 Text("Color")
             }
+
+            Section {
+                Picker("Template", selection: $distillationTemplateFamily) {
+                    ForEach(DistillationTemplateFamily.allCases) { family in
+                        Text(family.title).tag(family)
+                    }
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("Distillation")
+            }
         }
         .formStyle(.grouped)
     }
@@ -135,7 +147,8 @@ struct CreateProjectSheet: View {
         store.createProject(
             name: projectName.trimmingCharacters(in: .whitespacesAndNewlines),
             repoPath: repoPath,
-            color: selectedColor
+            color: selectedColor,
+            distillationTemplateFamily: distillationTemplateFamily
         )
         dismiss()
     }

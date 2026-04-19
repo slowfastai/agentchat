@@ -20,8 +20,8 @@ struct ProjectListView: View {
                             isSelected: selectedProjectID == project.id,
                             onSelect: {
                                 selectedProjectID = project.id
-                                if let firstIssue = project.issues.first {
-                                    selectedIssueID = firstIssue.id
+                                if selectedIssueID == nil {
+                                    selectedIssueID = project.issues.first?.id
                                 }
                             },
                             onAddIssue: {

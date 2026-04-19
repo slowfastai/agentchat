@@ -12,6 +12,13 @@ struct RootView: View {
     @EnvironmentObject private var store: DemoStore
     @State private var destination: SidebarDestination? = .projects
     @State private var showCreateProject = false
+    @State private var showCreateIssue = false
+    @State private var showCreateThread = false
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+
+    #if os(macOS)
+    @FocusedValue(\.agentChatDesktopActions) private var actions
+    #endif
 
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -30,13 +37,24 @@ struct RootView: View {
     }
 
     private var splitView: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             List(SidebarDestination.allCases, selection: $destination) { item in
                 Label(item.title, systemImage: item.systemImage)
                     .tag(item)
             }
             .navigationTitle("AgentChat")
             .toolbar {
+                #if os(macOS)
+                ToolbarItem(placement: .primaryAction) {
+                    if destination == .projects {
+                        Button {
+                            showCreateProject = true
+                        } label: {
+                            Label("Add Project", systemImage: "plus")
+                        }
+                    }
+                }
+                #else
                 ToolbarItem(placement: .bottomBar) {
                     if destination == .projects {
                         Button {
@@ -46,6 +64,7 @@ struct RootView: View {
                         }
                     }
                 }
+                #endif
             }
         } content: {
             switch destination ?? .projects {
@@ -65,13 +84,16 @@ struct RootView: View {
         } detail: {
             switch destination ?? .projects {
             case .projects:
-                if let selectedIssueID = store.selectedIssueID {
-                    IssueWorkspaceView(issueID: selectedIssueID)
+                if let selectedProjectID = store.selectedProjectID {
+                    ProjectDashboardView(
+                        projectID: selectedProjectID,
+                        selectedIssueID: $store.selectedIssueID
+                    )
                 } else {
                     EmptyStateView(
-                        title: "Select an issue",
-                        message: "Pick an issue from a project to open the workspace.",
-                        systemImage: "rectangle.and.text.magnifyingglass"
+                        title: "Select a project",
+                        message: "Pick a project to review open issues, active threads, and recent outputs.",
+                        systemImage: "folder"
                     )
                 }
             case .inbox, .switcher:
@@ -93,8 +115,26 @@ struct RootView: View {
             }
         }
         #if os(macOS)
+        .focusedSceneValue(\.agentChatDesktopActions, AgentChatDesktopActions(
+            showNewProjectSheet: { [self] in showCreateProject = true },
+            showNewIssueSheet: { [self] in if store.selectedProjectID != nil { showCreateIssue = true } },
+            showNewWorkspaceThreadSheet: { [self] in if store.selectedIssueID != nil { showCreateThread = true } },
+            showAddAgentsSheet: { },
+            toggleSidebar: { [self] in columnVisibility = columnVisibility == .all ? .detailOnly : .all },
+            focusComposer: { }
+        ))
         .sheet(isPresented: $showCreateProject) {
             CreateProjectSheet()
+        }
+        .sheet(isPresented: $showCreateIssue) {
+            if let pid = store.selectedProjectID {
+                CreateIssueSheet(projectID: pid)
+            }
+        }
+        .sheet(isPresented: $showCreateThread) {
+            if let iid = store.selectedIssueID {
+                CreateThreadSheet(issueID: iid)
+            }
         }
         #endif
         .onAppear {

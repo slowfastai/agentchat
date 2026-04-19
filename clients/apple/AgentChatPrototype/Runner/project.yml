@@ -1,0 +1,39 @@
+name: AgentChatPrototypeRunner
+options:
+  bundleIdPrefix: com.agentchat
+
+targets:
+  AgentChatPrototypeRunner:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: ../App
+      - path: ../Core/Models
+      - path: ../Core/Store
+      - path: ../Core/Utils
+      - path: ../DesignSystem
+      - path: ../Features/Agents
+      - path: ../Features/Chats
+      - path: ../Features/Inbox
+      - path: ../Features/Issues
+      - path: ../Features/Projects
+      - path: ../Features/Switcher
+      - path: ../Features/Workspace
+    resources:
+      - path: ../AgentChat/AgentChatDesktop/Assets.xcassets
+      - path: ../Config
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.agentchat.prototype.runner
+        PRODUCT_NAME: AgentChatPrototypeRunner
+        SWIFT_VERSION: 5.0
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: Choose an avatar image for a prototype agent profile.
+        INFOPLIST_KEY_CFBundleDisplayName: AgentChat Prototype
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        DEVELOPMENT_ASSET_PATHS: ""

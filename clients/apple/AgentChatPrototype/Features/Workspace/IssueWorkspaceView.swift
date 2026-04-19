@@ -33,53 +33,98 @@ struct TypingDotsView: View {
     }
 }
 
-enum AppColors {
-    static var onlineStatus: Color {
-        Color(red: 0.3, green: 0.85, blue: 0.5)
-    }
-
-    static var unreadBadge: Color {
-        Color(red: 1.0, green: 0.35, blue: 0.35)
-    }
-
-    static var userBubble: Color {
-        Color(red: 0.15, green: 0.45, blue: 0.85)
-    }
-}
-
-enum AppSpacing {
-    static let xs: CGFloat = 6
-    static let sm: CGFloat = 10
-    static let md: CGFloat = 16
-    static let lg: CGFloat = 24
-    static let xl: CGFloat = 32
-}
-
-enum AppRadius {
-    static let card: CGFloat = 18
-    static let bubble: CGFloat = 18
-    static let pill: CGFloat = 999
-}
-
 struct IssueWorkspaceView: View {
     @EnvironmentObject private var store: DemoStore
     let issueID: UUID
 
     @State private var composerText = ""
     @State private var selectedTargets: Set<String> = []
+    @State private var showDistilledDecisionSheet = false
+    @State private var showDistilledArtifactSheet = false
+    @State private var showFollowUpIssueSheet = false
+
+    @State private var distilledDecisionDraft: DistilledDecisionDraft?
+    @State private var distilledArtifactDraft: DistilledArtifactDraft?
+    @State private var distilledFollowUpDraft: DistilledIssueDraft?
 
     var body: some View {
         if let issue = store.issue(for: issueID) {
+            let activeThread = store.activeThread(for: issueID)
+
             VStack(spacing: 0) {
-                IssueWorkspaceHeader(issue: issue)
+                IssueWorkspaceHeader(
+                    issue: issue,
+                    onDistillSummary: {
+                        guard let activeThread else { return }
+                        store.distillThreadIntoIssueSummary(issueID: issue.id, threadID: activeThread.id)
+                    },
+                    onDraftDecision: {
+                        guard let activeThread else { return }
+                        distilledDecisionDraft = store.distilledDecisionDraft(for: activeThread.id)
+                        showDistilledDecisionSheet = distilledDecisionDraft != nil
+                    },
+                    onDraftArtifact: {
+                        guard let activeThread else { return }
+                        distilledArtifactDraft = store.distilledArtifactDraft(for: activeThread.id)
+                        showDistilledArtifactSheet = distilledArtifactDraft != nil
+                    },
+                    onCreateFollowUp: {
+                        guard let activeThread else { return }
+                        distilledFollowUpDraft = store.distilledFollowUpIssueDraft(for: activeThread.id)
+                        showFollowUpIssueSheet = distilledFollowUpDraft != nil
+                    }
+                )
                     .padding(.horizontal, AppSpacing.lg)
                     .padding(.top, AppSpacing.lg)
 
                 HStack(alignment: .top, spacing: AppSpacing.md) {
-                    ChatTimelineColumn(items: store.timeline(for: issueID))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    IssueThreadRail(
+                        issueID: issueID,
+                        activeThreadID: activeThread?.id
+                    )
+                    .frame(width: 260)
+                    .frame(maxHeight: .infinity)
 
-                    WorkspaceSidePanel(issueID: issueID)
+                    if let activeThread {
+                        ChatTimelineColumn(
+                            thread: activeThread,
+                            items: store.timeline(forThreadID: activeThread.id),
+                            isRefreshingFromDaemon: store.isRefreshingThread(activeThread.id),
+                            onRefreshFromDaemon: {
+                                Task {
+                                    await store.refreshThreadFromDaemon(threadID: activeThread.id)
+                                }
+                            }
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        ThreadEmptyState(issueID: issueID)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+
+                    IssueInspectorPanel(
+                        issue: issue,
+                        activeThread: activeThread,
+                        onDistillSummary: {
+                            guard let activeThread else { return }
+                            store.distillThreadIntoIssueSummary(issueID: issue.id, threadID: activeThread.id)
+                        },
+                        onDraftDecision: {
+                            guard let activeThread else { return }
+                            distilledDecisionDraft = store.distilledDecisionDraft(for: activeThread.id)
+                            showDistilledDecisionSheet = distilledDecisionDraft != nil
+                        },
+                        onDraftArtifact: {
+                            guard let activeThread else { return }
+                            distilledArtifactDraft = store.distilledArtifactDraft(for: activeThread.id)
+                            showDistilledArtifactSheet = distilledArtifactDraft != nil
+                        },
+                        onCreateFollowUp: {
+                            guard let activeThread else { return }
+                            distilledFollowUpDraft = store.distilledFollowUpIssueDraft(for: activeThread.id)
+                            showFollowUpIssueSheet = distilledFollowUpDraft != nil
+                        }
+                    )
                         .frame(width: 320)
                 }
                 .padding(.horizontal, AppSpacing.lg)
@@ -88,11 +133,13 @@ struct IssueWorkspaceView: View {
 
                 MessageComposerBar(
                     issue: issue,
+                    thread: activeThread,
                     text: $composerText,
                     selectedTargets: $selectedTargets,
                     onSend: {
+                        guard let activeThread else { return }
                         store.sendMessage(
-                            issueID: issueID,
+                            threadID: activeThread.id,
                             text: composerText,
                             targets: Array(selectedTargets)
                         )
@@ -105,7 +152,41 @@ struct IssueWorkspaceView: View {
             .background(Color.appCanvasBackground)
             .navigationTitle(issue.title)
             .onAppear {
-                seedTargets(from: issue)
+                seedTargets(from: activeThread, fallbackIssue: issue)
+                if let activeThread {
+                    store.selectThread(activeThread.id)
+                }
+            }
+            .onChange(of: activeThread?.id) { _, _ in
+                seedTargets(from: activeThread, fallbackIssue: issue, reset: true)
+            }
+            .sheet(isPresented: $showDistilledDecisionSheet) {
+                if let activeThread, let distilledDecisionDraft {
+                    CreateDecisionSheet(
+                        issueID: issue.id,
+                        thread: activeThread,
+                        initialDraft: distilledDecisionDraft
+                    )
+                }
+            }
+            .sheet(isPresented: $showDistilledArtifactSheet) {
+                if let activeThread, let distilledArtifactDraft {
+                    CreateArtifactSheet(
+                        issueID: issue.id,
+                        thread: activeThread,
+                        initialDraft: distilledArtifactDraft
+                    )
+                }
+            }
+            .sheet(isPresented: $showFollowUpIssueSheet) {
+                if let projectID = store.projectID(forIssueID: issue.id),
+                   let distilledFollowUpDraft {
+                    CreateFollowUpIssueSheet(
+                        projectID: projectID,
+                        sourceIssueID: issue.id,
+                        draft: distilledFollowUpDraft
+                    )
+                }
             }
         } else {
             EmptyStateView(
@@ -116,15 +197,23 @@ struct IssueWorkspaceView: View {
         }
     }
 
-    private func seedTargets(from issue: Issue) {
+    private func seedTargets(from thread: Thread?, fallbackIssue issue: Issue, reset: Bool = false) {
+        if reset {
+            selectedTargets.removeAll()
+        }
         if selectedTargets.isEmpty {
-            selectedTargets = Set(issue.agentNames)
+            let threadAgentNames = thread?.agentNames ?? []
+            selectedTargets = Set(threadAgentNames.isEmpty ? issue.agentNames : threadAgentNames)
         }
     }
 }
 
 private struct IssueWorkspaceHeader: View {
     let issue: Issue
+    let onDistillSummary: () -> Void
+    let onDraftDecision: () -> Void
+    let onDraftArtifact: () -> Void
+    let onCreateFollowUp: () -> Void
 
     var body: some View {
         CardSurface(accent: issue.status.badgeColor) {
@@ -151,8 +240,14 @@ private struct IssueWorkspaceHeader: View {
                     HStack(spacing: 8) {
                         Button("Start") {}
                             .buttonStyle(.borderedProminent)
-                        Button("Distill") {}
-                            .buttonStyle(.bordered)
+                        Menu("Distill") {
+                            Button("Update Issue Summary", action: onDistillSummary)
+                            Button("Draft Decision", action: onDraftDecision)
+                            Button("Draft Artifact", action: onDraftArtifact)
+                            Button("Create Follow-up Issue", action: onCreateFollowUp)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .buttonStyle(.bordered)
                         Button("Switcher") {}
                             .buttonStyle(.bordered)
                     }
@@ -180,29 +275,615 @@ private struct IssueWorkspaceHeader: View {
     }
 }
 
+private struct IssueThreadRail: View {
+    @EnvironmentObject private var store: DemoStore
+    let issueID: UUID
+    let activeThreadID: UUID?
+
+    @State private var showCreateThread = false
+
+    var body: some View {
+        CardSurface(accent: .gray) {
+            VStack(alignment: .leading, spacing: AppSpacing.md) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Threads")
+                            .font(.headline)
+                        Text("Agent work sessions")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        showCreateThread = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                let threads = store.threads(for: issueID)
+                if threads.isEmpty {
+                    VStack(alignment: .leading, spacing: AppSpacing.sm) {
+                        Image(systemName: "bubble.left.and.bubble.right")
+                            .font(.title2)
+                            .foregroundStyle(.secondary)
+                        Text("No threads yet")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Start a thread to organize agent work for this issue.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, AppSpacing.lg)
+                } else {
+                    ScrollView {
+                        VStack(spacing: AppSpacing.sm) {
+                            ForEach(threads) { thread in
+                                Button {
+                                    store.selectThread(thread.id)
+                                } label: {
+                                    ThreadCard(
+                                        thread: thread,
+                                        isSelected: activeThreadID == thread.id
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+        }
+        .sheet(isPresented: $showCreateThread) {
+            CreateThreadSheet(issueID: issueID)
+        }
+    }
+}
+
 private struct ChatTimelineColumn: View {
+    let thread: Thread
     let items: [TimelineItem]
+    let isRefreshingFromDaemon: Bool
+    let onRefreshFromDaemon: () -> Void
 
     var body: some View {
         CardSurface(accent: .blue) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: AppSpacing.md) {
-                        ForEach(items) { item in
-                            TimelineItemView(item: item)
-                                .id(item.id)
+            VStack(alignment: .leading, spacing: AppSpacing.md) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 8) {
+                            Text(thread.title)
+                                .font(.headline)
+                            StatusBadge(text: thread.purpose.title, color: thread.purpose.badgeColor)
                         }
+                        Text(thread.latestActivityText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    .padding(.vertical, 4)
+
+                    Spacer()
+                    HStack(spacing: 8) {
+                        if thread.daemonThreadID != nil {
+                            Button {
+                                onRefreshFromDaemon()
+                            } label: {
+                                if isRefreshingFromDaemon {
+                                    Label("Refreshing", systemImage: "arrow.clockwise")
+                                } else {
+                                    Label("Refresh from daemon", systemImage: "arrow.clockwise")
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(isRefreshingFromDaemon)
+                        }
+                        StatusBadge(text: thread.state.title, color: thread.state.badgeColor)
+                    }
                 }
-                .onChange(of: items.count) { _, _ in
-                    guard let lastID = items.last?.id else { return }
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        proxy.scrollTo(lastID, anchor: .bottom)
+
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: AppSpacing.md) {
+                            ForEach(items) { item in
+                                TimelineItemView(item: item)
+                                    .id(item.id)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .onChange(of: items.count) { _, _ in
+                        guard let lastID = items.last?.id else { return }
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo(lastID, anchor: .bottom)
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+private struct ThreadEmptyState: View {
+    let issueID: UUID
+    @State private var showCreateThread = false
+
+    var body: some View {
+        CardSurface(accent: .blue) {
+            VStack(spacing: AppSpacing.md) {
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .font(.system(size: 42))
+                    .foregroundStyle(.secondary)
+                Text("Start the first thread")
+                    .font(.title3.weight(.semibold))
+                Text("Threads keep research, implementation, review, and debugging work separate under the same issue.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+                Button {
+                    showCreateThread = true
+                } label: {
+                    Label("Start Thread", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .sheet(isPresented: $showCreateThread) {
+            CreateThreadSheet(issueID: issueID)
+        }
+    }
+}
+
+private struct IssueInspectorPanel: View {
+    @EnvironmentObject private var store: DemoStore
+    let issue: Issue
+    let activeThread: Thread?
+    let onDistillSummary: () -> Void
+    let onDraftDecision: () -> Void
+    let onDraftArtifact: () -> Void
+    let onCreateFollowUp: () -> Void
+
+    @State private var showCreateArtifact = false
+    @State private var showCreateDecision = false
+    @State private var showDistilledFollowUp = false
+
+    var body: some View {
+        CardSurface(accent: .gray) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: AppSpacing.md) {
+                    inspectorSection("Context", systemImage: "doc.text") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(issue.summary)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+
+                            if let sourceIssueID = issue.sourceIssueID,
+                               let parentIssue = store.issue(for: sourceIssueID) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Derived From")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    Text("#\(parentIssue.number) \(parentIssue.title)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    if let sourceThreadID = issue.sourceThreadID,
+                                       let sourceThread = store.thread(for: sourceThreadID) {
+                                        Text(sourceThread.title)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(ColorToken.orange.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            }
+                        }
+                    }
+
+                    inspectorSection("Follow-up Issues", systemImage: "arrowshape.turn.up.right") {
+                        let followUps = store.followUpIssues(for: issue.id)
+                        if followUps.isEmpty {
+                            PlaceholderInspectorRow(text: "No follow-up issues created yet")
+                        } else {
+                            VStack(spacing: AppSpacing.sm) {
+                                ForEach(followUps) { followUp in
+                                    Button {
+                                        store.selectedIssueID = followUp.id
+                                        store.selectedThreadID = nil
+                                    } label: {
+                                        FollowUpIssueCard(issue: followUp)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
+
+                    inspectorSection("Active Thread", systemImage: "bubble.left.and.bubble.right") {
+                        if let activeThread {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(activeThread.title)
+                                    .font(.subheadline.weight(.semibold))
+                                HStack {
+                                    StatusBadge(text: activeThread.purpose.title, color: activeThread.purpose.badgeColor)
+                                    StatusBadge(text: activeThread.state.title, color: activeThread.state.badgeColor)
+                                }
+                                Text(activeThread.latestActivityText)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            HStack(spacing: 8) {
+                                if activeThread.daemonThreadID != nil {
+                                    Button("Refresh") {
+                                        Task {
+                                            await store.refreshThreadFromDaemon(threadID: activeThread.id)
+                                        }
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(store.isRefreshingThread(activeThread.id))
+                                }
+
+                                Button("Add Artifact") {
+                                    showCreateArtifact = true
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button("Add Decision") {
+                                    showCreateDecision = true
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button("Follow-up") {
+                                    showDistilledFollowUp = true
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        } else {
+                            Text("No active thread")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    inspectorSection("Distill Preview", systemImage: "wand.and.stars") {
+                        if let activeThread {
+                            let summaryPreview = store.distilledIssueSummaryText(for: activeThread.id)
+                            let decisionDraft = store.distilledDecisionDraft(for: activeThread.id)
+                            let artifactDraft = store.distilledArtifactDraft(for: activeThread.id)
+                            let followUpDraft = store.distilledFollowUpIssueDraft(for: activeThread.id)
+
+                            VStack(spacing: AppSpacing.sm) {
+                                HStack(alignment: .center) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(store.distillationSourceLabel(for: activeThread.id))
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+                                        if let generatedAt = store.distillationGeneratedAt(for: activeThread.id) {
+                                            Text(AppFormatters.relativeString(from: generatedAt))
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+
+                                    Spacer()
+
+                                    if store.hasAgentDistillation(for: activeThread.id) {
+                                        Button("Clear") {
+                                            store.clearAgentDistillation(for: activeThread.id)
+                                        }
+                                        .buttonStyle(.bordered)
+                                    }
+
+                                    Button {
+                                        Task {
+                                            await store.refreshDistillationWithAgent(
+                                                issueID: issue.id,
+                                                threadID: activeThread.id
+                                            )
+                                        }
+                                    } label: {
+                                        if store.isDistillingThread(activeThread.id) {
+                                            Label("Distilling…", systemImage: "wand.and.stars")
+                                        } else {
+                                            Label("Ask Agent", systemImage: "wand.and.stars")
+                                        }
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(store.isDistillingThread(activeThread.id))
+                                }
+
+                                if let summaryPreview {
+                                    DistillPreviewCard(
+                                        title: "Issue Summary",
+                                        preview: summaryPreview,
+                                        primaryActionTitle: "Apply",
+                                        primaryAction: onDistillSummary
+                                    )
+                                }
+
+                                if let decisionDraft {
+                                    DistillPreviewCard(
+                                        title: "Decision Draft",
+                                        preview: "\(decisionDraft.title)\n\n\(decisionDraft.rationale)",
+                                        primaryActionTitle: "Save",
+                                        primaryAction: {
+                                            store.saveDistilledDecision(issueID: issue.id, threadID: activeThread.id)
+                                        },
+                                        secondaryActionTitle: "Edit",
+                                        secondaryAction: onDraftDecision
+                                    )
+                                }
+
+                                if let artifactDraft {
+                                    DistillPreviewCard(
+                                        title: "Artifact Draft",
+                                        preview: "\(artifactDraft.title)\n\n\(artifactDraft.summary)",
+                                        primaryActionTitle: "Save",
+                                        primaryAction: {
+                                            store.saveDistilledArtifact(issueID: issue.id, threadID: activeThread.id)
+                                        },
+                                        secondaryActionTitle: "Edit",
+                                        secondaryAction: onDraftArtifact
+                                    )
+                                }
+
+                                if let followUpDraft {
+                                    DistillPreviewCard(
+                                        title: "Follow-up Issue",
+                                        preview: "\(followUpDraft.title)\n\n\(followUpDraft.summary)",
+                                        primaryActionTitle: "Create",
+                                        primaryAction: {
+                                            store.createDistilledFollowUpIssue(sourceIssueID: issue.id, threadID: activeThread.id)
+                                        },
+                                        secondaryActionTitle: "Edit",
+                                        secondaryAction: onCreateFollowUp
+                                    )
+                                }
+
+                                if summaryPreview == nil, decisionDraft == nil, artifactDraft == nil, followUpDraft == nil {
+                                    PlaceholderInspectorRow(text: "No distillation preview available yet")
+                                }
+                            }
+                        } else {
+                            PlaceholderInspectorRow(text: "Select a thread to generate a draft")
+                        }
+                    }
+
+                    inspectorSection("Artifacts", systemImage: "shippingbox") {
+                        Button {
+                            showCreateArtifact = true
+                        } label: {
+                            Label("Add Artifact", systemImage: "plus")
+                        }
+                        .buttonStyle(.bordered)
+
+                        let issueArtifacts = store.artifacts(for: issue.id)
+                        if issueArtifacts.isEmpty {
+                            PlaceholderInspectorRow(text: "No artifacts yet")
+                        } else {
+                            VStack(spacing: AppSpacing.sm) {
+                                ForEach(issueArtifacts) { artifact in
+                                    IssueArtifactCard(artifact: artifact, thread: artifact.threadID.flatMap(store.thread(for:)))
+                                }
+                            }
+                        }
+                    }
+
+                    inspectorSection("Decisions", systemImage: "checkmark.seal") {
+                        Button {
+                            showCreateDecision = true
+                        } label: {
+                            Label("Add Decision", systemImage: "plus")
+                        }
+                        .buttonStyle(.bordered)
+
+                        let issueDecisions = store.decisions(for: issue.id)
+                        if issueDecisions.isEmpty {
+                            PlaceholderInspectorRow(text: "No decisions yet")
+                        } else {
+                            VStack(spacing: AppSpacing.sm) {
+                                ForEach(issueDecisions) { decision in
+                                    IssueDecisionCard(decision: decision, thread: decision.threadID.flatMap(store.thread(for:)))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showCreateArtifact) {
+            CreateArtifactSheet(
+                issueID: issue.id,
+                thread: activeThread
+            )
+        }
+        .sheet(isPresented: $showCreateDecision) {
+            CreateDecisionSheet(
+                issueID: issue.id,
+                thread: activeThread
+            )
+        }
+        .sheet(isPresented: $showDistilledFollowUp) {
+            if let activeThread,
+               let projectID = store.projectID(forIssueID: issue.id),
+               let draft = store.distilledFollowUpIssueDraft(for: activeThread.id) {
+                CreateFollowUpIssueSheet(
+                    projectID: projectID,
+                    sourceIssueID: issue.id,
+                    draft: draft
+                )
+            }
+        }
+    }
+
+    private func inspectorSection<Content: View>(
+        _ title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: AppSpacing.sm) {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .foregroundStyle(.secondary)
+                Text(title)
+                    .font(.headline)
+            }
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, AppSpacing.sm)
+    }
+}
+
+private struct DistillPreviewCard: View {
+    let title: String
+    let preview: String
+    let primaryActionTitle: String
+    let primaryAction: () -> Void
+    var secondaryActionTitle: String? = nil
+    var secondaryAction: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                HStack(spacing: 8) {
+                    if let secondaryActionTitle, let secondaryAction {
+                        Button(secondaryActionTitle, action: secondaryAction)
+                            .buttonStyle(.bordered)
+                    }
+                    Button(primaryActionTitle, action: primaryAction)
+                        .buttonStyle(.bordered)
+                }
+            }
+
+            Text(preview)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(5)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ColorToken.purple.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct FollowUpIssueCard: View {
+    let issue: Issue
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "arrowshape.turn.up.right")
+                .foregroundStyle(ColorToken.orange.color)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("#\(issue.number) \(issue.title)")
+                    .font(.subheadline.weight(.semibold))
+                Text(issue.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+            Spacer(minLength: 0)
+            StatusBadge(text: issue.status.title, color: issue.status.badgeColor)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ColorToken.orange.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct IssueArtifactCard: View {
+    let artifact: IssueArtifact
+    let thread: Thread?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: artifact.kind.systemImage)
+                    .foregroundStyle(artifact.kind.accent.color)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(artifact.title)
+                        .font(.subheadline.weight(.semibold))
+                    HStack(spacing: 8) {
+                        StatusBadge(text: artifact.kind.title, color: artifact.kind.accent)
+                        if let thread {
+                            PillView(text: thread.title, color: thread.purpose.badgeColor)
+                        }
+                    }
+                }
+                Spacer(minLength: 0)
+                Text(AppFormatters.relativeString(from: artifact.createdAt))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !artifact.summary.isEmpty {
+                Text(artifact.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let pathOrURL = artifact.pathOrURL {
+                Text(pathOrURL)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(artifact.kind.accent.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct IssueDecisionCard: View {
+    let decision: IssueDecision
+    let thread: Thread?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "checkmark.seal")
+                    .foregroundStyle(ColorToken.green.color)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(decision.title)
+                        .font(.subheadline.weight(.semibold))
+                    if let thread {
+                        PillView(text: thread.title, color: thread.purpose.badgeColor)
+                    }
+                }
+                Spacer(minLength: 0)
+                Text(AppFormatters.relativeString(from: decision.createdAt))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text(decision.rationale)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ColorToken.green.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct PlaceholderInspectorRow: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
@@ -498,7 +1179,7 @@ private struct WorkspaceSidePanel: View {
                 case .timeline:
                     ScrollView {
                         VStack(alignment: .leading, spacing: AppSpacing.sm) {
-                            ForEach(store.timeline(for: issueID).suffix(12)) { item in
+                            ForEach(store.timeline(forIssueID: issueID).suffix(12)) { item in
                                 TimelineEventRow(item: item)
                             }
                         }
@@ -560,7 +1241,10 @@ private struct WorkspaceSidePanel: View {
                 ScrollView {
                     VStack(spacing: AppSpacing.sm) {
                         ForEach(store.threads(for: issueID)) { thread in
-                            ThreadCard(thread: thread)
+                            ThreadCard(
+                                thread: thread,
+                                isSelected: store.selectedThreadID == thread.id
+                            )
                         }
                     }
                 }
@@ -707,16 +1391,22 @@ private struct SessionMiniCard: View {
 
 private struct MessageComposerBar: View {
     let issue: Issue
+    let thread: Thread?
     @Binding var text: String
     @Binding var selectedTargets: Set<String>
     let onSend: () -> Void
+
+    private var targetNames: [String] {
+        let threadAgentNames = thread?.agentNames ?? []
+        return threadAgentNames.isEmpty ? issue.agentNames : threadAgentNames
+    }
 
     var body: some View {
         CardSurface(accent: .green) {
             VStack(alignment: .leading, spacing: AppSpacing.md) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(issue.agentNames, id: \.self) { name in
+                        ForEach(targetNames, id: \.self) { name in
                             Button {
                                 if selectedTargets.contains(name) {
                                     selectedTargets.remove(name)
@@ -747,7 +1437,7 @@ private struct MessageComposerBar: View {
                     Spacer()
                     Button("Send", action: onSend)
                         .buttonStyle(.borderedProminent)
-                        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(thread == nil || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }

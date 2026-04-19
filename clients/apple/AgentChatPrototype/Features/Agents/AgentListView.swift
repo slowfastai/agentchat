@@ -3,16 +3,9 @@ import PhotosUI
 #if canImport(UIKit)
 import UIKit
 #endif
-
-enum AppColors {
-    static var onlineStatus: Color {
-        Color(red: 0.3, green: 0.85, blue: 0.5)
-    }
-
-    static var unreadBadge: Color {
-        Color(red: 1.0, green: 0.35, blue: 0.35)
-    }
-}
+#if canImport(AppKit)
+import AppKit
+#endif
 
 struct AgentListView: View {
     @EnvironmentObject private var store: DemoStore
@@ -71,6 +64,24 @@ struct AgentListView: View {
         ZStack(alignment: .trailing) {
             List(selection: $selectedAgentID) {
                 Section {
+                    DaemonStatusRow(
+                        statusText: store.daemonStatusText,
+                        accent: store.daemonStatusAccent,
+                        isRefreshing: store.isRefreshingAgentsFromDaemon,
+                        onRefresh: {
+                            Task {
+                                await store.refreshAgentsFromDaemon()
+                            }
+                        },
+                        onReset: {
+                            store.resetPrototypeData()
+                        }
+                    )
+                    .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                    .tag(nil as UUID?)
+                }
+
+                Section {
                     ForEach(shortcutItems) { item in
                         AgentShortcutRow(item: item)
                             .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
@@ -115,7 +126,7 @@ struct AgentListView: View {
                 }
             }
             .listStyle(.plain)
-            .environment(\.editMode, .constant(.active))
+            .modifier(ActiveEditModeModifier())
             .scrollContentBackground(.hidden)
             .background(Color.appCanvasBackground)
             .searchable(text: $searchText, prompt: "Search agents")
@@ -123,8 +134,11 @@ struct AgentListView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
+                        Task {
+                            await store.refreshAgentsFromDaemon()
+                        }
                     } label: {
-                        Image(systemName: "person.badge.plus")
+                        Image(systemName: "arrow.clockwise")
                     }
                 }
                 
@@ -194,6 +208,57 @@ struct AgentListView: View {
             return
         }
         store.connectToAgent(id: agentID)
+    }
+}
+
+private struct DaemonStatusRow: View {
+    let statusText: String
+    let accent: ColorToken
+    let isRefreshing: Bool
+    let onRefresh: () -> Void
+    let onReset: () -> Void
+
+    var body: some View {
+        CardSurface(accent: accent) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center, spacing: 12) {
+                    Circle()
+                        .fill(accent.color)
+                        .frame(width: 10, height: 10)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Local Daemon")
+                            .font(.subheadline.weight(.semibold))
+                        Text(statusText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+
+                    Button {
+                        onRefresh()
+                    } label: {
+                        if isRefreshing {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isRefreshing)
+                }
+
+                HStack {
+                    Spacer()
+                    Button("Reset Prototype Data") {
+                        onReset()
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
     }
 }
 
@@ -316,14 +381,10 @@ private struct ContactIconTile: View {
     var avatarData: Data?
 
     var body: some View {
-        if let data = avatarData, let uiImage = UIImage(data: data) {
-            Image(uiImage: uiImage)
-                .resizable()
-                .scaledToFill()
-                .frame(width: 42, height: 42)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        if let data = avatarData {
+            PrototypeAvatarDataImage(data: data, size: 42, cornerRadius: 10)
         } else if let avatarAssetName {
-            AgentDefaultAvatarArtwork(
+            PrototypeDefaultAvatarArtwork(
                 assetName: avatarAssetName,
                 size: 42,
                 shape: .roundedRect(cornerRadius: 10)
@@ -338,6 +399,48 @@ private struct ContactIconTile: View {
                         .foregroundStyle(.white)
                 }
         }
+    }
+}
+
+private struct ActiveEditModeModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content
+        #else
+        content.environment(\.editMode, .constant(.active))
+        #endif
+    }
+}
+
+private struct PrototypeAvatarDataImage: View {
+    let data: Data
+    let size: CGFloat
+    let cornerRadius: CGFloat
+
+    var body: some View {
+        Group {
+            #if canImport(UIKit)
+            if let image = UIImage(data: data) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Color.clear
+            }
+            #elseif canImport(AppKit)
+            if let image = NSImage(data: data) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Color.clear
+            }
+            #else
+            Color.clear
+            #endif
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 }
 
@@ -380,14 +483,10 @@ struct EditAgentSheet: View {
                 Section("Agent Info") {
                     TextField("Name", text: $editedName)
 
-                    if let data = selectedImageData, let uiImage = UIImage(data: data) {
+                    if let data = selectedImageData {
                         HStack {
                             Spacer()
-                            Image(uiImage: uiImage)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: 80, height: 80)
-                                .clipShape(RoundedRectangle(cornerRadius: 16))
+                            PrototypeAvatarDataImage(data: data, size: 80, cornerRadius: 16)
                             Spacer()
                         }
                     }
@@ -416,7 +515,9 @@ struct EditAgentSheet: View {
                 }
             }
             .navigationTitle("Edit Agent")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -443,6 +544,7 @@ struct EditAgentSheet: View {
     }
 
     private func processImage(_ data: Data) -> Data? {
+        #if canImport(UIKit)
         guard let uiImage = UIImage(data: data) else { return nil }
 
         let maxSize: CGFloat = 200
@@ -455,6 +557,28 @@ struct EditAgentSheet: View {
         UIGraphicsEndImageContext()
 
         return resizedImage?.jpegData(compressionQuality: 0.8)
+        #elseif canImport(AppKit)
+        guard let image = NSImage(data: data) else { return nil }
+
+        let maxSize: CGFloat = 200
+        let scale = min(maxSize / image.size.width, maxSize / image.size.height)
+        let newSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        let resizedImage = NSImage(size: newSize)
+        resizedImage.lockFocus()
+        image.draw(in: CGRect(origin: .zero, size: newSize))
+        resizedImage.unlockFocus()
+
+        guard
+            let tiffData = resizedImage.tiffRepresentation,
+            let bitmap = NSBitmapImageRep(data: tiffData)
+        else {
+            return data
+        }
+
+        return bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.8])
+        #else
+        return data
+        #endif
     }
 
     private func saveChanges() {
