@@ -21,8 +21,7 @@ extension FocusedValues {
 struct AgentChatDesktopCommands: Commands {
     @FocusedValue(\.agentChatDesktopActions) private var actions
 
-    let store: DaemonChatStore
-    let workspaceStore: WorkspaceStore
+    let env: DesktopEnvironment
 
     var body: some Commands {
         CommandMenu("AgentChat") {
@@ -35,36 +34,33 @@ struct AgentChatDesktopCommands: Commands {
                 actions?.showAddAgentsSheet()
             }
             .keyboardShortcut("a", modifiers: [.command, .shift])
-            .disabled(store.activeThreadID == nil)
+            .disabled(env.workspace.selectedThreadID == nil)
 
             Divider()
 
             Button("Reconnect") {
-                store.reconnectNow()
-                Task {
-                    await workspaceStore.refreshAgentsFromDaemon()
-                }
+                env.reconnectNow()
             }
             .keyboardShortcut("r", modifiers: [.command, .shift])
 
             Button("Refresh Workspace Agents") {
                 Task {
-                    await workspaceStore.refreshAgentsFromDaemon()
+                    await env.workspace.refreshAgentsFromDaemon()
                 }
             }
 
             Button("Refresh Selected Workspace Thread") {
-                guard let threadID = workspaceStore.selectedThreadID else { return }
+                guard let threadID = env.workspace.selectedThreadID else { return }
                 Task {
-                    await workspaceStore.refreshThreadFromDaemon(threadID: threadID)
+                    await env.workspace.refreshThreadFromDaemon(threadID: threadID)
                 }
             }
-            .disabled(workspaceStore.selectedThreadID == nil)
+            .disabled(env.workspace.selectedThreadID == nil)
 
             Button("Disconnect") {
-                store.disconnect()
+                env.disconnect()
             }
-            .disabled(!store.hasConfiguredDaemonURL)
+            .disabled(!env.hasConfiguredDaemonURL)
 
             Divider()
 
@@ -76,7 +72,7 @@ struct AgentChatDesktopCommands: Commands {
                 actions?.focusComposer()
             }
             .keyboardShortcut("l", modifiers: [.command, .shift])
-            .disabled(store.activeThreadID == nil)
+            .disabled(env.workspace.selectedThreadID == nil)
         }
     }
 }

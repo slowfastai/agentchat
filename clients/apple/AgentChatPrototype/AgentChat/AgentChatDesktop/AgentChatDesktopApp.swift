@@ -72,54 +72,30 @@ final class AgentChatDesktopAppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct AgentChatDesktopApp: App {
     @NSApplicationDelegateAdaptor(AgentChatDesktopAppDelegate.self) private var appDelegate
-    @StateObject private var daemonStore = DaemonChatStore()
-    @StateObject private var workspaceStore = WorkspaceStore()
+    @StateObject private var env = DesktopEnvironment()
     @State private var openWindows: [UUID: WindowProxy] = [:]
     @State private var didBootstrapStore = false
-
-    private func ensureLocalDaemonIfNeeded(for connectionLink: String? = nil) {
-        Task {
-            await LocalDaemonController.shared.ensureRunning(for: connectionLink ?? workspaceStore.daemonURL)
-        }
-    }
 
     private func bootstrapStoreIfNeeded() {
         guard !didBootstrapStore else { return }
         didBootstrapStore = true
-
-        Task {
-            daemonStore.updateDaemonURL(workspaceStore.daemonURL)
-            await LocalDaemonController.shared.ensureRunning(for: workspaceStore.daemonURL)
-            guard !Task.isCancelled else { return }
-
-            daemonStore.start()
-            await workspaceStore.refreshAgentsFromDaemon()
-            await NotificationHelper.requestAuthorization()
-        }
+        env.start()
     }
 
     var body: some Scene {
         WindowGroup("AgentChat Desktop") {
             RootView()
-                .environmentObject(workspaceStore)
+                .environmentObject(env.workspace)
                 .onAppear {
                     bootstrapStoreIfNeeded()
                 }
-                .onChange(of: daemonStore.daemonURL) { _, newValue in
-                    workspaceStore.updateDaemonURL(newValue)
-                    ensureLocalDaemonIfNeeded(for: newValue)
-                }
-                .onChange(of: workspaceStore.daemonURL) { _, newValue in
-                    daemonStore.updateDaemonURL(newValue)
-                    ensureLocalDaemonIfNeeded(for: newValue)
-                }
                 .onOpenURL { url in
                     if let threadID = AgentChatDesktopURL.threadID(from: url) {
-                        if !workspaceStore.selectDaemonThread(threadID) {
-                            daemonStore.attachThread(threadID)
+                        if !env.workspace.selectDaemonThread(threadID) {
+                            env.attachThread(threadID)
                         }
                     } else {
-                        daemonStore.applyScannedConnectionPayload(url.absoluteString)
+                        env.applyScannedConnectionPayload(url.absoluteString)
                     }
                 }
         }
@@ -127,13 +103,13 @@ struct AgentChatDesktopApp: App {
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
         .commands {
-            AgentChatDesktopCommands(store: daemonStore, workspaceStore: workspaceStore)
+            AgentChatDesktopCommands(env: env)
         }
 
         Settings {
             AgentChatDesktopSettingsView()
-                .environmentObject(daemonStore)
-                .environmentObject(workspaceStore)
+                .environmentObject(env.workspace)
+                .environmentObject(env)
         }
     }
 }

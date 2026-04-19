@@ -1,13 +1,13 @@
 import SwiftUI
 
 struct AgentChatDesktopSettingsView: View {
-    @EnvironmentObject private var store: DaemonChatStore
     @EnvironmentObject private var workspaceStore: WorkspaceStore
+    @EnvironmentObject private var env: DesktopEnvironment
 
     @State private var daemonURLDraft = ""
 
     private var presentation: AgentChatDesktopConnectionPresentation {
-        AgentChatDesktopConnectionPresentation(state: store.connectionState)
+        AgentChatDesktopConnectionPresentation(state: env.connectionState)
     }
 
     var body: some View {
@@ -30,14 +30,14 @@ struct AgentChatDesktopSettingsView: View {
                         .disabled(daemonURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                         Button("Reconnect") {
-                            store.reconnectNow()
+                            env.reconnectNow()
                         }
-                        .disabled(!store.hasConfiguredDaemonURL)
+                        .disabled(!env.hasConfiguredDaemonURL)
 
                         Button("Disconnect") {
-                            store.disconnect()
+                            env.disconnect()
                         }
-                        .disabled(!store.hasConfiguredDaemonURL)
+                        .disabled(!env.hasConfiguredDaemonURL)
                     }
 
                     HStack(spacing: 10) {
@@ -52,7 +52,7 @@ struct AgentChatDesktopSettingsView: View {
                         }
                     }
 
-                    if let errorSummary = store.desktopConnectionErrorSummary {
+                    if let errorSummary = env.desktopConnectionErrorSummary {
                         Text(errorSummary)
                             .font(.callout)
                             .foregroundStyle(.orange)
@@ -74,21 +74,13 @@ struct AgentChatDesktopSettingsView: View {
         .onAppear {
             daemonURLDraft = workspaceStore.daemonURL
         }
-        .onChange(of: store.daemonURL) { _, newValue in
-            workspaceStore.updateDaemonURL(newValue)
-            daemonURLDraft = newValue
-        }
-        .onChange(of: workspaceStore.daemonURL) { _, newValue in
-            daemonURLDraft = newValue
-        }
     }
 
     private func applyDaemonURL() {
         let trimmed = daemonURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        workspaceStore.updateDaemonURL(trimmed)
-        store.updateDaemonURL(trimmed)
+        env.updateDaemonURL(trimmed)
         Task {
             await LocalDaemonController.shared.ensureRunning(for: trimmed)
             await workspaceStore.refreshAgentsFromDaemon()
