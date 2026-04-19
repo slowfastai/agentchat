@@ -212,6 +212,38 @@ extension AgentKind {
             return nil
         }
     }
+
+    static func inferredDefaultAvatarAssetName(from rawValue: String) -> String? {
+        let token = rawValue.lowercased()
+        if token.contains("claude") {
+            return AgentKind.claude.defaultAvatarAssetName
+        }
+        if token.contains("codex") {
+            return AgentKind.codex.defaultAvatarAssetName
+        }
+        if token.contains("opencode") || (token.contains("open") && token.contains("code")) {
+            return AgentKind.opencode.defaultAvatarAssetName
+        }
+        if token == "pi" || token.contains(" pi ") || token.hasPrefix("pi ") || token.hasSuffix(" pi") {
+            return AgentKind.pi.defaultAvatarAssetName
+        }
+        return nil
+    }
+}
+
+extension AgentProfile {
+    var resolvedDefaultAvatarAssetName: String? {
+        if let assetName = kind.defaultAvatarAssetName {
+            return assetName
+        }
+
+        if let daemonAgentID,
+           let assetName = AgentKind.inferredDefaultAvatarAssetName(from: daemonAgentID) {
+            return assetName
+        }
+
+        return AgentKind.inferredDefaultAvatarAssetName(from: name)
+    }
 }
 
 struct ParticipantRef: Identifiable, Hashable, Codable {

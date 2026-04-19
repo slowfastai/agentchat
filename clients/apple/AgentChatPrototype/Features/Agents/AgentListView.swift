@@ -306,7 +306,7 @@ private struct AgentFriendRow: View {
                 title: customName ?? agent.name,
                 accent: agent.accent,
                 systemImage: systemImage(for: agent.kind),
-                avatarAssetName: agent.kind.defaultAvatarAssetName,
+                avatarAssetName: agent.resolvedDefaultAvatarAssetName,
                 avatarData: avatarData
             )
             .overlay(

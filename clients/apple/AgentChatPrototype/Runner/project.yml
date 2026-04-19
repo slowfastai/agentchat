@@ -9,9 +9,14 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: ../App
+      - path: ../AgentChat/Shared/ConnectionPayload.swift
+      - path: ../AgentChat/AgentChatDesktop/Assets.xcassets
+        buildPhase: resources
       - path: ../Core/Models
       - path: ../Core/Store
       - path: ../Core/Utils
+      - path: ../Config
+        buildPhase: resources
       - path: ../DesignSystem
       - path: ../Features/Agents
       - path: ../Features/Chats
@@ -20,9 +25,6 @@ targets:
       - path: ../Features/Projects
       - path: ../Features/Switcher
       - path: ../Features/Workspace
-    resources:
-      - path: ../AgentChat/AgentChatDesktop/Assets.xcassets
-      - path: ../Config
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.agentchat.prototype.runner
