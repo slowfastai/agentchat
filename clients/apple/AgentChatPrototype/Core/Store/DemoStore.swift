@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import CryptoKit
+import Combine
 
 private struct DemoStoreSnapshot: Codable {
     var projects: [Project]
@@ -84,7 +85,9 @@ private struct AgentDistillationEnvelope: Decodable {
 }
 
 @MainActor
-final class DemoStore: ObservableObject {
+final class WorkspaceStore: ObservableObject {
+    private static let daemonURLKey = "AgentChatWorkspace.daemonURL"
+
     @Published var projects: [Project] = [] { didSet { schedulePersistence() } }
     @Published var agents: [AgentProfile] = [] { didSet { schedulePersistence() } }
     @Published var sessions: [WorkspaceSession] = [] { didSet { schedulePersistence() } }
@@ -104,6 +107,12 @@ final class DemoStore: ObservableObject {
     @Published var daemonStatusAccent: ColorToken = .gray
     @Published var refreshingThreadIDs: Set<UUID> = []
     @Published var distillingThreadIDs: Set<UUID> = []
+    @Published var daemonURL: String = UserDefaults.standard.string(forKey: WorkspaceStore.daemonURLKey)
+        ?? PrototypeDaemonAgentBridge.defaultURLString {
+        didSet {
+            UserDefaults.standard.set(daemonURL, forKey: Self.daemonURLKey)
+        }
+    }
 
     private let legacySnapshotKey = "AgentChatPrototype.DemoStoreSnapshot.v1"
     private let snapshotDirectoryName = "AgentChatPrototype"
@@ -165,6 +174,32 @@ final class DemoStore: ObservableObject {
         }
     }
 
+    func updateDaemonURL(_ value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let resolvedURL = Self.workspaceDaemonURL(from: trimmed) else {
+            daemonStatusText = "Workspace requires a direct daemon URL"
+            daemonStatusAccent = .orange
+            return
+        }
+        guard daemonURL != resolvedURL else { return }
+        daemonURL = resolvedURL
+    }
+
+    nonisolated static func workspaceDaemonURL(from value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("ws://") || trimmed.hasPrefix("wss://") {
+            return trimmed
+        }
+        guard let payload = parseScannedDaemonConnectionPayload(from: trimmed) else {
+            return nil
+        }
+        if case .direct(let url, _) = payload {
+            return url
+        }
+        return nil
+    }
+
     func refreshAgentsFromDaemon() async {
         guard !isRefreshingAgentsFromDaemon else { return }
 
@@ -176,7 +211,7 @@ final class DemoStore: ObservableObject {
         }
 
         do {
-            let fetchedAgents = try await PrototypeDaemonAgentBridge.fetchAgents()
+            let fetchedAgents = try await PrototypeDaemonAgentBridge.fetchAgents(from: daemonURL)
             let customNames = agentCustomNames
 
             agents = fetchedAgents.map { agent in
@@ -317,6 +352,17 @@ final class DemoStore: ObservableObject {
 
     func selectThread(_ threadID: UUID) {
         selectedThreadID = threadID
+    }
+
+    @discardableResult
+    func selectDaemonThread(_ daemonThreadID: String) -> Bool {
+        guard let thread = threads.first(where: { $0.daemonThreadID == daemonThreadID }) else {
+            return false
+        }
+        selectedProjectID = projectID(forIssueID: thread.issueID)
+        selectedIssueID = thread.issueID
+        selectedThreadID = thread.id
+        return true
     }
 
     func timeline(forThreadID threadID: UUID) -> [TimelineItem] {
@@ -812,7 +858,10 @@ final class DemoStore: ObservableObject {
         }
 
         do {
-            let replayEntries = try await PrototypeDaemonAgentBridge.replayRemoteThread(threadID: daemonThreadID)
+            let replayEntries = try await PrototypeDaemonAgentBridge.replayRemoteThread(
+                threadID: daemonThreadID,
+                urlString: daemonURL
+            )
             let mappedItems = replayTimelineItems(
                 replayEntries,
                 issueID: currentThread.issueID,
@@ -1049,7 +1098,8 @@ final class DemoStore: ObservableObject {
             let message = try await PrototypeDaemonAgentBridge.runOneShotPrompt(
                 agentID: distiller.daemonAgentID ?? distiller.name.lowercased(),
                 title: "Distill \(thread.title)",
-                content: prompt
+                content: prompt,
+                urlString: daemonURL
             )
             guard let response = message?.response,
                   let parsed = parseAgentDistillation(
@@ -1778,7 +1828,8 @@ final class DemoStore: ObservableObject {
         do {
             let handle = try await PrototypeDaemonAgentBridge.createRemoteThread(
                 title: thread.title,
-                agentID: daemonAgentID
+                agentID: daemonAgentID,
+                urlString: daemonURL
             )
             updateThread(threadID: localThreadID) { thread in
                 thread.daemonThreadID = handle.threadID
@@ -1812,7 +1863,8 @@ final class DemoStore: ObservableObject {
         do {
             let assistantMessages = try await PrototypeDaemonAgentBridge.sendRemoteThreadMessage(
                 threadID: daemonThreadID,
-                content: input
+                content: input,
+                urlString: daemonURL
             )
 
             if assistantMessages.isEmpty {
@@ -2607,6 +2659,8 @@ final class DemoStore: ObservableObject {
         }
     }
 }
+
+typealias DemoStore = WorkspaceStore
 
 private extension JSONEncoder {
     static var prototypeStoreEncoder: JSONEncoder {

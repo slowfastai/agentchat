@@ -6,6 +6,27 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* RootView.swift */; };
+		A10000000000000000000002 /* AppModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* AppModels.swift */; };
+		A10000000000000000000003 /* DemoStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* DemoStore.swift */; };
+		A10000000000000000000004 /* DistillationPromptTemplate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* DistillationPromptTemplate.swift */; };
+		A10000000000000000000005 /* PrototypeDaemonAgentBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* PrototypeDaemonAgentBridge.swift */; };
+		A10000000000000000000006 /* Formatters.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* Formatters.swift */; };
+		A10000000000000000000007 /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* DesignSystem.swift */; };
+		A10000000000000000000008 /* AgentListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* AgentListView.swift */; };
+		A10000000000000000000009 /* ChatListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* ChatListView.swift */; };
+		A1000000000000000000000A /* IssueInboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000A /* IssueInboxView.swift */; };
+		A1000000000000000000000B /* CreateIssueSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000B /* CreateIssueSheet.swift */; };
+		A1000000000000000000000C /* CreateProjectSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000C /* CreateProjectSheet.swift */; };
+		A1000000000000000000000D /* ProjectDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* ProjectDashboardView.swift */; };
+		A1000000000000000000000E /* ProjectListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* ProjectListView.swift */; };
+		A1000000000000000000000F /* SwitcherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000F /* SwitcherView.swift */; };
+		A10000000000000000000010 /* CreateThreadSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* CreateThreadSheet.swift */; };
+		A10000000000000000000011 /* IssueOutputSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* IssueOutputSheets.swift */; };
+		A10000000000000000000012 /* IssueWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* IssueWorkspaceView.swift */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		2AC82F8A2F7226DF00AE6F49 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -36,6 +57,24 @@
 		2AC82F932F7226DF00AE6F49 /* AgentChatUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AgentChatUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		9D1111122F7226DF00AE6F49 /* AgentChatDesktop.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AgentChatDesktop.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9D1111132F7226DF00AE6F49 /* AgentChatDesktopTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AgentChatDesktopTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A20000000000000000000001 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../App/RootView.swift; sourceTree = "<group>"; };
+		A20000000000000000000002 /* AppModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Core/Models/AppModels.swift; sourceTree = "<group>"; };
+		A20000000000000000000003 /* DemoStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Core/Store/DemoStore.swift; sourceTree = "<group>"; };
+		A20000000000000000000004 /* DistillationPromptTemplate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Core/Store/DistillationPromptTemplate.swift; sourceTree = "<group>"; };
+		A20000000000000000000005 /* PrototypeDaemonAgentBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Core/Store/PrototypeDaemonAgentBridge.swift; sourceTree = "<group>"; };
+		A20000000000000000000006 /* Formatters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Core/Utils/Formatters.swift; sourceTree = "<group>"; };
+		A20000000000000000000007 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../DesignSystem/DesignSystem.swift; sourceTree = "<group>"; };
+		A20000000000000000000008 /* AgentListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Features/Agents/AgentListView.swift; sourceTree = "<group>"; };
+		A20000000000000000000009 /* ChatListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Features/Chats/ChatListView.swift; sourceTree = "<group>"; };
+		A2000000000000000000000A /* IssueInboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Features/Inbox/IssueInboxView.swift; sourceTree = "<group>"; };
+		A2000000000000000000000B /* CreateIssueSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Features/Issues/CreateIssueSheet.swift; sourceTree = "<group>"; };
+		A2000000000000000000000C /* CreateProjectSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Features/Projects/CreateProjectSheet.swift; sourceTree = "<group>"; };
+		A2000000000000000000000D /* ProjectDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Features/Projects/ProjectDashboardView.swift; sourceTree = "<group>"; };
+		A2000000000000000000000E /* ProjectListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Features/Projects/ProjectListView.swift; sourceTree = "<group>"; };
+		A2000000000000000000000F /* SwitcherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Features/Switcher/SwitcherView.swift; sourceTree = "<group>"; };
+		A20000000000000000000010 /* CreateThreadSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Features/Workspace/CreateThreadSheet.swift; sourceTree = "<group>"; };
+		A20000000000000000000011 /* IssueOutputSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Features/Workspace/IssueOutputSheets.swift; sourceTree = "<group>"; };
+		A20000000000000000000012 /* IssueWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Features/Workspace/IssueWorkspaceView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -119,6 +158,7 @@
 				2AC82F962F7226DF00AE6F49 /* AgentChatUITests */,
 				9D1111152F7226DF00AE6F49 /* AgentChatDesktop */,
 				9D1111162F7226DF00AE6F49 /* AgentChatDesktopTests */,
+				A30000000000000000000000 /* PrototypeWorkspace */,
 				2AC82F7B2F7226DE00AE6F49 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -133,6 +173,31 @@
 				9D1111132F7226DF00AE6F49 /* AgentChatDesktopTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		A30000000000000000000000 /* PrototypeWorkspace */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000001 /* RootView.swift */,
+				A20000000000000000000002 /* AppModels.swift */,
+				A20000000000000000000003 /* DemoStore.swift */,
+				A20000000000000000000004 /* DistillationPromptTemplate.swift */,
+				A20000000000000000000005 /* PrototypeDaemonAgentBridge.swift */,
+				A20000000000000000000006 /* Formatters.swift */,
+				A20000000000000000000007 /* DesignSystem.swift */,
+				A20000000000000000000008 /* AgentListView.swift */,
+				A20000000000000000000009 /* ChatListView.swift */,
+				A2000000000000000000000A /* IssueInboxView.swift */,
+				A2000000000000000000000B /* CreateIssueSheet.swift */,
+				A2000000000000000000000C /* CreateProjectSheet.swift */,
+				A2000000000000000000000D /* ProjectDashboardView.swift */,
+				A2000000000000000000000E /* ProjectListView.swift */,
+				A2000000000000000000000F /* SwitcherView.swift */,
+				A20000000000000000000010 /* CreateThreadSheet.swift */,
+				A20000000000000000000011 /* IssueOutputSheets.swift */,
+				A20000000000000000000012 /* IssueWorkspaceView.swift */,
+			);
+			name = PrototypeWorkspace;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -370,6 +435,24 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000000000000000000008 /* AgentListView.swift in Sources */,
+				A10000000000000000000002 /* AppModels.swift in Sources */,
+				A10000000000000000000009 /* ChatListView.swift in Sources */,
+				A1000000000000000000000B /* CreateIssueSheet.swift in Sources */,
+				A1000000000000000000000C /* CreateProjectSheet.swift in Sources */,
+				A10000000000000000000010 /* CreateThreadSheet.swift in Sources */,
+				A10000000000000000000003 /* DemoStore.swift in Sources */,
+				A10000000000000000000007 /* DesignSystem.swift in Sources */,
+				A10000000000000000000004 /* DistillationPromptTemplate.swift in Sources */,
+				A10000000000000000000006 /* Formatters.swift in Sources */,
+				A1000000000000000000000A /* IssueInboxView.swift in Sources */,
+				A10000000000000000000011 /* IssueOutputSheets.swift in Sources */,
+				A10000000000000000000012 /* IssueWorkspaceView.swift in Sources */,
+				A1000000000000000000000D /* ProjectDashboardView.swift in Sources */,
+				A1000000000000000000000E /* ProjectListView.swift in Sources */,
+				A10000000000000000000005 /* PrototypeDaemonAgentBridge.swift in Sources */,
+				A10000000000000000000001 /* RootView.swift in Sources */,
+				A1000000000000000000000F /* SwitcherView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

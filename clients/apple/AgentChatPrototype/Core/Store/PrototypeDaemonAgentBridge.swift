@@ -383,8 +383,8 @@ enum PrototypeDaemonAgentBridgeError: LocalizedError {
 }
 
 enum PrototypeDaemonAgentBridge {
-    static let defaultURLString = "ws://127.0.0.1:9390"
-    private static let assistantResponseTimeout: TimeInterval = 60
+    nonisolated static let defaultURLString = "ws://127.0.0.1:9390"
+    nonisolated private static let assistantResponseTimeout: TimeInterval = 60
 
     static func fetchAgents(from urlString: String = defaultURLString) async throws -> [PrototypeDaemonAgentWire] {
         guard let url = URL(string: urlString) else {

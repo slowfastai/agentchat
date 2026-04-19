@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AgentChatDesktopSettingsView: View {
     @EnvironmentObject private var store: DaemonChatStore
+    @EnvironmentObject private var workspaceStore: WorkspaceStore
 
     @State private var daemonURLDraft = ""
 
@@ -23,7 +24,7 @@ struct AgentChatDesktopSettingsView: View {
 
                     HStack(spacing: 10) {
                         Button("Apply and Connect") {
-                            store.updateDaemonURL(daemonURLDraft)
+                            applyDaemonURL()
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(daemonURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -71,10 +72,26 @@ struct AgentChatDesktopSettingsView: View {
         }
         .frame(width: 540, height: 340)
         .onAppear {
-            daemonURLDraft = store.daemonURL
+            daemonURLDraft = workspaceStore.daemonURL
         }
         .onChange(of: store.daemonURL) { _, newValue in
+            workspaceStore.updateDaemonURL(newValue)
             daemonURLDraft = newValue
+        }
+        .onChange(of: workspaceStore.daemonURL) { _, newValue in
+            daemonURLDraft = newValue
+        }
+    }
+
+    private func applyDaemonURL() {
+        let trimmed = daemonURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        workspaceStore.updateDaemonURL(trimmed)
+        store.updateDaemonURL(trimmed)
+        Task {
+            await LocalDaemonController.shared.ensureRunning(for: trimmed)
+            await workspaceStore.refreshAgentsFromDaemon()
         }
     }
 }
