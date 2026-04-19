@@ -12,6 +12,13 @@ struct RootView: View {
     @EnvironmentObject private var store: DemoStore
     @State private var destination: SidebarDestination? = .projects
     @State private var showCreateProject = false
+    @State private var showCreateIssue = false
+    @State private var showCreateThread = false
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+
+    #if os(macOS)
+    @FocusedValue(\.agentChatDesktopActions) private var actions
+    #endif
 
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -30,7 +37,7 @@ struct RootView: View {
     }
 
     private var splitView: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             List(SidebarDestination.allCases, selection: $destination) { item in
                 Label(item.title, systemImage: item.systemImage)
                     .tag(item)
@@ -108,8 +115,26 @@ struct RootView: View {
             }
         }
         #if os(macOS)
+        .focusedSceneValue(\.agentChatDesktopActions, AgentChatDesktopActions(
+            showNewProjectSheet: { [self] in showCreateProject = true },
+            showNewIssueSheet: { [self] in if store.selectedProjectID != nil { showCreateIssue = true } },
+            showNewWorkspaceThreadSheet: { [self] in if store.selectedIssueID != nil { showCreateThread = true } },
+            showAddAgentsSheet: { },
+            toggleSidebar: { [self] in columnVisibility = columnVisibility == .all ? .detailOnly : .all },
+            focusComposer: { }
+        ))
         .sheet(isPresented: $showCreateProject) {
             CreateProjectSheet()
+        }
+        .sheet(isPresented: $showCreateIssue) {
+            if let pid = store.selectedProjectID {
+                CreateIssueSheet(projectID: pid)
+            }
+        }
+        .sheet(isPresented: $showCreateThread) {
+            if let iid = store.selectedIssueID {
+                CreateThreadSheet(issueID: iid)
+            }
         }
         #endif
         .onAppear {

@@ -1,7 +1,9 @@
 import SwiftUI
 
 struct AgentChatDesktopActions {
-    let showNewThreadSheet: () -> Void
+    let showNewProjectSheet: () -> Void
+    let showNewIssueSheet: () -> Void
+    let showNewWorkspaceThreadSheet: () -> Void
     let showAddAgentsSheet: () -> Void
     let toggleSidebar: () -> Void
     let focusComposer: () -> Void
@@ -25,10 +27,31 @@ struct AgentChatDesktopCommands: Commands {
 
     var body: some Commands {
         CommandMenu("AgentChat") {
-            Button("New Thread") {
-                actions?.showNewThreadSheet()
+            Button("New Project") {
+                actions?.showNewProjectSheet()
+            }
+
+            Button("New Issue") {
+                actions?.showNewIssueSheet()
+            }
+            .disabled(env.workspace.selectedProjectID == nil)
+
+            Button("New Workspace Thread") {
+                actions?.showNewWorkspaceThreadSheet()
             }
             .keyboardShortcut("n")
+            .disabled(env.workspace.selectedIssueID == nil)
+
+            Divider()
+
+            Button("Distill Current Thread") {
+                guard let issueID = env.workspace.selectedIssueID,
+                      let thread = env.workspace.activeThread(for: issueID) else { return }
+                env.workspace.distillThreadIntoIssueSummary(issueID: issueID, threadID: thread.id)
+            }
+            .disabled(env.workspace.selectedThreadID == nil)
+
+            Divider()
 
             Button("Add Agents to Thread") {
                 actions?.showAddAgentsSheet()
