@@ -3,7 +3,7 @@ import SwiftUI
 import CryptoKit
 import Combine
 
-private struct DemoStoreSnapshot: Codable {
+private struct WorkspaceStoreSnapshot: Codable {
     var projects: [Project]
     var agents: [AgentProfile]
     var sessions: [WorkspaceSession]
@@ -115,8 +115,10 @@ final class WorkspaceStore: ObservableObject {
     }
 
     private let legacySnapshotKey = "AgentChatPrototype.DemoStoreSnapshot.v1"
-    private let snapshotDirectoryName = "AgentChatPrototype"
-    private let snapshotFileName = "DemoStoreSnapshot.v1.json"
+    private let legacySnapshotDirectoryName = "AgentChatPrototype"
+    private let legacySnapshotFileName = "DemoStoreSnapshot.v1.json"
+    private let snapshotDirectoryName = "AgentChat"
+    private let snapshotFileName = "WorkspaceStore.v1.json"
     private var isHydratingSnapshot = false
     private var persistenceTask: Task<Void, Never>?
     private var agentDistillationByThreadID: [UUID: AgentDistillationResult] = [:]
@@ -360,6 +362,39 @@ final class WorkspaceStore: ObservableObject {
         selectedIssueID = thread.issueID
         selectedThreadID = thread.id
         return true
+    }
+
+    @discardableResult
+    func selectWorkspaceThread(_ threadID: UUID) -> Bool {
+        guard let thread = thread(for: threadID) else { return false }
+        selectedProjectID = projectID(forIssueID: thread.issueID)
+        selectedIssueID = thread.issueID
+        selectedThreadID = thread.id
+        return true
+    }
+
+    @discardableResult
+    func selectProject(_ projectID: UUID) -> Bool {
+        guard project(for: projectID) != nil else { return false }
+        selectedProjectID = projectID
+        selectedIssueID = currentProject?.issues.first?.id
+        selectedThreadID = nil
+        return true
+    }
+
+    @discardableResult
+    func selectIssue(_ issueID: UUID) -> Bool {
+        guard let pid = projectID(forIssueID: issueID) else { return false }
+        selectedProjectID = pid
+        selectedIssueID = issueID
+        selectedThreadID = nil
+        return true
+    }
+
+    @discardableResult
+    func selectArtifact(_ artifactID: UUID) -> Bool {
+        guard let artifact = artifacts.first(where: { $0.id == artifactID }) else { return false }
+        return selectIssue(artifact.issueID)
     }
 
     func timeline(forThreadID threadID: UUID) -> [TimelineItem] {
@@ -2508,7 +2543,7 @@ final class WorkspaceStore: ObservableObject {
             if FileManager.default.fileExists(atPath: fileURL.path) {
                 do {
                     let data = try Data(contentsOf: fileURL)
-                    let snapshot = try JSONDecoder.prototypeStoreDecoder.decode(DemoStoreSnapshot.self, from: data)
+                    let snapshot = try JSONDecoder.prototypeStoreDecoder.decode(WorkspaceStoreSnapshot.self, from: data)
                     return applySnapshot(snapshot)
                 } catch {
                     print("Failed to restore snapshot: \(error)")
@@ -2520,7 +2555,37 @@ final class WorkspaceStore: ObservableObject {
             print("Failed to locate snapshot file: \(error)")
         }
 
-        return restoreLegacySnapshot()
+        return restoreLegacyFileSnapshot() || restoreLegacySnapshot()
+    }
+
+    private func restoreLegacyFileSnapshot() -> Bool {
+        guard let applicationSupportURL = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else { return false }
+
+        let legacyFileURL = applicationSupportURL
+            .appendingPathComponent(legacySnapshotDirectoryName, isDirectory: true)
+            .appendingPathComponent(legacySnapshotFileName)
+
+        guard FileManager.default.fileExists(atPath: legacyFileURL.path) else { return false }
+
+        do {
+            let data = try Data(contentsOf: legacyFileURL)
+            let snapshot = try JSONDecoder.prototypeStoreDecoder.decode(WorkspaceStoreSnapshot.self, from: data)
+            let restored = applySnapshot(snapshot)
+            if restored {
+                do {
+                    try writeSnapshotData(data)
+                } catch {
+                    print("Failed to migrate snapshot from legacy file path: \(error)")
+                }
+            }
+            return restored
+        } catch {
+            print("Failed to restore legacy file snapshot: \(error)")
+            return false
+        }
     }
 
     private func restoreLegacySnapshot() -> Bool {
@@ -2528,7 +2593,7 @@ final class WorkspaceStore: ObservableObject {
             return false
         }
         do {
-            let snapshot = try JSONDecoder.prototypeStoreDecoder.decode(DemoStoreSnapshot.self, from: data)
+            let snapshot = try JSONDecoder.prototypeStoreDecoder.decode(WorkspaceStoreSnapshot.self, from: data)
             let restored = applySnapshot(snapshot)
             if restored {
                 do {
@@ -2545,8 +2610,8 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
-    private func currentSnapshot() -> DemoStoreSnapshot {
-        DemoStoreSnapshot(
+    private func currentSnapshot() -> WorkspaceStoreSnapshot {
+        WorkspaceStoreSnapshot(
             projects: projects,
             agents: agents,
             sessions: sessions,
@@ -2566,7 +2631,7 @@ final class WorkspaceStore: ObservableObject {
         )
     }
 
-    private func applySnapshot(_ snapshot: DemoStoreSnapshot) -> Bool {
+    private func applySnapshot(_ snapshot: WorkspaceStoreSnapshot) -> Bool {
         projects = snapshot.projects
         agents = snapshot.agents
         sessions = snapshot.sessions
@@ -2603,7 +2668,7 @@ final class WorkspaceStore: ObservableObject {
             in: .userDomainMask
         ).first else {
             throw NSError(
-                domain: "AgentChatPrototype.DemoStore",
+                domain: "AgentChat.WorkspaceStore",
                 code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "Application Support directory is unavailable."]
             )
@@ -2625,7 +2690,7 @@ final class WorkspaceStore: ObservableObject {
     }
 
     private func preserveInvalidSnapshot(at fileURL: URL) {
-        let backupName = "DemoStoreSnapshot.v1.invalid-\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString).json"
+        let backupName = "WorkspaceStoreSnapshot.v1.invalid-\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString).json"
         let backupURL = fileURL.deletingLastPathComponent().appendingPathComponent(backupName)
         do {
             try FileManager.default.moveItem(at: fileURL, to: backupURL)

@@ -9,7 +9,7 @@
 /* Begin PBXBuildFile section */
 		A10000000000000000000001 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* RootView.swift */; };
 		A10000000000000000000002 /* AppModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* AppModels.swift */; };
-		A10000000000000000000003 /* DemoStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* DemoStore.swift */; };
+		A10000000000000000000003 /* WorkspaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* WorkspaceStore.swift */; };
 		A10000000000000000000004 /* DistillationPromptTemplate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* DistillationPromptTemplate.swift */; };
 		A10000000000000000000005 /* PrototypeDaemonAgentBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* PrototypeDaemonAgentBridge.swift */; };
 		A10000000000000000000006 /* Formatters.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* Formatters.swift */; };
@@ -59,7 +59,7 @@
 		9D1111132F7226DF00AE6F49 /* AgentChatDesktopTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AgentChatDesktopTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A20000000000000000000001 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../App/RootView.swift; sourceTree = "<group>"; };
 		A20000000000000000000002 /* AppModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Core/Models/AppModels.swift; sourceTree = "<group>"; };
-		A20000000000000000000003 /* DemoStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Core/Store/DemoStore.swift; sourceTree = "<group>"; };
+		A20000000000000000000003 /* WorkspaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Core/Store/WorkspaceStore.swift; sourceTree = "<group>"; };
 		A20000000000000000000004 /* DistillationPromptTemplate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Core/Store/DistillationPromptTemplate.swift; sourceTree = "<group>"; };
 		A20000000000000000000005 /* PrototypeDaemonAgentBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Core/Store/PrototypeDaemonAgentBridge.swift; sourceTree = "<group>"; };
 		A20000000000000000000006 /* Formatters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Core/Utils/Formatters.swift; sourceTree = "<group>"; };
@@ -180,7 +180,7 @@
 			children = (
 				A20000000000000000000001 /* RootView.swift */,
 				A20000000000000000000002 /* AppModels.swift */,
-				A20000000000000000000003 /* DemoStore.swift */,
+				A20000000000000000000003 /* WorkspaceStore.swift */,
 				A20000000000000000000004 /* DistillationPromptTemplate.swift */,
 				A20000000000000000000005 /* PrototypeDaemonAgentBridge.swift */,
 				A20000000000000000000006 /* Formatters.swift */,
@@ -441,7 +441,7 @@
 				A1000000000000000000000B /* CreateIssueSheet.swift in Sources */,
 				A1000000000000000000000C /* CreateProjectSheet.swift in Sources */,
 				A10000000000000000000010 /* CreateThreadSheet.swift in Sources */,
-				A10000000000000000000003 /* DemoStore.swift in Sources */,
+				A10000000000000000000003 /* WorkspaceStore.swift in Sources */,
 				A10000000000000000000007 /* DesignSystem.swift in Sources */,
 				A10000000000000000000004 /* DistillationPromptTemplate.swift in Sources */,
 				A10000000000000000000006 /* Formatters.swift in Sources */,

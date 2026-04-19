@@ -90,9 +90,17 @@ struct AgentChatDesktopApp: App {
                     bootstrapStoreIfNeeded()
                 }
                 .onOpenURL { url in
-                    if let threadID = AgentChatDesktopURL.threadID(from: url) {
-                        if !env.workspace.selectDaemonThread(threadID) {
-                            env.attachThread(threadID)
+                    if let projectID = AgentChatDesktopURL.projectID(from: url) {
+                        env.workspace.selectProject(projectID)
+                    } else if let issueID = AgentChatDesktopURL.issueID(from: url) {
+                        env.workspace.selectIssue(issueID)
+                    } else if let artifactID = AgentChatDesktopURL.artifactID(from: url) {
+                        env.workspace.selectArtifact(artifactID)
+                    } else if let threadIDStr = AgentChatDesktopURL.threadID(from: url) {
+                        if let uuid = UUID(uuidString: threadIDStr), env.workspace.selectWorkspaceThread(uuid) {
+                            // navigated to local workspace thread
+                        } else if !env.workspace.selectDaemonThread(threadIDStr) {
+                            env.attachThread(threadIDStr)
                         }
                     } else {
                         env.applyScannedConnectionPayload(url.absoluteString)
@@ -147,5 +155,41 @@ enum AgentChatDesktopURL {
         }
 
         return encodedThreadID.removingPercentEncoding ?? encodedThreadID
+    }
+
+    static func projectID(from url: URL) -> UUID? {
+        uuidComponent(from: url, host: "project")
+    }
+
+    static func issueID(from url: URL) -> UUID? {
+        uuidComponent(from: url, host: "issue")
+    }
+
+    static func artifactID(from url: URL) -> UUID? {
+        uuidComponent(from: url, host: "artifact")
+    }
+
+    static func projectLink(for projectID: UUID) -> URL? {
+        URL(string: "agentchat://project/\(projectID.uuidString)")
+    }
+
+    static func issueLink(for issueID: UUID) -> URL? {
+        URL(string: "agentchat://issue/\(issueID.uuidString)")
+    }
+
+    static func workspaceThreadLink(for threadID: UUID) -> URL? {
+        URL(string: "agentchat://thread/\(threadID.uuidString)")
+    }
+
+    static func artifactLink(for artifactID: UUID) -> URL? {
+        URL(string: "agentchat://artifact/\(artifactID.uuidString)")
+    }
+
+    private static func uuidComponent(from url: URL, host: String) -> UUID? {
+        guard url.scheme?.localizedCaseInsensitiveCompare("agentchat") == .orderedSame,
+              url.host?.localizedCaseInsensitiveCompare(host) == .orderedSame else { return nil }
+        let component = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !component.isEmpty else { return nil }
+        return UUID(uuidString: component.removingPercentEncoding ?? component)
     }
 }
