@@ -10,11 +10,18 @@ private enum CompactTab: Hashable {
 
 struct RootView: View {
     @EnvironmentObject private var store: DemoStore
-    @State private var destination: SidebarDestination? = .projects
+    @State private var sidebarItem: SidebarItem? = .destination(.projects)
     @State private var showCreateProject = false
     @State private var showCreateIssue = false
     @State private var showCreateThread = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+
+    private var destination: SidebarDestination? {
+        if case .destination(let dest) = sidebarItem {
+            return dest
+        }
+        return nil
+    }
 
     #if os(macOS)
     @FocusedValue(\.agentChatDesktopActions) private var actions
@@ -38,7 +45,7 @@ struct RootView: View {
 
     private var splitView: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            List(SidebarDestination.allCases, selection: $destination) { item in
+            List(sidebarItems, id: \.self, selection: $sidebarItem) { item in
                 Label(item.title, systemImage: item.systemImage)
                     .tag(item)
             }
@@ -67,23 +74,31 @@ struct RootView: View {
                 #endif
             }
         } content: {
-            switch destination ?? .projects {
-            case .projects:
+            switch sidebarItem {
+            case .destination(.projects):
                 ProjectListView(
                     selectedProjectID: $store.selectedProjectID,
                     selectedIssueID: $store.selectedIssueID,
                     showCreateProject: $showCreateProject
                 )
-            case .inbox:
+            case .destination(.inbox):
                 IssueInboxView(selectedIssueID: $store.selectedIssueID)
-            case .switcher:
+            case .destination(.switcher):
                 SwitcherView(selectedIssueID: $store.selectedIssueID)
-            case .agents:
+            case .destination(.agents):
                 AgentListView()
+            case .settings:
+                SettingsView()
+            case .destination(.projects), .destination(.inbox), .destination(.switcher), .destination(.agents), .none:
+                EmptyStateView(
+                    title: "Select an item",
+                    message: "Choose an item from the sidebar.",
+                    systemImage: "sidebar.left"
+                )
             }
         } detail: {
-            switch destination ?? .projects {
-            case .projects:
+            switch sidebarItem {
+            case .destination(.projects):
                 if let selectedProjectID = store.selectedProjectID {
                     ProjectDashboardView(
                         projectID: selectedProjectID,
@@ -96,7 +111,7 @@ struct RootView: View {
                         systemImage: "folder"
                     )
                 }
-            case .inbox, .switcher:
+            case .destination(.inbox), .destination(.switcher):
                 if let selectedIssueID = store.selectedIssueID {
                     IssueWorkspaceView(issueID: selectedIssueID)
                 } else {
@@ -106,11 +121,19 @@ struct RootView: View {
                         systemImage: "rectangle.and.text.magnifyingglass"
                     )
                 }
-            case .agents:
+            case .destination(.agents):
                 EmptyStateView(
                     title: "Agent roster",
                     message: "Use the list to define personas, capabilities, and future assignment rules.",
                     systemImage: "person.2"
+                )
+            case .settings:
+                SettingsView()
+            case .destination(.projects), .destination(.inbox), .destination(.switcher), .destination(.agents), .none:
+                EmptyStateView(
+                    title: "Select an item",
+                    message: "Choose an item from the sidebar.",
+                    systemImage: "sidebar.left"
                 )
             }
         }

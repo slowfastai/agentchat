@@ -41,6 +41,35 @@ enum SidebarDestination: String, CaseIterable, Hashable, Identifiable {
     }
 }
 
+enum SidebarItem: Hashable, Identifiable {
+    case destination(SidebarDestination)
+    case settings
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .destination(let dest): return dest.title
+        case .settings: return "Settings"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .destination(let dest): return dest.systemImage
+        case .settings: return "gearshape"
+        }
+    }
+}
+
+let sidebarItems: [SidebarItem] = [
+    .destination(.projects),
+    .destination(.inbox),
+    .destination(.switcher),
+    .destination(.agents),
+    .settings
+]
+
 enum ColorToken: String, Hashable, CaseIterable, Codable {
     case blue
     case purple
