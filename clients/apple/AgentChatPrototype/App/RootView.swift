@@ -107,7 +107,7 @@ struct RootView: View {
                 } else {
                     EmptyStateView(
                         title: "Select a project",
-                        message: "Pick a project to review open issues, active threads, and recent outputs.",
+                        message: "Pick a project to review open tasks, active threads, and recent outputs.",
                         systemImage: "folder"
                     )
                 }
@@ -116,8 +116,8 @@ struct RootView: View {
                     IssueWorkspaceView(issueID: selectedIssueID)
                 } else {
                     EmptyStateView(
-                        title: "Select an issue",
-                        message: "Pick an issue from the inbox or switcher to open the workspace.",
+                        title: "Select a task",
+                        message: "Pick a task from the inbox or switcher to open the workspace.",
                         systemImage: "rectangle.and.text.magnifyingglass"
                     )
                 }

@@ -25,7 +25,7 @@ enum SidebarDestination: String, CaseIterable, Hashable, Identifiable {
     var title: String {
         switch self {
         case .projects: return "Projects"
-        case .inbox: return "Issues"
+        case .inbox: return "Tasks"
         case .switcher: return "Switcher"
         case .agents: return "Agents"
         }

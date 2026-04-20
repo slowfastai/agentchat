@@ -56,7 +56,7 @@ struct ProjectListView: View {
                     .foregroundStyle(.secondary)
                 Text("No Projects")
                     .font(.title3.weight(.semibold))
-                Text("Create a project to start managing issues and threads.")
+                Text("Create a project to start managing tasks and threads.")
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -102,7 +102,7 @@ private struct ProjectCard: View {
                         VStack(alignment: .trailing, spacing: 4) {
                             Text("\(project.issues.count)")
                                 .font(.headline.monospacedDigit())
-                            Text("issues")
+                            Text("tasks")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -129,7 +129,7 @@ private struct ProjectCard: View {
                         }
 
                         if project.issues.count > 3 {
-                            Text("+ \(project.issues.count - 3) more issues")
+                            Text("+ \(project.issues.count - 3) more tasks")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -140,7 +140,7 @@ private struct ProjectCard: View {
                     Button {
                         onAddIssue()
                     } label: {
-                        Label("Add Issue", systemImage: "plus")
+                        Label("Add Task", systemImage: "plus")
                             .font(.caption)
                     }
                     .buttonStyle(.bordered)

@@ -28,7 +28,7 @@ struct SwitcherView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Parallel workspaces")
                         .font(.title2.weight(.semibold))
-                    Text("Keep multiple issues, sessions, and agent runs visible at once.")
+                    Text("Keep multiple tasks, sessions, and agent runs visible at once.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }

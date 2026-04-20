@@ -102,9 +102,9 @@ struct ProjectDashboardView: View {
                         .pickerStyle(.segmented)
 
                         if focus != .outputs {
-                            ProjectDashboardSection(title: "Open Issues", systemImage: "list.bullet.rectangle") {
+                            ProjectDashboardSection(title: "Open Tasks", systemImage: "list.bullet.rectangle") {
                                 if openIssues.isEmpty {
-                                    ProjectDashboardEmptyState(text: "No open issues")
+                                    ProjectDashboardEmptyState(text: "No open tasks")
                                 } else {
                                     VStack(spacing: AppSpacing.sm) {
                                         ForEach(openIssues.prefix(6)) { issue in
@@ -225,7 +225,7 @@ struct ProjectDashboardView: View {
         } else {
             EmptyStateView(
                 title: "Select a project",
-                message: "Pick a project to review its issues, active threads, and recent outputs.",
+                message: "Pick a project to review its tasks, active threads, and recent outputs.",
                 systemImage: "folder"
             )
         }
@@ -298,7 +298,7 @@ private struct ProjectMetricGrid: View {
 
     var body: some View {
         HStack(spacing: AppSpacing.md) {
-            ProjectMetricCard(title: "Total Issues", value: "\(totalIssues)", accent: .gray)
+            ProjectMetricCard(title: "Total Tasks", value: "\(totalIssues)", accent: .gray)
             ProjectMetricCard(title: "Open", value: "\(openIssueCount)", accent: .blue)
             ProjectMetricCard(title: "Needs Review", value: "\(reviewIssueCount)", accent: .orange)
             ProjectMetricCard(title: "Running Threads", value: "\(runningThreadCount)", accent: .green)
@@ -467,7 +467,7 @@ private struct ProjectDistilledSummaryRow: View {
             Image(systemName: "doc.text.magnifyingglass")
                 .foregroundStyle(ColorToken.purple.color)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Issue Summary Updated")
+                Text("Task Summary Updated")
                     .font(.subheadline.weight(.semibold))
                 Text("#\(issue.number) \(issue.title)")
                     .font(.caption)
@@ -494,7 +494,7 @@ private struct ProjectFollowUpIssueRow: View {
             Image(systemName: "arrowshape.turn.up.right")
                 .foregroundStyle(ColorToken.orange.color)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Follow-up Issue")
+                Text("Follow-up Task")
                     .font(.subheadline.weight(.semibold))
                 Text("#\(issue.number) \(issue.title)")
                     .font(.caption)

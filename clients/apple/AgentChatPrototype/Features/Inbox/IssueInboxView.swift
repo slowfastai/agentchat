@@ -61,7 +61,7 @@ struct IssueInboxView: View {
                     if filteredIssues.isEmpty {
                         CardSurface {
                             EmptyStateView(
-                                title: "No matching issues",
+                                title: "No matching tasks",
                                 message: "Try another search term or switch the active filter.",
                                 systemImage: "line.3.horizontal.decrease.circle"
                             )
@@ -76,7 +76,7 @@ struct IssueInboxView: View {
             }
             .padding(AppSpacing.lg)
         }
-        .navigationTitle(store.currentProject?.name ?? "Issues")
+        .navigationTitle(store.currentProject?.name ?? "Tasks")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
         #endif
@@ -109,7 +109,7 @@ struct IssueInboxView: View {
             VStack(alignment: .leading, spacing: AppSpacing.md) {
                 HStack(spacing: AppSpacing.md) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Issue inbox")
+                        Text("Task inbox")
                             .font(.title2.weight(.semibold))
                         Text("Scan active work, agent ownership, and the latest project activity.")
                             .font(.subheadline)
@@ -128,7 +128,7 @@ struct IssueInboxView: View {
                 }
 
                 HStack(spacing: AppSpacing.md) {
-                    TextField("Search issues", text: $searchText)
+                    TextField("Search tasks", text: $searchText)
                         .textFieldStyle(.roundedBorder)
 
                     Picker("Filter", selection: $filter) {
@@ -146,7 +146,7 @@ struct IssueInboxView: View {
     private var summaryHeader: some View {
         CardSurface(accent: .purple) {
             HStack(spacing: AppSpacing.xl) {
-                MetricLabel(title: "Visible Issues", value: "\(filteredIssues.count)")
+                MetricLabel(title: "Visible Tasks", value: "\(filteredIssues.count)")
                 MetricLabel(title: "Running", value: "\(runningCount)")
                 MetricLabel(title: "Needs Review", value: "\(reviewCount)")
                 MetricLabel(title: "Today Focus", value: store.currentProject?.name ?? "AgentChat")
