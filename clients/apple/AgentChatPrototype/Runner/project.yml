@@ -19,6 +19,7 @@ targets:
         buildPhase: resources
       - path: ../DesignSystem
       - path: ../Features/Agents
+      - path: ../Features/Settings
       - path: ../Features/Chats
       - path: ../Features/Inbox
       - path: ../Features/Issues

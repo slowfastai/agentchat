@@ -17,7 +17,6 @@ extension ColorToken {
 enum SidebarDestination: String, CaseIterable, Hashable, Identifiable {
     case projects
     case inbox
-    case switcher
     case agents
 
     var id: Self { self }
@@ -25,8 +24,7 @@ enum SidebarDestination: String, CaseIterable, Hashable, Identifiable {
     var title: String {
         switch self {
         case .projects: return "Projects"
-        case .inbox: return "Issues"
-        case .switcher: return "Switcher"
+        case .inbox: return "Tasks"
         case .agents: return "Agents"
         }
     }
@@ -35,11 +33,38 @@ enum SidebarDestination: String, CaseIterable, Hashable, Identifiable {
         switch self {
         case .projects: return "folder"
         case .inbox: return "list.bullet.rectangle"
-        case .switcher: return "square.grid.2x2"
         case .agents: return "person.2"
         }
     }
 }
+
+enum SidebarItem: Hashable, Identifiable {
+    case destination(SidebarDestination)
+    case settings
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .destination(let dest): return dest.title
+        case .settings: return "Settings"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .destination(let dest): return dest.systemImage
+        case .settings: return "gearshape"
+        }
+    }
+}
+
+let sidebarItems: [SidebarItem] = [
+    .destination(.projects),
+    .destination(.inbox),
+    .destination(.agents),
+    .settings
+]
 
 enum ColorToken: String, Hashable, CaseIterable, Codable {
     case blue

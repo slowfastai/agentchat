@@ -1,20 +1,43 @@
 import SwiftUI
 
+enum TaskScope: String, CaseIterable, Hashable, Identifiable {
+    case currentProject
+    case allProjects
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .currentProject: return "Current Project"
+        case .allProjects: return "All Projects"
+        }
+    }
+}
+
 struct IssueInboxView: View {
     @EnvironmentObject private var store: DemoStore
     @Binding var selectedIssueID: UUID?
 
     @State private var searchText = ""
     @State private var filter: IssueFilter = .all
+    @State private var viewMode: SwitcherMode = .list
+    @State private var scope: TaskScope = .currentProject
 
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
 
-    private var filteredIssues: [Issue] {
-        let baseIssues = store.currentProject?.issues ?? store.allIssues
+    private var baseIssues: [Issue] {
+        switch scope {
+        case .currentProject:
+            return store.currentProject?.issues ?? []
+        case .allProjects:
+            return store.allIssues
+        }
+    }
 
-        return baseIssues
+    private var filteredIssues: [Issue] {
+        baseIssues
             .filter { issue in
                 if searchText.isEmpty { return true }
                 let haystack = "\(issue.title) \(issue.summary) \(issue.latestActivityText)".lowercased()
@@ -33,6 +56,27 @@ struct IssueInboxView: View {
                 }
             }
             .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private var workspaceCards: [WorkspaceCardModel] {
+        store.workspaceCards
+            .filter { card in
+                switch scope {
+                case .currentProject:
+                    guard let projectID = store.selectedProjectID,
+                          let project = store.project(for: projectID) else {
+                        return false
+                    }
+                    return project.issues.contains { $0.id == card.issueID }
+                case .allProjects:
+                    return true
+                }
+            }
+            .filter { card in
+                if searchText.isEmpty { return true }
+                let haystack = "\(card.title) \(card.latestPreview)".lowercased()
+                return haystack.contains(searchText.lowercased())
+            }
     }
 
     private var runningCount: Int {
@@ -56,30 +100,72 @@ struct IssueInboxView: View {
             VStack(alignment: .leading, spacing: AppSpacing.md) {
                 toolbar
                 summaryHeader
-
-                LazyVStack(spacing: AppSpacing.md) {
-                    if filteredIssues.isEmpty {
-                        CardSurface {
-                            EmptyStateView(
-                                title: "No matching issues",
-                                message: "Try another search term or switch the active filter.",
-                                systemImage: "line.3.horizontal.decrease.circle"
-                            )
-                            .frame(minHeight: 260)
-                        }
-                    } else {
-                        ForEach(filteredIssues) { issue in
-                            issueRow(for: issue)
-                        }
-                    }
-                }
+                content
             }
             .padding(AppSpacing.lg)
         }
-        .navigationTitle(store.currentProject?.name ?? "Issues")
+        .navigationTitle(store.currentProject?.name ?? "Tasks")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
         #endif
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch viewMode {
+        case .list:
+            LazyVStack(spacing: AppSpacing.md) {
+                if filteredIssues.isEmpty {
+                    emptyState
+                } else {
+                    ForEach(filteredIssues) { issue in
+                        issueRow(for: issue)
+                    }
+                }
+            }
+        case .grid:
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: AppSpacing.md)], spacing: AppSpacing.md) {
+                if workspaceCards.isEmpty {
+                    emptyState
+                } else {
+                    ForEach(workspaceCards) { card in
+                        gridCard(for: card)
+                    }
+                }
+            }
+        case .focus:
+            HStack(alignment: .top, spacing: AppSpacing.md) {
+                if let selected = workspaceCards.first(where: { $0.issueID == selectedIssueID }) ?? workspaceCards.first {
+                    focusCard(for: selected)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+
+                    VStack(spacing: AppSpacing.md) {
+                        ForEach(workspaceCards.filter { $0.issueID != selectedIssueID }) { card in
+                            Button {
+                                selectedIssueID = card.issueID
+                            } label: {
+                                WorkspaceCard(card: card, isSelected: false)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .frame(width: 320)
+                } else {
+                    emptyState
+                }
+            }
+        }
+    }
+
+    private var emptyState: some View {
+        CardSurface {
+            EmptyStateView(
+                title: "No matching tasks",
+                message: "Try another search term or switch the active filter.",
+                systemImage: "line.3.horizontal.decrease.circle"
+            )
+            .frame(minHeight: 260)
+        }
     }
 
     @ViewBuilder
@@ -104,12 +190,27 @@ struct IssueInboxView: View {
         }
     }
 
+    @ViewBuilder
+    private func gridCard(for card: WorkspaceCardModel) -> some View {
+        Button {
+            selectedIssueID = card.issueID
+        } label: {
+            WorkspaceCard(card: card, isSelected: selectedIssueID == card.issueID)
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func focusCard(for card: WorkspaceCardModel) -> some View {
+        WorkspaceFocusCard(card: card)
+    }
+
     private var toolbar: some View {
         CardSurface(accent: .blue) {
             VStack(alignment: .leading, spacing: AppSpacing.md) {
                 HStack(spacing: AppSpacing.md) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Issue inbox")
+                        Text("Task inbox")
                             .font(.title2.weight(.semibold))
                         Text("Scan active work, agent ownership, and the latest project activity.")
                             .font(.subheadline)
@@ -118,17 +219,17 @@ struct IssueInboxView: View {
 
                     Spacer()
 
-                    Picker("Project", selection: $store.selectedProjectID) {
-                        ForEach(store.projects) { project in
-                            Text(project.name).tag(Optional(project.id))
+                    Picker("Scope", selection: $scope) {
+                        ForEach(TaskScope.allCases) { item in
+                            Text(item.title).tag(item)
                         }
                     }
                     .pickerStyle(.menu)
-                    .frame(maxWidth: 180)
+                    .frame(maxWidth: 160)
                 }
 
                 HStack(spacing: AppSpacing.md) {
-                    TextField("Search issues", text: $searchText)
+                    TextField("Search tasks", text: $searchText)
                         .textFieldStyle(.roundedBorder)
 
                     Picker("Filter", selection: $filter) {
@@ -137,7 +238,17 @@ struct IssueInboxView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    .frame(maxWidth: 380)
+                    .frame(maxWidth: 280)
+
+                    Spacer()
+
+                    Picker("View", selection: $viewMode) {
+                        ForEach(SwitcherMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 200)
                 }
             }
         }
@@ -146,10 +257,10 @@ struct IssueInboxView: View {
     private var summaryHeader: some View {
         CardSurface(accent: .purple) {
             HStack(spacing: AppSpacing.xl) {
-                MetricLabel(title: "Visible Issues", value: "\(filteredIssues.count)")
+                MetricLabel(title: "Visible Tasks", value: "\(filteredIssues.count)")
                 MetricLabel(title: "Running", value: "\(runningCount)")
                 MetricLabel(title: "Needs Review", value: "\(reviewCount)")
-                MetricLabel(title: "Today Focus", value: store.currentProject?.name ?? "AgentChat")
+                MetricLabel(title: "Scope", value: scope.title)
                 Spacer()
             }
         }
@@ -215,6 +326,103 @@ private struct IssueRowCard: View {
                     Text(issue.latestActivityText)
                         .font(.subheadline)
                         .multilineTextAlignment(.leading)
+                }
+            }
+        }
+    }
+}
+
+private struct WorkspaceCard: View {
+    let card: WorkspaceCardModel
+    let isSelected: Bool
+
+    var body: some View {
+        CardSurface(accent: card.state.badgeColor, isSelected: isSelected) {
+            VStack(alignment: .leading, spacing: AppSpacing.md) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("#\(card.issueNumber)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        Text(card.title)
+                            .font(.headline)
+                            .multilineTextAlignment(.leading)
+                    }
+                    Spacer()
+                    StatusBadge(text: card.state.title, color: card.state.badgeColor)
+                }
+
+                HStack(spacing: 8) {
+                    ForEach(card.participants, id: \.self) { participant in
+                        PillView(text: participant, color: accent(for: participant))
+                    }
+                }
+
+                Text(card.latestPreview)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(3)
+
+                HStack {
+                    MetricLabel(title: "Elapsed", value: AppFormatters.durationString(seconds: card.elapsedSeconds))
+                    Spacer()
+                    if let activeTool = card.activeTool {
+                        PillView(text: activeTool, color: .orange)
+                    }
+                }
+            }
+        }
+    }
+
+    private func accent(for participant: String) -> ColorToken {
+        switch participant {
+        case "Claude": return .blue
+        case "Codex": return .green
+        case "Pi": return .purple
+        default: return .gray
+        }
+    }
+}
+
+private struct WorkspaceFocusCard: View {
+    let card: WorkspaceCardModel
+
+    var body: some View {
+        CardSurface(accent: card.state.badgeColor, isSelected: true) {
+            VStack(alignment: .leading, spacing: AppSpacing.md) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Focused workspace")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text("#\(card.issueNumber) \(card.title)")
+                            .font(.title2.weight(.bold))
+                    }
+                    Spacer()
+                    StatusBadge(text: card.state.title, color: card.state.badgeColor)
+                }
+
+                HStack(spacing: 8) {
+                    ForEach(card.participants, id: \.self) { participant in
+                        PillView(text: participant, color: .gray)
+                    }
+                }
+
+                CardSurface(accent: .gray) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Latest output")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(card.latestPreview)
+                            .font(.body)
+                    }
+                }
+
+                HStack(spacing: AppSpacing.xl) {
+                    MetricLabel(title: "Elapsed", value: AppFormatters.durationString(seconds: card.elapsedSeconds))
+                    MetricLabel(title: "Tool", value: card.activeTool ?? "None")
+                    Spacer()
                 }
             }
         }

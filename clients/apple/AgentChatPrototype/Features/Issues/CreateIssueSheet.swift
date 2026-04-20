@@ -31,7 +31,7 @@ struct CreateIssueSheet: View {
 
     private var header: some View {
         HStack {
-            Text("New Issue")
+            Text("New Task")
                 .font(.headline)
             Spacer()
             Button {
@@ -48,7 +48,7 @@ struct CreateIssueSheet: View {
     private var formContent: some View {
         Form {
             Section {
-                TextField("Issue Title", text: $title)
+                TextField("Task Title", text: $title)
                     .textFieldStyle(.roundedBorder)
             } header: {
                 Text("Title")

@@ -190,8 +190,8 @@ struct IssueWorkspaceView: View {
             }
         } else {
             EmptyStateView(
-                title: "Issue not found",
-                message: "The selected issue is no longer available in the mock store.",
+                title: "Task not found",
+                message: "The selected task is no longer available in the mock store.",
                 systemImage: "exclamationmark.triangle"
             )
         }
@@ -310,7 +310,7 @@ private struct IssueThreadRail: View {
                             .foregroundStyle(.secondary)
                         Text("No threads yet")
                             .font(.subheadline.weight(.semibold))
-                        Text("Start a thread to organize agent work for this issue.")
+                        Text("Start a thread to organize agent work for this task.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -417,7 +417,7 @@ private struct ThreadEmptyState: View {
                     .foregroundStyle(.secondary)
                 Text("Start the first thread")
                     .font(.title3.weight(.semibold))
-                Text("Threads keep research, implementation, review, and debugging work separate under the same issue.")
+                Text("Threads keep research, implementation, review, and debugging work separate under the same task.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -486,7 +486,7 @@ private struct IssueInspectorPanel: View {
                     inspectorSection("Follow-up Issues", systemImage: "arrowshape.turn.up.right") {
                         let followUps = store.followUpIssues(for: issue.id)
                         if followUps.isEmpty {
-                            PlaceholderInspectorRow(text: "No follow-up issues created yet")
+                            PlaceholderInspectorRow(text: "No follow-up tasks created yet")
                         } else {
                             VStack(spacing: AppSpacing.sm) {
                                 ForEach(followUps) { followUp in

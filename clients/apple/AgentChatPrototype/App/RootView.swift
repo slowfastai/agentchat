@@ -10,11 +10,18 @@ private enum CompactTab: Hashable {
 
 struct RootView: View {
     @EnvironmentObject private var store: DemoStore
-    @State private var destination: SidebarDestination? = .projects
+    @State private var sidebarItem: SidebarItem? = .destination(.projects)
     @State private var showCreateProject = false
     @State private var showCreateIssue = false
     @State private var showCreateThread = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+
+    private var destination: SidebarDestination? {
+        if case .destination(let dest) = sidebarItem {
+            return dest
+        }
+        return nil
+    }
 
     #if os(macOS)
     @FocusedValue(\.agentChatDesktopActions) private var actions
@@ -38,7 +45,7 @@ struct RootView: View {
 
     private var splitView: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            List(SidebarDestination.allCases, selection: $destination) { item in
+            List(sidebarItems, id: \.self, selection: $sidebarItem) { item in
                 Label(item.title, systemImage: item.systemImage)
                     .tag(item)
             }
@@ -67,23 +74,29 @@ struct RootView: View {
                 #endif
             }
         } content: {
-            switch destination ?? .projects {
-            case .projects:
+            switch sidebarItem {
+            case .destination(.projects):
                 ProjectListView(
                     selectedProjectID: $store.selectedProjectID,
                     selectedIssueID: $store.selectedIssueID,
                     showCreateProject: $showCreateProject
                 )
-            case .inbox:
+            case .destination(.inbox):
                 IssueInboxView(selectedIssueID: $store.selectedIssueID)
-            case .switcher:
-                SwitcherView(selectedIssueID: $store.selectedIssueID)
-            case .agents:
+            case .destination(.agents):
                 AgentListView()
+            case .settings:
+                SettingsView()
+            case .destination(.projects), .destination(.inbox), .destination(.agents), .none:
+                EmptyStateView(
+                    title: "Select an item",
+                    message: "Choose an item from the sidebar.",
+                    systemImage: "sidebar.left"
+                )
             }
         } detail: {
-            switch destination ?? .projects {
-            case .projects:
+            switch sidebarItem {
+            case .destination(.projects):
                 if let selectedProjectID = store.selectedProjectID {
                     ProjectDashboardView(
                         projectID: selectedProjectID,
@@ -92,25 +105,33 @@ struct RootView: View {
                 } else {
                     EmptyStateView(
                         title: "Select a project",
-                        message: "Pick a project to review open issues, active threads, and recent outputs.",
+                        message: "Pick a project to review open tasks, active threads, and recent outputs.",
                         systemImage: "folder"
                     )
                 }
-            case .inbox, .switcher:
+            case .destination(.inbox):
                 if let selectedIssueID = store.selectedIssueID {
                     IssueWorkspaceView(issueID: selectedIssueID)
                 } else {
                     EmptyStateView(
-                        title: "Select an issue",
-                        message: "Pick an issue from the inbox or switcher to open the workspace.",
+                        title: "Select a task",
+                        message: "Pick a task from the inbox to open the workspace.",
                         systemImage: "rectangle.and.text.magnifyingglass"
                     )
                 }
-            case .agents:
+            case .destination(.agents):
                 EmptyStateView(
                     title: "Agent roster",
                     message: "Use the list to define personas, capabilities, and future assignment rules.",
                     systemImage: "person.2"
+                )
+            case .settings:
+                SettingsView()
+            case .destination(.projects), .destination(.inbox), .destination(.agents), .none:
+                EmptyStateView(
+                    title: "Select an item",
+                    message: "Choose an item from the sidebar.",
+                    systemImage: "sidebar.left"
                 )
             }
         }
