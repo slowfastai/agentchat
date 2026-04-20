@@ -83,13 +83,11 @@ struct RootView: View {
                 )
             case .destination(.inbox):
                 IssueInboxView(selectedIssueID: $store.selectedIssueID)
-            case .destination(.switcher):
-                SwitcherView(selectedIssueID: $store.selectedIssueID)
             case .destination(.agents):
                 AgentListView()
             case .settings:
                 SettingsView()
-            case .destination(.projects), .destination(.inbox), .destination(.switcher), .destination(.agents), .none:
+            case .destination(.projects), .destination(.inbox), .destination(.agents), .none:
                 EmptyStateView(
                     title: "Select an item",
                     message: "Choose an item from the sidebar.",
@@ -111,13 +109,13 @@ struct RootView: View {
                         systemImage: "folder"
                     )
                 }
-            case .destination(.inbox), .destination(.switcher):
+            case .destination(.inbox):
                 if let selectedIssueID = store.selectedIssueID {
                     IssueWorkspaceView(issueID: selectedIssueID)
                 } else {
                     EmptyStateView(
                         title: "Select a task",
-                        message: "Pick a task from the inbox or switcher to open the workspace.",
+                        message: "Pick a task from the inbox to open the workspace.",
                         systemImage: "rectangle.and.text.magnifyingglass"
                     )
                 }
@@ -129,7 +127,7 @@ struct RootView: View {
                 )
             case .settings:
                 SettingsView()
-            case .destination(.projects), .destination(.inbox), .destination(.switcher), .destination(.agents), .none:
+            case .destination(.projects), .destination(.inbox), .destination(.agents), .none:
                 EmptyStateView(
                     title: "Select an item",
                     message: "Choose an item from the sidebar.",
