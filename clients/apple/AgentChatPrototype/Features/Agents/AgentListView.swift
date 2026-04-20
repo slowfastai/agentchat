@@ -111,7 +111,6 @@ struct AgentListView: View {
             .modifier(ActiveEditModeModifier())
             .scrollContentBackground(.hidden)
             .background(Color.appCanvasBackground)
-            .searchable(text: $searchText, prompt: "Search agents")
             .navigationTitle("Agent Friends")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
