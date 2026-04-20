@@ -8,7 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		0ADDEF70B491C1839A16E186 /* PrototypeDaemonAgentBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CF5DC6388E5591E8287BBBA /* PrototypeDaemonAgentBridge.swift */; };
-		0AFE677CC88A5F5522430F68 /* SwitcherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DF695AA6201F776A1721D9A /* SwitcherView.swift */; };
 		0D250B9FD9B5E3D5D60A4231 /* DistillationPromptTemplate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1148E460D77978971B25BA5 /* DistillationPromptTemplate.swift */; };
 		1F46EE64EF99EC4656408C2F /* IssueWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 796CE19995A917AA0195620B /* IssueWorkspaceView.swift */; };
 		305F26C84B8186E27B84A8BA /* distillation_prompt_template_claude.json in Resources */ = {isa = PBXBuildFile; fileRef = D560DE83235C159A2369C572 /* distillation_prompt_template_claude.json */; };
@@ -38,7 +37,6 @@
 
 /* Begin PBXFileReference section */
 		002A1CF3C44D6B50B6BA2F0B /* AgentChatPrototypeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentChatPrototypeApp.swift; sourceTree = "<group>"; };
-		0DF695AA6201F776A1721D9A /* SwitcherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwitcherView.swift; sourceTree = "<group>"; };
 		103DF82FD34BD6F4902931DA /* CreateProjectSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreateProjectSheet.swift; sourceTree = "<group>"; };
 		15524790CD5EEF7CABD9FBB3 /* distillation_prompt_template.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = distillation_prompt_template.json; sourceTree = "<group>"; };
 		183F5708000AB507F96F8A8F /* IssueOutputSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IssueOutputSheets.swift; sourceTree = "<group>"; };
@@ -145,15 +143,6 @@
 			path = ../Features/Projects;
 			sourceTree = "<group>";
 		};
-		7D06FF4A08C219424AA54EA8 /* Switcher */ = {
-			isa = PBXGroup;
-			children = (
-				0DF695AA6201F776A1721D9A /* SwitcherView.swift */,
-			);
-			name = Switcher;
-			path = ../Features/Switcher;
-			sourceTree = "<group>";
-		};
 		82D3B1CBB8BBFB376D5968E3 = {
 			isa = PBXGroup;
 			children = (
@@ -170,7 +159,6 @@
 				5B48DA16969B8506B7AFC9AF /* Settings */,
 				C1CEDF93E9D3139AB6C274F9 /* Shared */,
 				2187062EE9711E9146806C1C /* Store */,
-				7D06FF4A08C219424AA54EA8 /* Switcher */,
 				E0CD7BA11121401922DB8347 /* Utils */,
 				0EE7A4CD53D055DEDAC882C8 /* Workspace */,
 				5CC47FDA2B6216D50E4808EE /* Products */,
@@ -345,7 +333,6 @@
 				0ADDEF70B491C1839A16E186 /* PrototypeDaemonAgentBridge.swift in Sources */,
 				57E883B1CD47C3FE13D0AA30 /* RootView.swift in Sources */,
 				C97119E76784162BCF151CA3 /* SettingsView.swift in Sources */,
-				0AFE677CC88A5F5522430F68 /* SwitcherView.swift in Sources */,
 				6C8266A95C717716B30AF257 /* WorkspaceStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
