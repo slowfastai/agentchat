@@ -3,6 +3,25 @@ import SwiftUI
 
 extension ColorToken {
     var color: Color {
+        #if canImport(UIKit)
+        switch self {
+        case .blue: return Color(uiColor: .systemBlue)
+        case .purple: return Color(uiColor: .systemPurple)
+        case .green: return Color(uiColor: .systemGreen)
+        case .orange: return Color(uiColor: .systemOrange)
+        case .red: return Color(uiColor: .systemRed)
+        case .gray: return Color(uiColor: .secondaryLabel)
+        }
+        #elseif canImport(AppKit)
+        switch self {
+        case .blue: return Color(nsColor: .controlAccentColor)
+        case .purple: return Color(nsColor: .systemPurple)
+        case .green: return Color(nsColor: .systemGreen)
+        case .orange: return Color(nsColor: .systemOrange)
+        case .red: return Color(nsColor: .systemRed)
+        case .gray: return .secondary
+        }
+        #else
         switch self {
         case .blue: return .blue
         case .purple: return .purple
@@ -11,6 +30,7 @@ extension ColorToken {
         case .red: return .red
         case .gray: return .gray
         }
+        #endif
     }
 }
 

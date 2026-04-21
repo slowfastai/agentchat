@@ -178,7 +178,7 @@ struct RootView: View {
                 HStack(spacing: 10) {
                     Image(systemName: DesktopSection.settings.systemImage)
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(selectedSection == .settings ? Color(DesktopSection.settings.accent) : .secondary)
+                        .foregroundStyle(selectedSection == .settings ? .primary : .secondary)
                     Text("Settings")
                         .font(.callout.weight(.semibold))
                         .foregroundStyle(selectedSection == .settings ? .primary : .secondary)
@@ -198,7 +198,6 @@ struct RootView: View {
             .buttonStyle(.plain)
             .padding(AppSpacing.md)
         }
-        .background(Color.appSidebarBackground)
     }
 
     @ViewBuilder
@@ -322,7 +321,7 @@ private struct DesktopPrimaryNavigation: View {
                     VStack(spacing: 4) {
                         Image(systemName: section.systemImage)
                             .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(selectedSection == section ? Color(section.accent) : .secondary)
+                            .foregroundStyle(selectedSection == section ? .primary : .secondary)
                         Text(section.title)
                             .font(.caption2.weight(.semibold))
                             .lineLimit(1)
@@ -427,12 +426,12 @@ private struct DesktopChatRow: View {
             HStack(alignment: .top, spacing: 10) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color(thread.accent).opacity(0.10))
+                        .fill(Color.appSubtleFill)
                         .frame(width: 40, height: 40)
 
                     Image(systemName: thread.participants.count > 1 ? "person.2.fill" : "bubble.left.fill")
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Color(thread.accent))
+                        .foregroundStyle(isSelected ? .primary : .secondary)
                 }
 
                 VStack(alignment: .leading, spacing: 5) {
@@ -469,7 +468,7 @@ private struct DesktopChatRow: View {
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 4)
-                                .background(Color.red, in: Capsule())
+                                .background(AppColors.unreadBadge, in: Capsule())
                         } else {
                             StatusBadge(text: thread.state.title, color: thread.state.badgeColor)
                         }
@@ -530,7 +529,7 @@ private struct DesktopProjectRow: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: "folder.fill")
-                        .foregroundStyle(Color(project.color))
+                        .foregroundStyle(isSelected ? .primary : .secondary)
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text(project.name)
@@ -643,7 +642,7 @@ private struct DesktopTaskRow: View {
                     if let project {
                         Text(project.name)
                             .font(.caption2)
-                            .foregroundStyle(Color(project.color))
+                            .foregroundStyle(.secondary)
                     }
 
                     Spacer()

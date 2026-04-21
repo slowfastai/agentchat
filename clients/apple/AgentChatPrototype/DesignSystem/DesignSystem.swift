@@ -14,20 +14,37 @@ extension Color {
     }
 
     init(token: ColorToken) {
+        #if canImport(UIKit)
         switch token {
         case .blue:
-            self = .blue
+            self = Color(uiColor: .systemBlue)
         case .purple:
-            self = .purple
+            self = Color(uiColor: .systemPurple)
         case .green:
-            self = .green
+            self = Color(uiColor: .systemGreen)
         case .orange:
-            self = .orange
+            self = Color(uiColor: .systemOrange)
         case .red:
-            self = .red
+            self = Color(uiColor: .systemRed)
         case .gray:
-            self = .gray
+            self = Color(uiColor: .secondaryLabel)
         }
+        #else
+        switch token {
+        case .blue:
+            self = Color(nsColor: .controlAccentColor)
+        case .purple:
+            self = Color(nsColor: .systemPurple)
+        case .green:
+            self = Color(nsColor: .systemGreen)
+        case .orange:
+            self = Color(nsColor: .systemOrange)
+        case .red:
+            self = Color(nsColor: .systemRed)
+        case .gray:
+            self = Color.secondary
+        }
+        #endif
     }
 }
 
@@ -138,17 +155,17 @@ extension Color {
 
     static var appSelectionFill: Color {
         #if canImport(UIKit)
-        Color.accentColor.opacity(0.12)
+        Color.accentColor.opacity(0.10)
         #else
-        Color(nsColor: .selectedContentBackgroundColor).opacity(0.16)
+        Color(nsColor: .selectedContentBackgroundColor).opacity(0.11)
         #endif
     }
 
     static var appSelectionStroke: Color {
         #if canImport(UIKit)
-        Color.accentColor.opacity(0.24)
+        Color.accentColor.opacity(0.16)
         #else
-        Color(nsColor: .selectedContentBackgroundColor).opacity(0.36)
+        Color(nsColor: .selectedContentBackgroundColor).opacity(0.22)
         #endif
     }
 }
@@ -289,12 +306,12 @@ struct CardSurface<Content: View>: View {
             .padding(padding)
             .background(
                 RoundedRectangle(cornerRadius: AppRadius.card, style: .continuous)
-                    .fill(Color.appElevatedBackground)
+                    .fill(Color.appCardBackground)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: AppRadius.card, style: .continuous)
                     .fill(Color.appSelectionFill)
-                    .opacity(isSelected ? 1 : 0)
+                    .opacity(isSelected ? 0.9 : 0)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: AppRadius.card, style: .continuous)
@@ -315,11 +332,11 @@ struct StatusBadge: View {
             .padding(.vertical, 4)
             .background(
                 Capsule()
-                    .fill(color == .gray ? Color.appSubtleFill : Color(color).opacity(0.12))
+                    .fill(color == .gray ? Color.appSubtleFill : Color(color).opacity(0.08))
             )
             .overlay(
                 Capsule()
-                    .stroke(color == .gray ? Color.appHairline : Color(color).opacity(0.16), lineWidth: 1)
+                    .stroke(color == .gray ? Color.appHairline : Color(color).opacity(0.10), lineWidth: 1)
             )
     }
 }
@@ -332,16 +349,16 @@ struct PillView: View {
     var body: some View {
         Text(text)
             .font(.caption2.weight(.medium))
-            .foregroundStyle(isSelected ? (color == .gray ? .primary : Color(color)) : (color == .gray ? .secondary : Color(color)))
+            .foregroundStyle(isSelected ? .primary : .secondary)
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
             .background(
                 Capsule()
-                    .fill(isSelected ? Color.appSelectionFill : (color == .gray ? Color.appSubtleFill : Color(color).opacity(0.12)))
+                    .fill(isSelected ? Color.appSelectionFill : Color.appSubtleFill)
             )
             .overlay(
                 Capsule()
-                    .stroke(isSelected ? Color.appSelectionStroke : (color == .gray ? Color.appHairline : Color(color).opacity(0.14)), lineWidth: 1)
+                    .stroke(isSelected ? (color == .gray ? Color.appSelectionStroke : Color(color).opacity(0.12)) : Color.appHairline, lineWidth: 1)
             )
     }
 }
@@ -354,12 +371,12 @@ struct AvatarView: View {
     var body: some View {
         ZStack {
             Circle()
-                .fill(Color(accent).opacity(0.10))
+                .fill(Color.appSubtleFill)
             Circle()
-                .stroke(Color.appHairline, lineWidth: 1)
+                .stroke(accent == .gray ? Color.appHairline : Color(accent).opacity(0.12), lineWidth: 1)
             Text(initials)
                 .font(.system(size: size * 0.38, weight: .semibold))
-                .foregroundStyle(Color(accent))
+                .foregroundStyle(.primary)
         }
         .frame(width: size, height: size)
     }
