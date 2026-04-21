@@ -89,12 +89,6 @@ private struct ProjectCard: View {
                                 Text(project.name)
                                     .font(.title3.weight(.semibold))
                             }
-
-                            Text(project.repoPath)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
                         }
 
                         Spacer()

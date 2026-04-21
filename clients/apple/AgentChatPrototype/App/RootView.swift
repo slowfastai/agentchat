@@ -486,12 +486,6 @@ private struct DesktopProjectsSidebar: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: AppSpacing.sm) {
-                DesktopSectionIntro(
-                    section: .projects,
-                    metricLabel: "projects",
-                    metricValue: "\(store.projects.count)"
-                )
-
                 if store.projects.isEmpty {
                     EmptyStateView(
                         title: "No projects",
@@ -515,6 +509,7 @@ private struct DesktopProjectsSidebar: View {
                     }
                 }
             }
+            .padding(.top, AppSpacing.md)
             .padding(.bottom, AppSpacing.md)
         }
     }
@@ -531,29 +526,14 @@ private struct DesktopProjectRow: View {
                     Image(systemName: "folder.fill")
                         .foregroundStyle(isSelected ? .primary : .secondary)
 
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 8) {
                         Text(project.name)
                             .font(.callout.weight(.semibold))
                             .lineLimit(1)
-
-                        Text(project.repoPath)
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                        MetricLabel(title: "Tasks", value: "\(project.issues.count)")
                     }
 
                     Spacer()
-                }
-
-                HStack(spacing: 8) {
-                    MetricLabel(title: "Tasks", value: "\(project.issues.count)")
-                    Spacer()
-                    if let recentIssue = project.issues.sorted(by: { $0.updatedAt > $1.updatedAt }).first {
-                        Text("#\(recentIssue.number)")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
                 }
             }
         }
