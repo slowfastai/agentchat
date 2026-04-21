@@ -100,6 +100,7 @@ struct ProjectDashboardView: View {
                             }
                         }
                         .pickerStyle(.segmented)
+                        .controlSize(.small)
 
                         if focus != .outputs {
                             ProjectDashboardSection(title: "Open Tasks", systemImage: "list.bullet.rectangle") {
@@ -247,18 +248,18 @@ private struct ProjectDashboardHeader: View {
     let onTemplateChange: (DistillationTemplateFamily) -> Void
 
     var body: some View {
-        CardSurface(accent: project.color) {
-            VStack(alignment: .leading, spacing: AppSpacing.md) {
+        CardSurface(accent: project.color, padding: AppSpacing.md) {
+            VStack(alignment: .leading, spacing: AppSpacing.sm) {
                 HStack(alignment: .top, spacing: AppSpacing.md) {
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 8) {
                             Image(systemName: "folder.fill")
                                 .foregroundStyle(Color(project.color))
                             Text(project.name)
-                                .font(.title2.weight(.bold))
+                                .font(.title3.weight(.semibold))
                         }
                         Text(project.repoPath)
-                            .font(.caption.monospaced())
+                            .font(.caption2.monospaced())
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
                     }
@@ -275,6 +276,7 @@ private struct ProjectDashboardHeader: View {
                         }
                         .menuStyle(.borderlessButton)
                         .buttonStyle(.bordered)
+                        .controlSize(.small)
 
                         StatusBadge(text: "\(openIssueCount) Open", color: .blue)
                         if reviewIssueCount > 0 {
@@ -312,12 +314,12 @@ private struct ProjectMetricCard: View {
     let accent: ColorToken
 
     var body: some View {
-        CardSurface(accent: accent) {
-            VStack(alignment: .leading, spacing: 6) {
+        CardSurface(accent: accent, padding: AppSpacing.md) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(value)
-                    .font(.title2.monospacedDigit().weight(.bold))
+                    .font(.title3.monospacedDigit().weight(.semibold))
                 Text(title)
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -331,13 +333,13 @@ private struct ProjectDashboardSection<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        CardSurface(accent: .gray) {
-            VStack(alignment: .leading, spacing: AppSpacing.md) {
+        CardSurface(accent: .gray, padding: AppSpacing.md) {
+            VStack(alignment: .leading, spacing: AppSpacing.sm) {
                 HStack(spacing: 8) {
                     Image(systemName: systemImage)
                         .foregroundStyle(.secondary)
                     Text(title)
-                        .font(.headline)
+                        .font(.callout.weight(.semibold))
                 }
                 content
             }
@@ -350,13 +352,13 @@ private struct ProjectIssueRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: AppSpacing.md) {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text("#\(issue.number)")
-                        .font(.caption.monospacedDigit())
+                        .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                     Text(issue.title)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.callout.weight(.semibold))
                 }
                 Text(issue.latestActivityText.isEmpty ? issue.summary : issue.latestActivityText)
                     .font(.caption)
@@ -366,9 +368,9 @@ private struct ProjectIssueRow: View {
             Spacer(minLength: 0)
             StatusBadge(text: issue.status.title, color: issue.status.badgeColor)
         }
-        .padding(12)
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(issue.status.badgeColor.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(issue.status.badgeColor.color.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
@@ -378,9 +380,9 @@ private struct RunningThreadRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: AppSpacing.md) {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(thread.title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.callout.weight(.semibold))
                 Text("#\(issue.number) \(issue.title)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -395,9 +397,9 @@ private struct RunningThreadRow: View {
                 StatusBadge(text: thread.state.title, color: thread.state.badgeColor)
             }
         }
-        .padding(12)
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(thread.purpose.badgeColor.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(thread.purpose.badgeColor.color.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
@@ -411,7 +413,7 @@ private struct ProjectArtifactRow: View {
                 .foregroundStyle(artifact.kind.accent.color)
             VStack(alignment: .leading, spacing: 4) {
                 Text(artifact.title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.callout.weight(.semibold))
                 if let issue {
                     Text("#\(issue.number) \(issue.title)")
                         .font(.caption)
@@ -424,9 +426,9 @@ private struct ProjectArtifactRow: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(12)
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(artifact.kind.accent.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(artifact.kind.accent.color.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
@@ -440,7 +442,7 @@ private struct ProjectDecisionRow: View {
                 .foregroundStyle(ColorToken.green.color)
             VStack(alignment: .leading, spacing: 4) {
                 Text(decision.title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.callout.weight(.semibold))
                 if let issue {
                     Text("#\(issue.number) \(issue.title)")
                         .font(.caption)
@@ -453,9 +455,9 @@ private struct ProjectDecisionRow: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(12)
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ColorToken.green.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(ColorToken.green.color.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
@@ -468,7 +470,7 @@ private struct ProjectDistilledSummaryRow: View {
                 .foregroundStyle(ColorToken.purple.color)
             VStack(alignment: .leading, spacing: 4) {
                 Text("Task Summary Updated")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.callout.weight(.semibold))
                 Text("#\(issue.number) \(issue.title)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -479,9 +481,9 @@ private struct ProjectDistilledSummaryRow: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(12)
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ColorToken.purple.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(ColorToken.purple.color.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
@@ -495,7 +497,7 @@ private struct ProjectFollowUpIssueRow: View {
                 .foregroundStyle(ColorToken.orange.color)
             VStack(alignment: .leading, spacing: 4) {
                 Text("Follow-up Task")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.callout.weight(.semibold))
                 Text("#\(issue.number) \(issue.title)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -512,9 +514,9 @@ private struct ProjectFollowUpIssueRow: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(12)
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ColorToken.orange.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(ColorToken.orange.color.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
@@ -525,8 +527,8 @@ private struct ProjectDashboardEmptyState: View {
         Text(text)
             .font(.caption)
             .foregroundStyle(.secondary)
-            .padding(12)
+            .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(Color.appSubtleFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }

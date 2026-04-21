@@ -178,22 +178,27 @@ struct RootView: View {
                 HStack(spacing: 10) {
                     Image(systemName: DesktopSection.settings.systemImage)
                         .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(selectedSection == .settings ? Color(DesktopSection.settings.accent) : .secondary)
                     Text("Settings")
-                        .font(.subheadline.weight(.semibold))
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(selectedSection == .settings ? .primary : .secondary)
                     Spacer()
                 }
-                .foregroundStyle(selectedSection == .settings ? Color(DesktopSection.settings.accent) : .primary)
                 .padding(.horizontal, AppSpacing.md)
-                .padding(.vertical, 12)
+                .padding(.vertical, 10)
                 .background(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(selectedSection == .settings ? Color(DesktopSection.settings.accent).opacity(0.12) : Color.clear)
+                        .fill(selectedSection == .settings ? Color.appSelectionFill : Color.clear)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(selectedSection == .settings ? Color.appSelectionStroke : Color.clear, lineWidth: 1)
                 )
             }
             .buttonStyle(.plain)
             .padding(AppSpacing.md)
         }
-        .background(Color.appCanvasBackground)
+        .background(Color.appSidebarBackground)
     }
 
     @ViewBuilder
@@ -309,24 +314,29 @@ private struct DesktopPrimaryNavigation: View {
     private let primarySections: [DesktopSection] = [.chat, .projects, .tasks, .agents]
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: AppSpacing.sm) {
             ForEach(primarySections) { section in
                 Button {
                     selectedSection = section
                 } label: {
-                    VStack(spacing: 6) {
+                    VStack(spacing: 4) {
                         Image(systemName: section.systemImage)
                             .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(selectedSection == section ? Color(section.accent) : .secondary)
                         Text(section.title)
-                            .font(.caption.weight(.semibold))
+                            .font(.caption2.weight(.semibold))
                             .lineLimit(1)
+                            .foregroundStyle(selectedSection == section ? .primary : .secondary)
                     }
-                    .foregroundStyle(selectedSection == section ? Color(section.accent) : .secondary)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
+                    .padding(.vertical, 9)
                     .background(
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(selectedSection == section ? Color(section.accent).opacity(0.14) : Color.clear)
+                            .fill(selectedSection == section ? Color.appSelectionFill : Color.clear)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(selectedSection == section ? Color.appSelectionStroke : Color.clear, lineWidth: 1)
                     )
                 }
                 .buttonStyle(.plain)
@@ -341,23 +351,23 @@ private struct DesktopSectionIntro: View {
     let metricValue: String
 
     var body: some View {
-        CardSurface(accent: section.accent) {
-            HStack(alignment: .top, spacing: AppSpacing.md) {
-                VStack(alignment: .leading, spacing: 6) {
+        CardSurface(accent: section.accent, padding: AppSpacing.md) {
+            HStack(alignment: .firstTextBaseline, spacing: AppSpacing.md) {
+                VStack(alignment: .leading, spacing: AppSpacing.xs) {
                     Text(section.title)
-                        .font(.title3.weight(.semibold))
+                        .font(.headline)
                     Text(section.subtitle)
-                        .font(.subheadline)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
                 Spacer()
 
-                VStack(alignment: .trailing, spacing: 4) {
+                VStack(alignment: .trailing, spacing: 2) {
                     Text(metricValue)
-                        .font(.title3.weight(.bold))
+                        .font(.title3.monospacedDigit().weight(.semibold))
                     Text(metricLabel)
-                        .font(.caption)
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -373,7 +383,7 @@ private struct DesktopChatSidebar: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: AppSpacing.md) {
+            VStack(alignment: .leading, spacing: AppSpacing.sm) {
                 DesktopSectionIntro(
                     section: .chat,
                     metricLabel: "threads",
@@ -413,28 +423,28 @@ private struct DesktopChatRow: View {
     let isSelected: Bool
 
     var body: some View {
-        CardSurface(accent: thread.accent, isSelected: isSelected) {
-            HStack(alignment: .top, spacing: 12) {
+        CardSurface(accent: thread.accent, isSelected: isSelected, padding: 12) {
+            HStack(alignment: .top, spacing: 10) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color(thread.accent).opacity(0.14))
-                        .frame(width: 46, height: 46)
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color(thread.accent).opacity(0.10))
+                        .frame(width: 40, height: 40)
 
                     Image(systemName: thread.participants.count > 1 ? "person.2.fill" : "bubble.left.fill")
-                        .font(.system(size: 18, weight: .semibold))
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Color(thread.accent))
                 }
 
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 5) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("#\(thread.issueNumber) \(thread.title)")
-                            .font(.subheadline.weight(.semibold))
+                            .font(.callout.weight(.semibold))
                             .lineLimit(1)
 
                         Spacer(minLength: 8)
 
                         Text(thread.updatedAt, style: .relative)
-                            .font(.caption)
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
 
@@ -476,7 +486,7 @@ private struct DesktopProjectsSidebar: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: AppSpacing.md) {
+            VStack(alignment: .leading, spacing: AppSpacing.sm) {
                 DesktopSectionIntro(
                     section: .projects,
                     metricLabel: "projects",
@@ -516,19 +526,19 @@ private struct DesktopProjectRow: View {
     let isSelected: Bool
 
     var body: some View {
-        CardSurface(accent: project.color, isSelected: isSelected) {
-            VStack(alignment: .leading, spacing: 10) {
+        CardSurface(accent: project.color, isSelected: isSelected, padding: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: "folder.fill")
                         .foregroundStyle(Color(project.color))
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text(project.name)
-                            .font(.subheadline.weight(.semibold))
+                            .font(.callout.weight(.semibold))
                             .lineLimit(1)
 
                         Text(project.repoPath)
-                            .font(.caption.monospaced())
+                            .font(.caption2.monospaced())
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -566,7 +576,7 @@ private struct DesktopTasksSidebar: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: AppSpacing.md) {
+            VStack(alignment: .leading, spacing: AppSpacing.sm) {
                 DesktopSectionIntro(
                     section: .tasks,
                     metricLabel: "tasks",
@@ -608,15 +618,15 @@ private struct DesktopTaskRow: View {
     let isSelected: Bool
 
     var body: some View {
-        CardSurface(accent: issue.status.badgeColor, isSelected: isSelected) {
-            VStack(alignment: .leading, spacing: 10) {
+        CardSurface(accent: issue.status.badgeColor, isSelected: isSelected, padding: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text("#\(issue.number)")
-                        .font(.caption.monospacedDigit())
+                        .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
 
                     Text(issue.title)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.callout.weight(.semibold))
                         .lineLimit(1)
 
                     Spacer(minLength: 8)
@@ -632,7 +642,7 @@ private struct DesktopTaskRow: View {
                 HStack(spacing: 8) {
                     if let project {
                         Text(project.name)
-                            .font(.caption2.weight(.medium))
+                            .font(.caption2)
                             .foregroundStyle(Color(project.color))
                     }
 
@@ -659,7 +669,7 @@ private struct DesktopAgentsSidebar: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: AppSpacing.md) {
+            VStack(alignment: .leading, spacing: AppSpacing.sm) {
                 DesktopSectionIntro(
                     section: .agents,
                     metricLabel: "online",
@@ -706,17 +716,17 @@ private struct DesktopAgentRow: View {
     }
 
     var body: some View {
-        CardSurface(accent: agent.accent, isSelected: isSelected) {
-            HStack(alignment: .center, spacing: 12) {
+        CardSurface(accent: agent.accent, isSelected: isSelected, padding: 12) {
+            HStack(alignment: .center, spacing: 10) {
                 Group {
                     if let assetName = agent.resolvedDefaultAvatarAssetName {
                         PrototypeDefaultAvatarArtwork(
                             assetName: assetName,
-                            size: 42,
+                            size: 38,
                             shape: .circle
                         )
                     } else {
-                        AvatarView(title: displayName, accent: agent.accent, size: 42)
+                        AvatarView(title: displayName, accent: agent.accent, size: 38)
                     }
                 }
                 .overlay(alignment: .bottomTrailing) {
@@ -727,11 +737,11 @@ private struct DesktopAgentRow: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(displayName)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.callout.weight(.semibold))
                         .lineLimit(1)
 
                     Text(agent.shortDescription)
-                        .font(.caption)
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
@@ -753,7 +763,7 @@ private struct DesktopSettingsSidebar: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: AppSpacing.md) {
+            VStack(alignment: .leading, spacing: AppSpacing.sm) {
                 DesktopSectionIntro(
                     section: .settings,
                     metricLabel: "status",
@@ -761,22 +771,22 @@ private struct DesktopSettingsSidebar: View {
                 )
 
                 CardSurface(accent: store.daemonStatusAccent) {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 8) {
                         Label("Local daemon", systemImage: "bolt.horizontal.circle.fill")
-                            .font(.subheadline.weight(.semibold))
+                            .font(.callout.weight(.semibold))
                         Text(store.daemonStatusText)
-                            .font(.caption)
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
                 .padding(.horizontal, AppSpacing.md)
 
                 CardSurface {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 8) {
                         Label("Main window settings", systemImage: "slider.horizontal.3")
-                            .font(.subheadline.weight(.semibold))
+                            .font(.callout.weight(.semibold))
                         Text("Open the detail pane to refresh daemon state or reset prototype data.")
-                            .font(.caption)
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -794,7 +804,7 @@ private struct DesktopSettingsDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: AppSpacing.lg) {
                 CardSurface(accent: store.daemonStatusAccent) {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 12) {
                             Circle()
                                 .fill(store.daemonStatusAccent.color)
@@ -802,9 +812,9 @@ private struct DesktopSettingsDetailView: View {
 
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("Local Daemon")
-                                    .font(.headline)
+                                    .font(.callout.weight(.semibold))
                                 Text(store.daemonStatusText)
-                                    .font(.subheadline)
+                                    .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
 
@@ -825,21 +835,23 @@ private struct DesktopSettingsDetailView: View {
                                 Label("Refresh Agents", systemImage: "arrow.clockwise")
                             }
                             .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
 
                             Button("Reset Prototype Data") {
                                 store.resetPrototypeData()
                             }
                             .buttonStyle(.bordered)
+                            .controlSize(.small)
                         }
                     }
                 }
 
                 CardSurface(accent: .gray) {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 8) {
                         Text("Workspace")
-                            .font(.headline)
+                            .font(.callout.weight(.semibold))
                         Text("Use this area for daemon connectivity, prototype reset actions, and future desktop-level preferences.")
-                            .font(.subheadline)
+                            .font(.caption)
                             .foregroundStyle(.secondary)
 
                         HStack(spacing: AppSpacing.lg) {
@@ -891,7 +903,7 @@ private struct DesktopAgentDetailView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack(spacing: 8) {
                                 Text(displayName)
-                                    .font(.title2.weight(.bold))
+                                    .font(.title3.weight(.semibold))
                                 StatusBadge(
                                     text: agent.isOnline ? "Online" : "Offline",
                                     color: agent.isOnline ? .green : .gray
@@ -899,7 +911,7 @@ private struct DesktopAgentDetailView: View {
                             }
 
                             Text(agent.shortDescription)
-                                .font(.body)
+                                .font(.callout)
                                 .foregroundStyle(.secondary)
 
                             HStack(spacing: AppSpacing.lg) {
@@ -912,9 +924,9 @@ private struct DesktopAgentDetailView: View {
 
                 if !agent.capabilityTags.isEmpty {
                     CardSurface(accent: .blue) {
-                        VStack(alignment: .leading, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 10) {
                             Text("Capabilities")
-                                .font(.headline)
+                                .font(.callout.weight(.semibold))
 
                             FlowLayout(spacing: 8) {
                                 ForEach(agent.capabilityTags, id: \.self) { tag in
@@ -926,22 +938,22 @@ private struct DesktopAgentDetailView: View {
                 }
 
                 CardSurface(accent: .purple) {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 10) {
                         Text("Assigned Work")
-                            .font(.headline)
+                            .font(.callout.weight(.semibold))
 
                         if assignedIssues.isEmpty {
                             Text("No tasks currently reference this agent.")
-                                .font(.subheadline)
+                                .font(.caption)
                                 .foregroundStyle(.secondary)
                         } else {
                             ForEach(assignedIssues.prefix(8)) { issue in
                                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                                     Text("#\(issue.number)")
-                                        .font(.caption.monospacedDigit())
+                                        .font(.caption2.monospacedDigit())
                                         .foregroundStyle(.secondary)
                                     Text(issue.title)
-                                        .font(.subheadline)
+                                        .font(.callout)
                                         .lineLimit(1)
                                     Spacer()
                                     StatusBadge(text: issue.status.title, color: issue.status.badgeColor)

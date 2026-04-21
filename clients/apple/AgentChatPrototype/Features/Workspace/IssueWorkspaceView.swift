@@ -74,15 +74,15 @@ struct IssueWorkspaceView: View {
                         showFollowUpIssueSheet = distilledFollowUpDraft != nil
                     }
                 )
-                    .padding(.horizontal, AppSpacing.lg)
-                    .padding(.top, AppSpacing.lg)
+                    .padding(.horizontal, AppSpacing.md)
+                    .padding(.top, AppSpacing.md)
 
-                HStack(alignment: .top, spacing: AppSpacing.md) {
+                HStack(alignment: .top, spacing: AppSpacing.sm) {
                     IssueThreadRail(
                         issueID: issueID,
                         activeThreadID: activeThread?.id
                     )
-                    .frame(width: 260)
+                    .frame(width: 240)
                     .frame(maxHeight: .infinity)
 
                     if let activeThread {
@@ -125,10 +125,10 @@ struct IssueWorkspaceView: View {
                             showFollowUpIssueSheet = distilledFollowUpDraft != nil
                         }
                     )
-                        .frame(width: 320)
+                        .frame(width: 300)
                 }
-                .padding(.horizontal, AppSpacing.lg)
-                .padding(.vertical, AppSpacing.md)
+                .padding(.horizontal, AppSpacing.md)
+                .padding(.vertical, AppSpacing.sm)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 MessageComposerBar(
@@ -146,8 +146,8 @@ struct IssueWorkspaceView: View {
                         composerText = ""
                     }
                 )
-                .padding(.horizontal, AppSpacing.lg)
-                .padding(.bottom, AppSpacing.lg)
+                .padding(.horizontal, AppSpacing.md)
+                .padding(.bottom, AppSpacing.md)
             }
             .background(Color.appCanvasBackground)
             .navigationTitle(issue.title)
@@ -216,22 +216,22 @@ private struct IssueWorkspaceHeader: View {
     let onCreateFollowUp: () -> Void
 
     var body: some View {
-        CardSurface(accent: issue.status.badgeColor) {
-            VStack(alignment: .leading, spacing: AppSpacing.md) {
+        CardSurface(accent: issue.status.badgeColor, padding: AppSpacing.md) {
+            VStack(alignment: .leading, spacing: AppSpacing.sm) {
                 HStack(alignment: .top, spacing: AppSpacing.md) {
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 6) {
                         HStack(spacing: 8) {
                             Text("#\(issue.number)")
-                                .font(.headline.monospacedDigit())
+                                .font(.callout.monospacedDigit().weight(.semibold))
                                 .foregroundStyle(.secondary)
                             StatusBadge(text: issue.status.title, color: issue.status.badgeColor)
                         }
 
                         Text(issue.title)
-                            .font(.title2.weight(.bold))
+                            .font(.title3.weight(.semibold))
 
                         Text(issue.summary)
-                            .font(.subheadline)
+                            .font(.callout)
                             .foregroundStyle(.secondary)
                     }
 
@@ -240,6 +240,7 @@ private struct IssueWorkspaceHeader: View {
                     HStack(spacing: 8) {
                         Button("Start") {}
                             .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
                         Menu("Distill") {
                             Button("Update Issue Summary", action: onDistillSummary)
                             Button("Draft Decision", action: onDraftDecision)
@@ -248,26 +249,32 @@ private struct IssueWorkspaceHeader: View {
                         }
                         .menuStyle(.borderlessButton)
                         .buttonStyle(.bordered)
+                        .controlSize(.small)
                         Button("Switcher") {}
                             .buttonStyle(.bordered)
+                            .controlSize(.small)
                     }
                 }
 
-                HStack(spacing: AppSpacing.md) {
+                HStack(spacing: AppSpacing.sm) {
                     ForEach(issue.assignees) { participant in
                         HStack(spacing: 8) {
                             AvatarView(title: participant.displayName, accent: participant.accent, size: 28)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(participant.displayName)
-                                    .font(.subheadline.weight(.semibold))
+                                    .font(.caption.weight(.semibold))
                                 Text("Active participant")
-                                    .font(.caption)
+                                    .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 10)
-                        .background(participant.accent.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .padding(.vertical, 5)
+                        .padding(.horizontal, 8)
+                        .background(Color.appSubtleFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(Color.appHairline, lineWidth: 1)
+                        )
                     }
                 }
             }
@@ -283,14 +290,14 @@ private struct IssueThreadRail: View {
     @State private var showCreateThread = false
 
     var body: some View {
-        CardSurface(accent: .gray) {
-            VStack(alignment: .leading, spacing: AppSpacing.md) {
+        CardSurface(accent: .gray, padding: AppSpacing.md) {
+            VStack(alignment: .leading, spacing: AppSpacing.sm) {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Threads")
-                            .font(.headline)
+                            .font(.callout.weight(.semibold))
                         Text("Agent work sessions")
-                            .font(.caption)
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -300,6 +307,7 @@ private struct IssueThreadRail: View {
                         Image(systemName: "plus")
                     }
                     .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
 
                 let threads = store.threads(for: issueID)
@@ -318,7 +326,7 @@ private struct IssueThreadRail: View {
                     .padding(.vertical, AppSpacing.lg)
                 } else {
                     ScrollView {
-                        VStack(spacing: AppSpacing.sm) {
+                        VStack(spacing: AppSpacing.xs) {
                             ForEach(threads) { thread in
                                 Button {
                                     store.selectThread(thread.id)
@@ -350,17 +358,17 @@ private struct ChatTimelineColumn: View {
     let onRefreshFromDaemon: () -> Void
 
     var body: some View {
-        CardSurface(accent: .blue) {
-            VStack(alignment: .leading, spacing: AppSpacing.md) {
+        CardSurface(accent: .blue, padding: AppSpacing.md) {
+            VStack(alignment: .leading, spacing: AppSpacing.sm) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 8) {
                             Text(thread.title)
-                                .font(.headline)
+                                .font(.callout.weight(.semibold))
                             StatusBadge(text: thread.purpose.title, color: thread.purpose.badgeColor)
                         }
                         Text(thread.latestActivityText)
-                            .font(.caption)
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
 
@@ -377,6 +385,7 @@ private struct ChatTimelineColumn: View {
                                 }
                             }
                             .buttonStyle(.bordered)
+                            .controlSize(.small)
                             .disabled(isRefreshingFromDaemon)
                         }
                         StatusBadge(text: thread.state.title, color: thread.state.badgeColor)
@@ -410,15 +419,15 @@ private struct ThreadEmptyState: View {
     @State private var showCreateThread = false
 
     var body: some View {
-        CardSurface(accent: .blue) {
-            VStack(spacing: AppSpacing.md) {
+        CardSurface(accent: .blue, padding: AppSpacing.lg) {
+            VStack(spacing: AppSpacing.sm) {
                 Image(systemName: "bubble.left.and.bubble.right")
-                    .font(.system(size: 42))
+                    .font(.system(size: 34))
                     .foregroundStyle(.secondary)
                 Text("Start the first thread")
-                    .font(.title3.weight(.semibold))
+                    .font(.headline)
                 Text("Threads keep research, implementation, review, and debugging work separate under the same task.")
-                    .font(.subheadline)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 420)
@@ -428,6 +437,7 @@ private struct ThreadEmptyState: View {
                     Label("Start Thread", systemImage: "plus")
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.small)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -451,13 +461,13 @@ private struct IssueInspectorPanel: View {
     @State private var showDistilledFollowUp = false
 
     var body: some View {
-        CardSurface(accent: .gray) {
+        CardSurface(accent: .gray, padding: AppSpacing.md) {
             ScrollView {
-                VStack(alignment: .leading, spacing: AppSpacing.md) {
+                VStack(alignment: .leading, spacing: AppSpacing.sm) {
                     inspectorSection("Context", systemImage: "doc.text") {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(issue.summary)
-                                .font(.subheadline)
+                                .font(.caption)
                                 .foregroundStyle(.secondary)
 
                             if let sourceIssueID = issue.sourceIssueID,
@@ -478,7 +488,7 @@ private struct IssueInspectorPanel: View {
                                 }
                                 .padding(10)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(ColorToken.orange.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .background(ColorToken.orange.color.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                             }
                         }
                     }
@@ -506,7 +516,7 @@ private struct IssueInspectorPanel: View {
                         if let activeThread {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text(activeThread.title)
-                                    .font(.subheadline.weight(.semibold))
+                                    .font(.callout.weight(.semibold))
                                 HStack {
                                     StatusBadge(text: activeThread.purpose.title, color: activeThread.purpose.badgeColor)
                                     StatusBadge(text: activeThread.state.title, color: activeThread.state.badgeColor)
@@ -524,6 +534,7 @@ private struct IssueInspectorPanel: View {
                                         }
                                     }
                                     .buttonStyle(.bordered)
+                                    .controlSize(.small)
                                     .disabled(store.isRefreshingThread(activeThread.id))
                                 }
 
@@ -531,20 +542,23 @@ private struct IssueInspectorPanel: View {
                                     showCreateArtifact = true
                                 }
                                 .buttonStyle(.bordered)
+                                .controlSize(.small)
 
                                 Button("Add Decision") {
                                     showCreateDecision = true
                                 }
                                 .buttonStyle(.bordered)
+                                .controlSize(.small)
 
                                 Button("Follow-up") {
                                     showDistilledFollowUp = true
                                 }
                                 .buttonStyle(.bordered)
+                                .controlSize(.small)
                             }
                         } else {
                             Text("No active thread")
-                                .font(.subheadline)
+                                .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -576,6 +590,7 @@ private struct IssueInspectorPanel: View {
                                             store.clearAgentDistillation(for: activeThread.id)
                                         }
                                         .buttonStyle(.bordered)
+                                        .controlSize(.small)
                                     }
 
                                     Button {
@@ -593,6 +608,7 @@ private struct IssueInspectorPanel: View {
                                         }
                                     }
                                     .buttonStyle(.bordered)
+                                    .controlSize(.small)
                                     .disabled(store.isDistillingThread(activeThread.id))
                                 }
 
@@ -660,6 +676,7 @@ private struct IssueInspectorPanel: View {
                             Label("Add Artifact", systemImage: "plus")
                         }
                         .buttonStyle(.bordered)
+                        .controlSize(.small)
 
                         let issueArtifacts = store.artifacts(for: issue.id)
                         if issueArtifacts.isEmpty {
@@ -680,6 +697,7 @@ private struct IssueInspectorPanel: View {
                             Label("Add Decision", systemImage: "plus")
                         }
                         .buttonStyle(.bordered)
+                        .controlSize(.small)
 
                         let issueDecisions = store.decisions(for: issue.id)
                         if issueDecisions.isEmpty {
@@ -730,7 +748,7 @@ private struct IssueInspectorPanel: View {
                 Image(systemName: systemImage)
                     .foregroundStyle(.secondary)
                 Text(title)
-                    .font(.headline)
+                    .font(.callout.weight(.semibold))
             }
             content()
         }
@@ -748,18 +766,20 @@ private struct DistillPreviewCard: View {
     var secondaryAction: (() -> Void)? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: AppSpacing.sm) {
             HStack(alignment: .top) {
                 Text(title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.callout.weight(.semibold))
                 Spacer()
                 HStack(spacing: 8) {
                     if let secondaryActionTitle, let secondaryAction {
                         Button(secondaryActionTitle, action: secondaryAction)
                             .buttonStyle(.bordered)
+                            .controlSize(.small)
                     }
                     Button(primaryActionTitle, action: primaryAction)
                         .buttonStyle(.bordered)
+                        .controlSize(.small)
                 }
             }
 
@@ -768,9 +788,13 @@ private struct DistillPreviewCard: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(5)
         }
-        .padding(12)
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ColorToken.purple.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(Color.appSubtleFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.appHairline, lineWidth: 1)
+        )
     }
 }
 
@@ -783,7 +807,7 @@ private struct FollowUpIssueCard: View {
                 .foregroundStyle(ColorToken.orange.color)
             VStack(alignment: .leading, spacing: 4) {
                 Text("#\(issue.number) \(issue.title)")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.callout.weight(.semibold))
                 Text(issue.summary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -792,9 +816,9 @@ private struct FollowUpIssueCard: View {
             Spacer(minLength: 0)
             StatusBadge(text: issue.status.title, color: issue.status.badgeColor)
         }
-        .padding(12)
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ColorToken.orange.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(ColorToken.orange.color.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
@@ -803,13 +827,13 @@ private struct IssueArtifactCard: View {
     let thread: Thread?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: AppSpacing.sm) {
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: artifact.kind.systemImage)
                     .foregroundStyle(artifact.kind.accent.color)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(artifact.title)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.callout.weight(.semibold))
                     HStack(spacing: 8) {
                         StatusBadge(text: artifact.kind.title, color: artifact.kind.accent)
                         if let thread {
@@ -836,9 +860,9 @@ private struct IssueArtifactCard: View {
                     .textSelection(.enabled)
             }
         }
-        .padding(12)
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(artifact.kind.accent.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(artifact.kind.accent.color.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
@@ -847,13 +871,13 @@ private struct IssueDecisionCard: View {
     let thread: Thread?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: AppSpacing.sm) {
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "checkmark.seal")
                     .foregroundStyle(ColorToken.green.color)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(decision.title)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.callout.weight(.semibold))
                     if let thread {
                         PillView(text: thread.title, color: thread.purpose.badgeColor)
                     }
@@ -868,9 +892,9 @@ private struct IssueDecisionCard: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .padding(12)
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ColorToken.green.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(ColorToken.green.color.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
@@ -881,9 +905,9 @@ private struct PlaceholderInspectorRow: View {
         Text(text)
             .font(.caption)
             .foregroundStyle(.secondary)
-            .padding(12)
+            .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(Color.appSubtleFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
@@ -1371,12 +1395,12 @@ private struct SessionMiniCard: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text(session.agentName)
-                        .font(.headline)
+                        .font(.callout.weight(.semibold))
                     Spacer()
                     StatusBadge(text: session.state.title, color: session.state.badgeColor)
                 }
                 Text(session.latestEventText)
-                    .font(.subheadline)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                 HStack {
                     PillView(text: AppFormatters.durationString(seconds: session.elapsedSeconds), color: .gray)
@@ -1402,8 +1426,8 @@ private struct MessageComposerBar: View {
     }
 
     var body: some View {
-        CardSurface(accent: .green) {
-            VStack(alignment: .leading, spacing: AppSpacing.md) {
+        CardSurface(accent: .green, padding: AppSpacing.md) {
+            VStack(alignment: .leading, spacing: AppSpacing.sm) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(targetNames, id: \.self) { name in
@@ -1426,8 +1450,9 @@ private struct MessageComposerBar: View {
                 }
 
                 TextEditor(text: $text)
-                    .frame(minHeight: 84)
-                    .padding(8)
+                    .font(.callout)
+                    .frame(minHeight: 72)
+                    .padding(6)
                     .background(Color.appInputBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
 
                 HStack(spacing: 8) {
@@ -1437,6 +1462,7 @@ private struct MessageComposerBar: View {
                     Spacer()
                     Button("Send", action: onSend)
                         .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
                         .disabled(thread == nil || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
@@ -1448,6 +1474,7 @@ private struct MessageComposerBar: View {
             text = title
         }
         .buttonStyle(.bordered)
+        .controlSize(.small)
     }
 
     private func color(for name: String) -> ColorToken {
