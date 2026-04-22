@@ -112,8 +112,10 @@ struct RootView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             desktopSidebar
                 .navigationSplitViewColumnWidth(min: 300, ideal: 340, max: 380)
+                .background(Color.appSidebarBackground)
         } detail: {
             desktopDetail
+                .background(Color.appWindowBackground)
         }
         #if os(macOS)
         .focusedSceneValue(\.agentChatDesktopActions, AgentChatDesktopActions(
@@ -198,6 +200,7 @@ struct RootView: View {
             .buttonStyle(.plain)
             .padding(AppSpacing.md)
         }
+        .background(Color.appSidebarBackground)
     }
 
     @ViewBuilder

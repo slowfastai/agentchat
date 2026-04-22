@@ -69,7 +69,7 @@ enum AppColors {
         #if canImport(UIKit)
         Color(uiColor: .systemBlue)
         #else
-        Color(nsColor: .controlAccentColor)
+        Color.appControlAccent
         #endif
     }
 }
@@ -89,11 +89,22 @@ enum AppRadius {
 }
 
 extension Color {
+    #if canImport(AppKit)
+    private static func appMacColor(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat = 1) -> Color {
+        Color(nsColor: NSColor(
+            calibratedRed: red / 255,
+            green: green / 255,
+            blue: blue / 255,
+            alpha: alpha
+        ))
+    }
+    #endif
+
     static var appWindowBackground: Color {
         #if canImport(UIKit)
         Color(uiColor: .systemBackground)
         #else
-        Color(nsColor: .windowBackgroundColor)
+        appMacColor(red: 249, green: 249, blue: 247)
         #endif
     }
 
@@ -101,7 +112,7 @@ extension Color {
         #if canImport(UIKit)
         Color(uiColor: .systemGroupedBackground)
         #else
-        Color(nsColor: .underPageBackgroundColor)
+        appMacColor(red: 249, green: 249, blue: 247)
         #endif
     }
 
@@ -109,7 +120,7 @@ extension Color {
         #if canImport(UIKit)
         Color(uiColor: .secondarySystemGroupedBackground)
         #else
-        Color(nsColor: .windowBackgroundColor)
+        appMacColor(red: 237, green: 238, blue: 238)
         #endif
     }
 
@@ -117,7 +128,7 @@ extension Color {
         #if canImport(UIKit)
         Color(uiColor: .secondarySystemBackground)
         #else
-        Color(nsColor: .controlBackgroundColor)
+        appMacColor(red: 248, green: 248, blue: 246)
         #endif
     }
 
@@ -125,7 +136,7 @@ extension Color {
         #if canImport(UIKit)
         Color(uiColor: .secondarySystemGroupedBackground)
         #else
-        Color(nsColor: .textBackgroundColor)
+        appMacColor(red: 249, green: 249, blue: 247)
         #endif
     }
 
@@ -133,7 +144,7 @@ extension Color {
         #if canImport(UIKit)
         Color(uiColor: .tertiarySystemBackground)
         #else
-        Color(nsColor: .textBackgroundColor)
+        appMacColor(red: 249, green: 249, blue: 247)
         #endif
     }
 
@@ -141,7 +152,7 @@ extension Color {
         #if canImport(UIKit)
         Color(uiColor: .separator).opacity(0.18)
         #else
-        Color(nsColor: .separatorColor).opacity(0.45)
+        appMacColor(red: 218, green: 218, blue: 216)
         #endif
     }
 
@@ -149,7 +160,7 @@ extension Color {
         #if canImport(UIKit)
         Color(uiColor: .tertiarySystemFill)
         #else
-        Color(nsColor: .separatorColor).opacity(0.08)
+        appMacColor(red: 241, green: 241, blue: 239)
         #endif
     }
 
@@ -157,7 +168,7 @@ extension Color {
         #if canImport(UIKit)
         Color.accentColor.opacity(0.10)
         #else
-        Color(nsColor: .selectedContentBackgroundColor).opacity(0.11)
+        appMacColor(red: 229, green: 230, blue: 230)
         #endif
     }
 
@@ -165,7 +176,15 @@ extension Color {
         #if canImport(UIKit)
         Color.accentColor.opacity(0.16)
         #else
-        Color(nsColor: .selectedContentBackgroundColor).opacity(0.22)
+        appMacColor(red: 208, green: 209, blue: 209)
+        #endif
+    }
+
+    static var appControlAccent: Color {
+        #if canImport(UIKit)
+        Color.accentColor
+        #else
+        appMacColor(red: 126, green: 126, blue: 121)
         #endif
     }
 }
@@ -222,7 +241,7 @@ struct Theme {
     }
 
     var accent: Color {
-        Color.accentColor
+        Color.appControlAccent
     }
 
     var canvasTop: Color {
