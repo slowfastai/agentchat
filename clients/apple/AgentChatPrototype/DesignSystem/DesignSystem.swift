@@ -14,49 +14,160 @@ extension Color {
     }
 
     init(token: ColorToken) {
+        #if canImport(UIKit)
         switch token {
         case .blue:
-            self = .blue
+            self = Color(uiColor: .systemBlue)
         case .purple:
-            self = .purple
+            self = Color(uiColor: .systemPurple)
         case .green:
-            self = .green
+            self = Color(uiColor: .systemGreen)
         case .orange:
-            self = .orange
+            self = Color(uiColor: .systemOrange)
         case .red:
-            self = .red
+            self = Color(uiColor: .systemRed)
         case .gray:
-            self = .gray
+            self = Color(uiColor: .secondaryLabel)
         }
+        #else
+        switch token {
+        case .blue:
+            self = Color(nsColor: .controlAccentColor)
+        case .purple:
+            self = Color(nsColor: .systemPurple)
+        case .green:
+            self = Color(nsColor: .systemGreen)
+        case .orange:
+            self = Color(nsColor: .systemOrange)
+        case .red:
+            self = Color(nsColor: .systemRed)
+        case .gray:
+            self = Color.secondary
+        }
+        #endif
     }
 }
 
 enum AppColors {
     static var onlineStatus: Color {
-        Color(red: 0.3, green: 0.85, blue: 0.5)
+        #if canImport(UIKit)
+        Color(uiColor: .systemGreen)
+        #else
+        Color(nsColor: .systemGreen)
+        #endif
     }
 
     static var unreadBadge: Color {
-        Color(red: 1.0, green: 0.35, blue: 0.35)
+        #if canImport(UIKit)
+        Color(uiColor: .systemRed)
+        #else
+        Color(nsColor: .systemRed)
+        #endif
     }
 
     static var userBubble: Color {
-        Color(red: 0.15, green: 0.45, blue: 0.85)
+        #if canImport(UIKit)
+        Color(uiColor: .systemBlue)
+        #else
+        Color(nsColor: .controlAccentColor)
+        #endif
     }
 }
 
 enum AppSpacing {
-    static let xs: CGFloat = 6
-    static let sm: CGFloat = 10
-    static let md: CGFloat = 16
-    static let lg: CGFloat = 24
-    static let xl: CGFloat = 32
+    static let xs: CGFloat = 4
+    static let sm: CGFloat = 8
+    static let md: CGFloat = 14
+    static let lg: CGFloat = 20
+    static let xl: CGFloat = 28
 }
 
 enum AppRadius {
-    static let card: CGFloat = 18
+    static let card: CGFloat = 16
     static let bubble: CGFloat = 18
     static let pill: CGFloat = 999
+}
+
+extension Color {
+    static var appWindowBackground: Color {
+        #if canImport(UIKit)
+        Color(uiColor: .systemBackground)
+        #else
+        Color(nsColor: .windowBackgroundColor)
+        #endif
+    }
+
+    static var appCanvasBackground: Color {
+        #if canImport(UIKit)
+        Color(uiColor: .systemGroupedBackground)
+        #else
+        Color(nsColor: .underPageBackgroundColor)
+        #endif
+    }
+
+    static var appSidebarBackground: Color {
+        #if canImport(UIKit)
+        Color(uiColor: .secondarySystemGroupedBackground)
+        #else
+        Color(nsColor: .windowBackgroundColor)
+        #endif
+    }
+
+    static var appCardBackground: Color {
+        #if canImport(UIKit)
+        Color(uiColor: .secondarySystemBackground)
+        #else
+        Color(nsColor: .controlBackgroundColor)
+        #endif
+    }
+
+    static var appElevatedBackground: Color {
+        #if canImport(UIKit)
+        Color(uiColor: .secondarySystemGroupedBackground)
+        #else
+        Color(nsColor: .textBackgroundColor)
+        #endif
+    }
+
+    static var appInputBackground: Color {
+        #if canImport(UIKit)
+        Color(uiColor: .tertiarySystemBackground)
+        #else
+        Color(nsColor: .textBackgroundColor)
+        #endif
+    }
+
+    static var appHairline: Color {
+        #if canImport(UIKit)
+        Color(uiColor: .separator).opacity(0.18)
+        #else
+        Color(nsColor: .separatorColor).opacity(0.45)
+        #endif
+    }
+
+    static var appSubtleFill: Color {
+        #if canImport(UIKit)
+        Color(uiColor: .tertiarySystemFill)
+        #else
+        Color(nsColor: .separatorColor).opacity(0.08)
+        #endif
+    }
+
+    static var appSelectionFill: Color {
+        #if canImport(UIKit)
+        Color.accentColor.opacity(0.10)
+        #else
+        Color(nsColor: .selectedContentBackgroundColor).opacity(0.11)
+        #endif
+    }
+
+    static var appSelectionStroke: Color {
+        #if canImport(UIKit)
+        Color.accentColor.opacity(0.16)
+        #else
+        Color(nsColor: .selectedContentBackgroundColor).opacity(0.22)
+        #endif
+    }
 }
 
 struct Theme {
@@ -87,47 +198,27 @@ struct Theme {
     }
 
     var background: Color {
-        #if canImport(UIKit)
-        Color(uiColor: .systemBackground)
-        #else
-        Color(nsColor: .windowBackgroundColor)
-        #endif
+        Color.appWindowBackground
     }
 
     var cardBackground: Color {
-        #if canImport(UIKit)
-        Color(uiColor: .secondarySystemBackground)
-        #else
-        Color(nsColor: .controlBackgroundColor)
-        #endif
+        Color.appElevatedBackground
     }
 
     var canvasBackground: Color {
-        #if canImport(UIKit)
-        Color(uiColor: .systemGroupedBackground)
-        #else
-        Color(nsColor: .windowBackgroundColor)
-        #endif
+        Color.appCanvasBackground
     }
 
     var inputBackground: Color {
-        #if canImport(UIKit)
-        Color(uiColor: .tertiarySystemBackground)
-        #else
-        Color(nsColor: .textBackgroundColor)
-        #endif
+        Color.appInputBackground
     }
 
     var separator: Color {
-        #if canImport(UIKit)
-        Color(uiColor: .separator)
-        #else
-        Color(nsColor: .separatorColor)
-        #endif
+        Color.appHairline
     }
 
     var onlineStatus: Color {
-        Color(red: 0.3, green: 0.85, blue: 0.5)
+        AppColors.onlineStatus
     }
 
     var accent: Color {
@@ -135,87 +226,63 @@ struct Theme {
     }
 
     var canvasTop: Color {
-        colorScheme == .dark
-            ? Color(red: 0.11, green: 0.11, blue: 0.13)
-            : Color(red: 0.973, green: 0.957, blue: 0.929)
+        Color.appCanvasBackground
     }
 
     var canvasBottom: Color {
-        colorScheme == .dark
-            ? Color(red: 0.10, green: 0.10, blue: 0.12)
-            : Color(red: 0.948, green: 0.928, blue: 0.895)
+        Color.appWindowBackground
     }
 
     var panel: Color {
-        colorScheme == .dark
-            ? Color(red: 0.16, green: 0.16, blue: 0.18)
-            : Color(red: 0.981, green: 0.971, blue: 0.949)
+        Color.appCardBackground
     }
 
     var paper: Color {
-        colorScheme == .dark
-            ? Color(red: 0.20, green: 0.20, blue: 0.22)
-            : Color(red: 0.993, green: 0.988, blue: 0.976)
+        Color.appElevatedBackground
     }
 
     var chip: Color {
-        colorScheme == .dark
-            ? Color(red: 0.26, green: 0.26, blue: 0.28)
-            : Color(red: 0.936, green: 0.918, blue: 0.885)
+        Color.appSubtleFill
     }
 
     var toolPanel: Color {
-        colorScheme == .dark
-            ? Color(red: 0.18, green: 0.17, blue: 0.19)
-            : Color(red: 0.957, green: 0.936, blue: 0.892)
+        Color.appCardBackground
     }
 
     var planPanel: Color {
-        colorScheme == .dark
-            ? Color(red: 0.15, green: 0.15, blue: 0.17)
-            : Color(red: 0.933, green: 0.918, blue: 0.900)
+        Color.appCardBackground
     }
 
     var stroke: Color {
-        colorScheme == .dark
-            ? Color.white.opacity(0.08)
-            : Color.black.opacity(0.075)
+        Color.appHairline
     }
 
     var ink: Color {
-        colorScheme == .dark
-            ? Color(red: 0.90, green: 0.90, blue: 0.92)
-            : Color(red: 0.200, green: 0.188, blue: 0.173)
+        primaryText
     }
 
     var mutedInk: Color {
-        colorScheme == .dark
-            ? Color(red: 0.60, green: 0.60, blue: 0.62)
-            : Color(red: 0.420, green: 0.392, blue: 0.357)
+        secondaryText
     }
 
     var subtleInk: Color {
-        colorScheme == .dark
-            ? Color(red: 0.50, green: 0.50, blue: 0.52)
-            : Color(red: 0.550, green: 0.514, blue: 0.470)
+        tertiaryText
     }
 
     var accentWarm: Color {
-        colorScheme == .dark
-            ? Color(red: 0.80, green: 0.60, blue: 0.35)
-            : Color(red: 0.694, green: 0.533, blue: 0.333)
+        #if canImport(UIKit)
+        Color(uiColor: .systemOrange)
+        #else
+        Color(nsColor: .systemOrange)
+        #endif
     }
 
     var planColor: Color {
-        colorScheme == .dark
-            ? Color(red: 0.60, green: 0.52, blue: 0.48)
-            : Color(red: 0.463, green: 0.392, blue: 0.361)
+        secondaryText
     }
 
     var userBubble: Color {
-        colorScheme == .dark
-            ? Color(red: 0.35, green: 0.32, blue: 0.30)
-            : Color(red: 0.274, green: 0.251, blue: 0.228)
+        AppColors.userBubble
     }
 }
 
@@ -228,47 +295,27 @@ struct ThemedView<Content: View>: View {
     }
 }
 
-extension Color {
-    static var appCardBackground: Color {
-        #if canImport(UIKit)
-        Color(uiColor: .secondarySystemBackground)
-        #else
-        Color(nsColor: .controlBackgroundColor)
-        #endif
-    }
-
-    static var appCanvasBackground: Color {
-        #if canImport(UIKit)
-        Color(uiColor: .systemGroupedBackground)
-        #else
-        Color(nsColor: .windowBackgroundColor)
-        #endif
-    }
-
-    static var appInputBackground: Color {
-        #if canImport(UIKit)
-        Color(uiColor: .tertiarySystemBackground)
-        #else
-        Color(nsColor: .textBackgroundColor)
-        #endif
-    }
-}
-
 struct CardSurface<Content: View>: View {
     var accent: ColorToken = .gray
     var isSelected: Bool = false
+    var padding: CGFloat = AppSpacing.md
     @ViewBuilder var content: Content
 
     var body: some View {
         content
-            .padding(AppSpacing.md)
+            .padding(padding)
             .background(
                 RoundedRectangle(cornerRadius: AppRadius.card, style: .continuous)
                     .fill(Color.appCardBackground)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: AppRadius.card, style: .continuous)
-                    .stroke(isSelected ? Color(accent).opacity(0.8) : Color.primary.opacity(0.08), lineWidth: isSelected ? 1.5 : 1)
+                    .fill(Color.appSelectionFill)
+                    .opacity(isSelected ? 0.9 : 0)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: AppRadius.card, style: .continuous)
+                    .stroke(isSelected ? Color.appSelectionStroke : Color.appHairline, lineWidth: 1)
             )
     }
 }
@@ -279,11 +326,18 @@ struct StatusBadge: View {
 
     var body: some View {
         Text(text)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(Color(color))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color(color).opacity(0.12), in: Capsule())
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(color == .gray ? .secondary : Color(color))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                Capsule()
+                    .fill(color == .gray ? Color.appSubtleFill : Color(color).opacity(0.08))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(color == .gray ? Color.appHairline : Color(color).opacity(0.10), lineWidth: 1)
+            )
     }
 }
 
@@ -294,13 +348,17 @@ struct PillView: View {
 
     var body: some View {
         Text(text)
-            .font(.caption.weight(.medium))
-            .foregroundStyle(isSelected ? .white : Color(color))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(isSelected ? .primary : .secondary)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
             .background(
                 Capsule()
-                    .fill(isSelected ? Color(color) : Color(color).opacity(0.12))
+                    .fill(isSelected ? Color.appSelectionFill : Color.appSubtleFill)
+            )
+            .overlay(
+                Capsule()
+                    .stroke(isSelected ? (color == .gray ? Color.appSelectionStroke : Color(color).opacity(0.12)) : Color.appHairline, lineWidth: 1)
             )
     }
 }
@@ -313,10 +371,12 @@ struct AvatarView: View {
     var body: some View {
         ZStack {
             Circle()
-                .fill(Color(accent).opacity(0.14))
+                .fill(Color.appSubtleFill)
+            Circle()
+                .stroke(accent == .gray ? Color.appHairline : Color(accent).opacity(0.12), lineWidth: 1)
             Text(initials)
                 .font(.system(size: size * 0.38, weight: .semibold))
-                .foregroundStyle(Color(accent))
+                .foregroundStyle(.primary)
         }
         .frame(width: size, height: size)
     }
@@ -373,9 +433,9 @@ struct MetricLabel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(value)
-                .font(.subheadline.weight(.semibold))
+                .font(.callout.monospacedDigit().weight(.semibold))
             Text(title)
-                .font(.caption)
+                .font(.caption2)
                 .foregroundStyle(.secondary)
         }
     }
@@ -389,12 +449,12 @@ struct EmptyStateView: View {
     var body: some View {
         VStack(spacing: AppSpacing.md) {
             Image(systemName: systemImage)
-                .font(.system(size: 42))
+                .font(.system(size: 34))
                 .foregroundStyle(.secondary)
             Text(title)
-                .font(.title3.weight(.semibold))
+                .font(.headline)
             Text(message)
-                .font(.body)
+                .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 360)
