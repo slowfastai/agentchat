@@ -124,9 +124,6 @@ struct RootView: View {
             showNewWorkspaceThreadSheet: { [self] in if store.selectedIssueID != nil { showCreateThread = true } },
             showAddAgentsSheet: { [self] in
                 selectedSection = .agents
-                if selectedAgentID == nil {
-                    selectedAgentID = store.agents.first?.id
-                }
             },
             toggleSidebar: { [self] in
                 columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
@@ -265,11 +262,8 @@ struct RootView: View {
                 DesktopAgentDetailView(agent: agent)
                     .environmentObject(store)
             } else {
-                EmptyStateView(
-                    title: "No agent selected",
-                    message: "Choose an agent from the left sidebar to review profile details and current scope.",
-                    systemImage: "person.2"
-                )
+                Color.appCanvasBackground
+                    .ignoresSafeArea()
             }
         case .settings:
             DesktopSettingsDetailView()
@@ -303,7 +297,7 @@ struct RootView: View {
                 return
             }
 
-            selectedAgentID = store.agents.first?.id
+            selectedAgentID = nil
         case .settings:
             return
         }
@@ -854,20 +848,18 @@ private struct DesktopSettingsDetailView: View {
 private struct DesktopAgentDetailView: View {
     @EnvironmentObject private var store: DemoStore
     let agent: AgentProfile
+    @State private var showEditSheet = false
 
     private var displayName: String {
         store.customName(for: agent.id.uuidString) ?? agent.name
     }
 
-    private var assignedIssues: [Issue] {
-        store.allIssues.filter { issue in
-            issue.agentNames.contains(displayName) || issue.agentNames.contains(agent.name)
-        }
-    }
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: AppSpacing.lg) {
+                Text("Profile")
+                    .font(.title2.weight(.semibold))
+
                 CardSurface(accent: agent.accent) {
                     HStack(alignment: .top, spacing: AppSpacing.md) {
                         Group {
@@ -895,70 +887,29 @@ private struct DesktopAgentDetailView: View {
                             Text(agent.shortDescription)
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
-
-                            HStack(spacing: AppSpacing.lg) {
-                                MetricLabel(title: "Assigned Tasks", value: "\(assignedIssues.count)")
-                                MetricLabel(title: "Capabilities", value: "\(agent.capabilityTags.count)")
-                            }
                         }
+
+                        Spacer(minLength: 0)
+
+                        Button {
+                            showEditSheet = true
+                        } label: {
+                            Label("Edit Profile", systemImage: "pencil")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                     }
                 }
-
-                if !agent.capabilityTags.isEmpty {
-                    CardSurface(accent: .blue) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Capabilities")
-                                .font(.callout.weight(.semibold))
-
-                            FlowLayout(spacing: 8) {
-                                ForEach(agent.capabilityTags, id: \.self) { tag in
-                                    PillView(text: tag, color: agent.accent)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                CardSurface(accent: .purple) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Assigned Work")
-                            .font(.callout.weight(.semibold))
-
-                        if assignedIssues.isEmpty {
-                            Text("No tasks currently reference this agent.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            ForEach(assignedIssues.prefix(8)) { issue in
-                                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                    Text("#\(issue.number)")
-                                        .font(.caption2.monospacedDigit())
-                                        .foregroundStyle(.secondary)
-                                    Text(issue.title)
-                                        .font(.callout)
-                                        .lineLimit(1)
-                                    Spacer()
-                                    StatusBadge(text: issue.status.title, color: issue.status.badgeColor)
-                                }
-                            }
-                        }
-                    }
-                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(AppSpacing.lg)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(Color.appCanvasBackground)
         .navigationTitle(displayName)
-    }
-}
-
-private struct FlowLayout<Content: View>: View {
-    let spacing: CGFloat
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: spacing) {
-            content
+        .sheet(isPresented: $showEditSheet) {
+            EditAgentSheet(agent: agent)
+                .environmentObject(store)
         }
     }
 }
