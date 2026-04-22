@@ -854,12 +854,6 @@ private struct DesktopAgentDetailView: View {
         store.customName(for: agent.id.uuidString) ?? agent.name
     }
 
-    private var assignedIssues: [Issue] {
-        store.allIssues.filter { issue in
-            issue.agentNames.contains(displayName) || issue.agentNames.contains(agent.name)
-        }
-    }
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: AppSpacing.lg) {
@@ -893,11 +887,6 @@ private struct DesktopAgentDetailView: View {
                             Text(agent.shortDescription)
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
-
-                            HStack(spacing: AppSpacing.lg) {
-                                MetricLabel(title: "Assigned Tasks", value: "\(assignedIssues.count)")
-                                MetricLabel(title: "Capabilities", value: "\(agent.capabilityTags.count)")
-                            }
                         }
 
                         Spacer(minLength: 0)
@@ -912,51 +901,6 @@ private struct DesktopAgentDetailView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-
-                if !agent.capabilityTags.isEmpty {
-                    CardSurface(accent: .blue) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Capabilities")
-                                .font(.callout.weight(.semibold))
-
-                            FlowLayout(spacing: 8) {
-                                ForEach(agent.capabilityTags, id: \.self) { tag in
-                                    PillView(text: tag, color: agent.accent)
-                                }
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                CardSurface(accent: .purple) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Assigned Work")
-                            .font(.callout.weight(.semibold))
-
-                        if assignedIssues.isEmpty {
-                            Text("No tasks currently reference this agent.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            ForEach(assignedIssues.prefix(8)) { issue in
-                                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                    Text("#\(issue.number)")
-                                        .font(.caption2.monospacedDigit())
-                                        .foregroundStyle(.secondary)
-                                    Text(issue.title)
-                                        .font(.callout)
-                                        .lineLimit(1)
-                                    Spacer()
-                                    StatusBadge(text: issue.status.title, color: issue.status.badgeColor)
-                                }
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(AppSpacing.lg)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -966,17 +910,6 @@ private struct DesktopAgentDetailView: View {
         .sheet(isPresented: $showEditSheet) {
             EditAgentSheet(agent: agent)
                 .environmentObject(store)
-        }
-    }
-}
-
-private struct FlowLayout<Content: View>: View {
-    let spacing: CGFloat
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: spacing) {
-            content
         }
     }
 }
