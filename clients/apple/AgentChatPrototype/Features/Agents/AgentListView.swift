@@ -407,25 +407,26 @@ struct EditAgentSheet: View {
     @State private var selectedImageData: Data?
     @State private var showError = false
 
+    private var displayName: String {
+        store.customName(for: agent.id.uuidString) ?? agent.name
+    }
+
+    private var canSave: Bool {
+        !editedName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("Agent Info") {
-                    TextField("Name", text: $editedName)
-
-                    if let data = selectedImageData {
-                        HStack {
-                            Spacer()
-                            PrototypeAvatarDataImage(data: data, size: 80, cornerRadius: 16)
-                            Spacer()
-                        }
-                    }
-                }
-
-                Section("Avatar") {
+        VStack(spacing: 0) {
+            VStack(spacing: 22) {
+                VStack(spacing: 14) {
                     PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                        Label("Choose Photo", systemImage: "photo")
+                        AgentEditableAvatarPreview(
+                            agent: agent,
+                            displayName: editedName.isEmpty ? displayName : editedName,
+                            avatarData: selectedImageData
+                        )
                     }
+                    .buttonStyle(.plain)
                     .onChange(of: selectedPhotoItem) { _, newValue in
                         Task {
                             if let data = try? await newValue?.loadTransferable(type: Data.self) {
@@ -434,42 +435,81 @@ struct EditAgentSheet: View {
                         }
                     }
 
-                    if selectedImageData != nil || store.avatarData(for: agent.id.uuidString) != nil {
-                        Button(role: .destructive) {
-                            selectedImageData = nil
-                            selectedPhotoItem = nil
-                        } label: {
-                            Label("Remove Photo", systemImage: "trash")
+                    VStack(spacing: 8) {
+                        Text("Edit Agent")
+                            .font(.title2.weight(.semibold))
+
+                        Text(displayName)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    HStack(spacing: 10) {
+                        PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                            Label("Change Photo", systemImage: "photo")
+                        }
+                        .buttonStyle(.borderless)
+
+                        if selectedImageData != nil || store.avatarData(for: agent.id.uuidString) != nil {
+                            Button(role: .destructive) {
+                                selectedImageData = nil
+                                selectedPhotoItem = nil
+                            } label: {
+                                Label("Remove", systemImage: "trash")
+                            }
+                            .buttonStyle(.borderless)
                         }
                     }
+                    .font(.callout)
                 }
-            }
-            .navigationTitle("Edit Agent")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Name")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    TextField("Agent name", text: $editedName)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.body)
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        saveChanges()
-                    }
-                    .disabled(editedName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && selectedImageData == nil)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 30)
+            .padding(.top, 30)
+            .padding(.bottom, 26)
+
+            Divider()
+
+            HStack(spacing: 10) {
+                Spacer()
+
+                Button("Cancel") {
+                    dismiss()
                 }
+                .keyboardShortcut(.cancelAction)
+
+                Button("Save") {
+                    saveChanges()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canSave)
             }
-            .onAppear {
-                editedName = store.customName(for: agent.id.uuidString) ?? agent.name
-                selectedImageData = store.avatarData(for: agent.id.uuidString)
-            }
-            .alert("Error", isPresented: $showError) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text("Failed to save changes. Please try again.")
-            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+            .background(Color.appWindowBackground)
+        }
+        .frame(width: 440)
+        .background(Color.appCanvasBackground)
+        .onAppear {
+            editedName = displayName
+            selectedImageData = store.avatarData(for: agent.id.uuidString)
+        }
+        .alert("Error", isPresented: $showError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Failed to save changes. Please try again.")
         }
     }
 
@@ -521,5 +561,49 @@ struct EditAgentSheet: View {
             avatarData: selectedImageData
         )
         dismiss()
+    }
+}
+
+private struct AgentEditableAvatarPreview: View {
+    let agent: AgentProfile
+    let displayName: String
+    let avatarData: Data?
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            Group {
+                if let avatarData {
+                    PrototypeAvatarDataImage(data: avatarData, size: 96, cornerRadius: 48)
+                        .clipShape(Circle())
+                } else if let assetName = agent.resolvedDefaultAvatarAssetName {
+                    PrototypeDefaultAvatarArtwork(
+                        assetName: assetName,
+                        size: 96,
+                        shape: .circle
+                    )
+                } else {
+                    AvatarView(title: displayName, accent: agent.accent, size: 96)
+                }
+            }
+            .overlay {
+                Circle()
+                    .stroke(Color.black.opacity(0.08), lineWidth: 1)
+            }
+
+            Circle()
+                .fill(Color.appElevatedBackground)
+                .frame(width: 28, height: 28)
+                .overlay {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .overlay {
+                    Circle()
+                        .stroke(Color.appHairline, lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.10), radius: 6, y: 2)
+        }
+        .frame(width: 104, height: 104)
     }
 }

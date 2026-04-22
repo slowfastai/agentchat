@@ -124,9 +124,6 @@ struct RootView: View {
             showNewWorkspaceThreadSheet: { [self] in if store.selectedIssueID != nil { showCreateThread = true } },
             showAddAgentsSheet: { [self] in
                 selectedSection = .agents
-                if selectedAgentID == nil {
-                    selectedAgentID = store.agents.first?.id
-                }
             },
             toggleSidebar: { [self] in
                 columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
@@ -265,11 +262,8 @@ struct RootView: View {
                 DesktopAgentDetailView(agent: agent)
                     .environmentObject(store)
             } else {
-                EmptyStateView(
-                    title: "No agent selected",
-                    message: "Choose an agent from the left sidebar to review profile details and current scope.",
-                    systemImage: "person.2"
-                )
+                Color.appCanvasBackground
+                    .ignoresSafeArea()
             }
         case .settings:
             DesktopSettingsDetailView()
@@ -303,7 +297,7 @@ struct RootView: View {
                 return
             }
 
-            selectedAgentID = store.agents.first?.id
+            selectedAgentID = nil
         case .settings:
             return
         }
@@ -854,6 +848,7 @@ private struct DesktopSettingsDetailView: View {
 private struct DesktopAgentDetailView: View {
     @EnvironmentObject private var store: DemoStore
     let agent: AgentProfile
+    @State private var showEditSheet = false
 
     private var displayName: String {
         store.customName(for: agent.id.uuidString) ?? agent.name
@@ -868,6 +863,9 @@ private struct DesktopAgentDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: AppSpacing.lg) {
+                Text("Profile")
+                    .font(.title2.weight(.semibold))
+
                 CardSurface(accent: agent.accent) {
                     HStack(alignment: .top, spacing: AppSpacing.md) {
                         Group {
@@ -901,8 +899,19 @@ private struct DesktopAgentDetailView: View {
                                 MetricLabel(title: "Capabilities", value: "\(agent.capabilityTags.count)")
                             }
                         }
+
+                        Spacer(minLength: 0)
+
+                        Button {
+                            showEditSheet = true
+                        } label: {
+                            Label("Edit Profile", systemImage: "pencil")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 if !agent.capabilityTags.isEmpty {
                     CardSurface(accent: .blue) {
@@ -916,7 +925,9 @@ private struct DesktopAgentDetailView: View {
                                 }
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 CardSurface(accent: .purple) {
@@ -943,12 +954,19 @@ private struct DesktopAgentDetailView: View {
                             }
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(AppSpacing.lg)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(Color.appCanvasBackground)
         .navigationTitle(displayName)
+        .sheet(isPresented: $showEditSheet) {
+            EditAgentSheet(agent: agent)
+                .environmentObject(store)
+        }
     }
 }
 

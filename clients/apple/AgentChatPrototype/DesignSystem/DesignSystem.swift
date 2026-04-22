@@ -326,11 +326,11 @@ struct CardSurface<Content: View>: View {
             .background(
                 RoundedRectangle(cornerRadius: AppRadius.card, style: .continuous)
                     .fill(Color.appCardBackground)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: AppRadius.card, style: .continuous)
-                    .fill(Color.appSelectionFill)
-                    .opacity(isSelected ? 0.9 : 0)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: AppRadius.card, style: .continuous)
+                            .fill(Color.appSelectionFill)
+                            .opacity(isSelected ? 0.9 : 0)
+                    }
             )
             .overlay(
                 RoundedRectangle(cornerRadius: AppRadius.card, style: .continuous)
