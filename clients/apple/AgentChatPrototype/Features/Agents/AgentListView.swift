@@ -500,7 +500,7 @@ struct EditAgentSheet: View {
             .padding(.vertical, 16)
             .background(Color.appWindowBackground)
         }
-        .frame(width: 440)
+        .frame(maxWidth: 440)
         .background(Color.appCanvasBackground)
         .onAppear {
             editedName = displayName
