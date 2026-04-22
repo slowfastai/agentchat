@@ -86,6 +86,7 @@ struct AgentChatDesktopApp: App {
         WindowGroup("AgentChat Desktop") {
             RootView()
                 .environmentObject(env.workspace)
+                .preferredColorScheme(.light)
                 .onAppear {
                     bootstrapStoreIfNeeded()
                 }
