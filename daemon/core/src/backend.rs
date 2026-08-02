@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
 
-use agentchat_protocol::AgentSessionSettings;
+use agentchat_protocol::{AgentSessionSettings, AgentSettingOption};
 
 /// Backend-agnostic streaming update emitted by an agent session.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -102,6 +102,14 @@ pub trait AgentBackend {
         } else {
             Ok(())
         }
+    }
+
+    /// Returns settings discovered from the backend's runtime protocol.
+    ///
+    /// Backends with static configuration can leave this empty; the agent
+    /// manager will still expose settings declared in the agent config.
+    fn setting_options(&self) -> Vec<AgentSettingOption> {
+        Vec::new()
     }
 
     async fn prompt(&self, session_id: String, text: String) -> Result<AgentPromptResult, String>;

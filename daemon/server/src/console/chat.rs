@@ -182,7 +182,9 @@ pub const PAGE: &str = r##"<!doctype html>
   .workspace {
     display: flex;
     min-width: 0;
+    min-height: 0;
     flex-direction: column;
+    overflow: hidden;
     background: var(--bg);
   }
   .topbar {
@@ -279,6 +281,84 @@ pub const PAGE: &str = r##"<!doctype html>
     color: #e3e6e3;
     font-size: 14px;
   }
+  .message-body.markdown {
+    white-space: normal;
+    line-height: 1.62;
+  }
+  .message-body.markdown > :first-child { margin-top: 0; }
+  .message-body.markdown > :last-child { margin-bottom: 0; }
+  .message-body.markdown p { margin: 0 0 12px; }
+  .message-body.markdown h1,
+  .message-body.markdown h2,
+  .message-body.markdown h3,
+  .message-body.markdown h4,
+  .message-body.markdown h5,
+  .message-body.markdown h6 {
+    margin: 18px 0 8px;
+    color: var(--text);
+    line-height: 1.25;
+  }
+  .message-body.markdown h1 { font-size: 21px; }
+  .message-body.markdown h2 { font-size: 18px; }
+  .message-body.markdown h3 { font-size: 16px; }
+  .message-body.markdown h4,
+  .message-body.markdown h5,
+  .message-body.markdown h6 { font-size: 14px; }
+  .message-body.markdown ul,
+  .message-body.markdown ol { margin: 6px 0 14px; padding-left: 1.45em; }
+  .message-body.markdown li + li { margin-top: 4px; }
+  .message-body.markdown blockquote {
+    margin: 12px 0;
+    padding: 1px 0 1px 14px;
+    border-left: 2px solid var(--line);
+    color: var(--muted);
+  }
+  .message-body.markdown blockquote > :last-child { margin-bottom: 0; }
+  .message-body.markdown code {
+    padding: 2px 5px;
+    background: var(--surface-3);
+    color: var(--accent);
+    font: .9em/1.4 var(--mono);
+  }
+  .message-body.markdown pre {
+    max-width: 100%;
+    margin: 12px 0;
+    overflow: auto;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    background: #111416;
+  }
+  .message-body.markdown pre code {
+    display: block;
+    padding: 0;
+    background: transparent;
+    color: #d9e3d7;
+    white-space: pre;
+    font-size: 12px;
+  }
+  .message-body.markdown a { color: var(--cyan); text-underline-offset: 2px; }
+  .message-body.markdown img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin: 10px 0;
+    border: 1px solid var(--line);
+  }
+  .message-body.markdown table {
+    width: 100%;
+    margin: 12px 0;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .message-body.markdown th,
+  .message-body.markdown td {
+    padding: 7px 9px;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    vertical-align: top;
+  }
+  .message-body.markdown th { color: var(--text); font-weight: 700; }
+  .message-body.markdown hr { margin: 18px 0; border: 0; border-top: 1px solid var(--line); }
   .message.user { padding-left: 15px; border-left: 2px solid var(--warm); }
   .message.user .message-body { color: #f4dfc9; }
   .message.assistant { padding-left: 15px; border-left: 2px solid var(--cyan); }
@@ -457,7 +537,7 @@ pub const PAGE: &str = r##"<!doctype html>
     .side-heading { padding-top: 11px; }
     .thread-list { max-height: 145px; }
     .sidebar-foot { display: none; }
-    .workspace { min-height: calc(100vh - 230px); }
+    .workspace { min-height: calc(100vh - 230px); overflow: visible; }
     .topbar { padding: 13px 15px; }
     .topbar-actions .quiet-button:first-child { display: none; }
     .timeline { padding: 20px 15px; }
@@ -565,9 +645,249 @@ const $ = (id) => document.getElementById(id);
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>\"]/g, (char) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;"
 }[char]));
+
+function markdownUrl(value) {
+  const url = String(value ?? "").trim();
+  if (/^(https?:\/\/|mailto:|tel:)/i.test(url)) return url;
+  if (/^#[A-Za-z0-9_-]+$/.test(url)) return url;
+  return null;
+}
+
+function tableCells(line) {
+  let value = line.trim();
+  if (value.startsWith("|")) value = value.slice(1);
+  if (value.endsWith("|")) value = value.slice(0, -1);
+  return value.split("|").map((cell) => cell.trim());
+}
+
+function isTableSeparator(line) {
+  return /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/.test(line || "");
+}
+
+// Keep the local page dependency-free while ensuring agent-authored markup is safe.
+function renderInlineMarkdown(value) {
+  const source = String(value ?? "");
+  let html = "";
+  let index = 0;
+  const appendText = (text) => { html += escapeHtml(text); };
+
+  while (index < source.length) {
+    if (source[index] === "\\" && /[\\`*_{}[\]()#+.!\->]/.test(source[index + 1] || "")) {
+      appendText(source[index + 1]);
+      index += 2;
+      continue;
+    }
+    if (source[index] === "\n") {
+      html += "<br>";
+      index += 1;
+      continue;
+    }
+
+    if (source[index] === "`") {
+      let runLength = 1;
+      while (source[index + runLength] === "`") runLength += 1;
+      const marker = "`".repeat(runLength);
+      const end = source.indexOf(marker, index + runLength);
+      if (end >= 0) {
+        let code = source.slice(index + runLength, end);
+        if (code.startsWith(" ") && code.endsWith(" ") && code.trim()) code = code.slice(1, -1);
+        html += `<code>${escapeHtml(code.replace(/\n/g, " "))}</code>`;
+        index = end + runLength;
+        continue;
+      }
+    }
+
+    const imageMatch = source.slice(index).match(/^!\[([^\]\n]*)\]\((\S+?)(?:\s+["']([^"']*)["'])?\)/);
+    if (imageMatch) {
+      const imageUrl = markdownUrl(imageMatch[2]);
+      if (imageUrl && /^https?:\/\//i.test(imageUrl)) {
+        const title = imageMatch[3] ? ` title="${escapeHtml(imageMatch[3])}"` : "";
+        html += `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(imageMatch[1])}" loading="lazy" referrerpolicy="no-referrer"${title}>`;
+      } else {
+        appendText(imageMatch[0]);
+      }
+      index += imageMatch[0].length;
+      continue;
+    }
+
+    const linkMatch = source.slice(index).match(/^\[([^\]\n]+)\]\((\S+?)(?:\s+["']([^"']*)["'])?\)/);
+    if (linkMatch) {
+      const linkUrl = markdownUrl(linkMatch[2]);
+      if (linkUrl) {
+        const title = linkMatch[3] ? ` title="${escapeHtml(linkMatch[3])}"` : "";
+        html += `<a href="${escapeHtml(linkUrl)}" target="_blank" rel="noreferrer noopener"${title}>${renderInlineMarkdown(linkMatch[1])}</a>`;
+      } else {
+        html += renderInlineMarkdown(linkMatch[1]);
+      }
+      index += linkMatch[0].length;
+      continue;
+    }
+
+    const autolinkMatch = source.slice(index).match(/^<(https?:\/\/[^\s>]+|mailto:[^\s>]+)>/i);
+    if (autolinkMatch) {
+      const linkUrl = markdownUrl(autolinkMatch[1]);
+      html += `<a href="${escapeHtml(linkUrl)}" target="_blank" rel="noreferrer noopener">${escapeHtml(autolinkMatch[1])}</a>`;
+      index += autolinkMatch[0].length;
+      continue;
+    }
+
+    let marker = null;
+    if (source.startsWith("**", index)) marker = "**";
+    else if (source.startsWith("__", index)) marker = "__";
+    else if (source.startsWith("~~", index)) marker = "~~";
+    if (marker) {
+      const end = source.indexOf(marker, index + marker.length);
+      if (end > index + marker.length) {
+        const tag = marker === "~~" ? "del" : "strong";
+        html += `<${tag}>${renderInlineMarkdown(source.slice(index + marker.length, end))}</${tag}>`;
+        index = end + marker.length;
+        continue;
+      }
+    }
+
+    if (source[index] === "*" || source[index] === "_") {
+      const marker = source[index];
+      const end = source.indexOf(marker, index + 1);
+      if (end > index + 1 && source[index + 1] !== " ") {
+        html += `<em>${renderInlineMarkdown(source.slice(index + 1, end))}</em>`;
+        index = end + 1;
+        continue;
+      }
+    }
+
+    appendText(source[index]);
+    index += 1;
+  }
+  return html;
+}
+
+function renderMarkdown(value) {
+  const lines = String(value ?? "").replace(/\r\n?/g, "\n").split("\n");
+  let html = "";
+  let paragraph = [];
+  let listItems = [];
+  let listTag = null;
+  let quoteLines = [];
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    html += `<p>${renderInlineMarkdown(paragraph.join("\n"))}</p>`;
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!listItems.length) return;
+    html += `<${listTag}>${listItems.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</${listTag}>`;
+    listItems = [];
+    listTag = null;
+  };
+  const flushQuote = () => {
+    if (!quoteLines.length) return;
+    html += `<blockquote>${renderMarkdown(quoteLines.join("\n"))}</blockquote>`;
+    quoteLines = [];
+  };
+  const flushFlow = () => {
+    flushParagraph();
+    flushList();
+    flushQuote();
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const fence = line.match(/^ {0,3}(`{3,}|~{3,})\s*(.*)$/);
+    if (fence) {
+      flushFlow();
+      const marker = fence[1];
+      const closing = new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`);
+      const codeLines = [];
+      let closed = false;
+      for (index += 1; index < lines.length; index += 1) {
+        if (closing.test(lines[index])) {
+          closed = true;
+          break;
+        }
+        codeLines.push(lines[index]);
+      }
+      const language = (fence[2].trim().split(/\s+/)[0] || "").replace(/[^A-Za-z0-9_-]/g, "");
+      const className = language ? ` class="language-${escapeHtml(language)}"` : "";
+      html += `<pre><code${className}>${escapeHtml(codeLines.join("\n"))}</code></pre>`;
+      if (!closed) break;
+      continue;
+    }
+
+    if (!line.trim()) {
+      flushFlow();
+      continue;
+    }
+
+    const quote = line.match(/^ {0,3}>\s?(.*)$/);
+    if (quote) {
+      flushParagraph();
+      flushList();
+      quoteLines.push(quote[1]);
+      continue;
+    }
+    flushQuote();
+
+    if (line.includes("|") && isTableSeparator(lines[index + 1])) {
+      flushParagraph();
+      flushList();
+      const headers = tableCells(line);
+      const rows = [];
+      index += 2;
+      while (index < lines.length && lines[index].includes("|") && lines[index].trim()) {
+        rows.push(tableCells(lines[index]));
+        index += 1;
+      }
+      index -= 1;
+      html += `<table><thead><tr>${headers.map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`).join("")}</tr></thead>`;
+      if (rows.length) html += `<tbody>${rows.map((row) => `<tr>${headers.map((_, cellIndex) => `<td>${renderInlineMarkdown(row[cellIndex] || "")}</td>`).join("")}</tr>`).join("")}</tbody>`;
+      html += "</table>";
+      continue;
+    }
+
+    const heading = line.match(/^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      const level = heading[1].length;
+      html += `<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`;
+      continue;
+    }
+
+    if (/^ {0,3}(?:\*\s*){3,}$/.test(line) || /^ {0,3}(?:-\s*){3,}$/.test(line) || /^ {0,3}(?:_\s*){3,}$/.test(line)) {
+      flushParagraph();
+      flushList();
+      html += "<hr>";
+      continue;
+    }
+
+    const unordered = line.match(/^ {0,3}[-+*]\s+(.+)$/);
+    const ordered = line.match(/^ {0,3}\d+[.)]\s+(.+)$/);
+    if (unordered || ordered) {
+      flushParagraph();
+      const nextTag = ordered ? "ol" : "ul";
+      if (listTag && listTag !== nextTag) flushList();
+      listTag = nextTag;
+      listItems.push((unordered || ordered)[1]);
+      continue;
+    }
+    if (listTag && /^\s{2,}\S/.test(line)) {
+      listItems[listItems.length - 1] += `\n${line.trim()}`;
+      continue;
+    }
+    flushList();
+    paragraph.push(line);
+  }
+
+  flushFlow();
+  return html;
+}
+
 const state = {
   socket: null,
   reconnectTimer: null,
+  timelineFollowing: true,
+  timelineScrollFrame: null,
   agents: [],
   threads: new Map(),
   snapshots: new Map(),
@@ -682,6 +1002,19 @@ function ensureTargets(threadId) {
   return state.targets.get(threadId);
 }
 
+function timelineIsNearBottom() {
+  const timeline = $("timeline");
+  return timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 96;
+}
+
+function scheduleTimelineScroll() {
+  if (state.timelineScrollFrame !== null) return;
+  state.timelineScrollFrame = requestAnimationFrame(() => {
+    state.timelineScrollFrame = null;
+    if (state.timelineFollowing) $("timeline").scrollTop = $("timeline").scrollHeight;
+  });
+}
+
 function currentSnapshot() {
   return state.currentThreadId ? state.snapshots.get(state.currentThreadId) : null;
 }
@@ -761,13 +1094,24 @@ function settingMarkup(participant, settingId, label, key) {
   return `<div class="setting"><label>${escapeHtml(label)}</label><select data-setting="${escapeHtml(settingId)}" data-participant="${escapeHtml(participant.participant_id)}">${options}</select></div>`;
 }
 
+function renderAgentPicker(participants) {
+  const selectedAgentIds = new Set((participants || [])
+    .filter((participant) => participant.kind === "agent")
+    .map((participant) => participant.agent_id));
+  const availableAgents = state.agents
+    .filter((agent) => agent.status === "online" && !selectedAgentIds.has(agent.agent_id));
+  $("agentPicker").innerHTML = '<option value="">Choose an agent</option>' + availableAgents
+    .map((agent) => `<option value="${escapeHtml(agent.agent_id)}">${escapeHtml(agent.name)}</option>`).join("");
+  $("addAgentButton").disabled = !state.currentThreadId || !availableAgents.length;
+}
+
 function renderParticipants() {
   const snapshot = currentSnapshot();
   const participants = snapshot ? snapshot.participants : [];
   $("participantCount").textContent = `${participants.filter((p) => p.kind === "agent").length} connected`;
   if (!snapshot) {
     $("participants").innerHTML = '<div class="inspector-note">Select a thread to manage its agents.</div>';
-    $("agentPicker").innerHTML = '<option value="">Choose an agent</option>';
+    renderAgentPicker([]);
     return;
   }
   $("participants").innerHTML = participants.map((participant) => {
@@ -799,10 +1143,7 @@ function renderParticipants() {
       }
     });
   });
-  const selectedAgentIds = new Set(participants.filter((p) => p.kind === "agent").map((p) => p.agent_id));
-  $("agentPicker").innerHTML = '<option value="">Choose an agent</option>' + state.agents
-    .filter((agent) => agent.status === "online" && !selectedAgentIds.has(agent.agent_id))
-    .map((agent) => `<option value="${escapeHtml(agent.agent_id)}">${escapeHtml(agent.name)}</option>`).join("");
+  renderAgentPicker(participants);
 }
 
 function renderRecipients() {
@@ -839,14 +1180,15 @@ function renderTimeline() {
   const threadId = state.currentThreadId;
   const timeline = $("timeline");
   if (!threadId) return;
-  const shouldStick = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 100;
+  const shouldFollow = state.timelineFollowing || timelineIsNearBottom();
+  state.timelineFollowing = shouldFollow;
   const messages = ensureMessages(threadId);
   if (!messages.length) {
     timeline.innerHTML = '<div class="timeline-empty">No messages yet. Select agents above and send the first message.</div>';
   } else {
     timeline.innerHTML = messages.map(renderMessage).join("");
   }
-  if (shouldStick || messages.length < 2) timeline.scrollTop = timeline.scrollHeight;
+  if (shouldFollow || messages.length < 2) scheduleTimelineScroll();
 }
 
 function renderMessage(message) {
@@ -857,7 +1199,7 @@ function renderMessage(message) {
   const thinking = message.thinking ? `<details class="assistant-thinking"><summary>Reasoning</summary><div class="detail">${escapeHtml(message.thinking)}</div></details>` : "";
   const tools = message.tools && message.tools.length ? `<div class="assistant-tools">${message.tools.map((tool) => `<div class="tool-row"><span class="tool-status ${tool.status === "failed" ? "failed" : ""}">${escapeHtml(tool.status || "working")}</span><span>${escapeHtml(tool.title)}</span></div>`).join("")}</div>` : "";
   const plan = message.plan ? `<details class="assistant-plan"><summary>Plan update</summary><div class="detail">${escapeHtml(JSON.stringify(message.plan, null, 2))}</div></details>` : "";
-  const body = message.response ? `<div class="message-body">${escapeHtml(message.response)}</div>` : (status === "streaming" ? '<div class="message-body">Working...</div>' : "");
+  const body = message.response ? `<div class="message-body markdown">${renderMarkdown(message.response)}</div>` : (status === "streaming" ? '<div class="message-body">Working...</div>' : "");
   const footer = status === "streaming" ? "streaming" : (message.stop_reason || status);
   return `<article class="message assistant ${escapeHtml(status)}"><div class="message-head"><span class="message-name">${escapeHtml(message.display_name || message.agent_id || "Agent")}</span><span class="message-tag">agent</span><span>${escapeHtml(formatTime(message.created_at || Date.now()))}</span></div>${thinking}${tools}${plan}${body}<div class="assistant-footer">${escapeHtml(footer)}</div></article>`;
 }
@@ -878,8 +1220,12 @@ function updateSetting(participantId, settingId, value) {
   const snapshot = currentSnapshot();
   const participant = snapshot && snapshot.participants.find((item) => item.participant_id === participantId);
   if (!snapshot || !participant) return;
-  const settings = { ...(participant.settings || {}) };
-  settings[settingId === "reasoning_effort" ? "reasoning_effort" : "model"] = value || null;
+  const settings = {
+    model: settingId === "model" ? (value || null) : ((participant.settings || {}).model || null),
+    // A model change can invalidate the old reasoning value, so let ACP
+    // refresh the model's available thought levels before choosing one.
+    reasoning_effort: settingId === "reasoning_effort" ? (value || null) : null,
+  };
   if (send({ type: "set_thread_participant_settings", thread_id: snapshot.thread_id, participant_id: participantId, settings })) {
     $("composerStatus").textContent = "Saving participant settings...";
   }
@@ -888,6 +1234,7 @@ function updateSetting(participantId, settingId, value) {
 function selectThread(threadId) {
   if (!state.threads.has(threadId)) return;
   state.currentThreadId = threadId;
+  state.timelineFollowing = true;
   state.attached.delete(threadId);
   state.messages.set(threadId, []);
   ensureTargets(threadId).clear();
@@ -934,7 +1281,10 @@ function handleEvent(event) {
       applyParticipant(event.thread_id, event.participant);
       ensureTargets(event.thread_id).add(event.participant.participant_id);
       updateThreadSummary(event.thread_id, { participant_count: ensureSnapshot(event.thread_id).participants.length, last_thread_seq: event.thread_seq });
-      if (state.currentThreadId === event.thread_id) renderAll();
+      if (state.currentThreadId === event.thread_id) {
+        renderAll();
+        send({ type: "list_agents" });
+      }
       break;
     case "thread_participant_settings_updated":
       applyParticipant(event.thread_id, event.participant);
@@ -942,6 +1292,7 @@ function handleEvent(event) {
       if (state.currentThreadId === event.thread_id) {
         renderAll();
         $("composerStatus").textContent = "Participant settings saved";
+        send({ type: "list_agents" });
       }
       break;
     case "thread_participant_removed":
@@ -1114,11 +1465,16 @@ function sendMessage() {
     showToast("Select at least one agent.");
     return;
   }
+  state.timelineFollowing = true;
   if (send({ type: "send_thread_message", thread_id: snapshot.thread_id, content, target_participant_ids: targets })) {
     $("messageInput").value = "";
     $("messageInput").focus();
   }
 }
+
+$("timeline").addEventListener("scroll", () => {
+  state.timelineFollowing = timelineIsNearBottom();
+});
 
 renderAll();
 connect();

@@ -133,6 +133,19 @@ fn settings_for_config(config: &AgentConfig) -> Vec<AgentSettingOption> {
     settings
 }
 
+fn merge_setting_options(
+    configured: &mut Vec<AgentSettingOption>,
+    discovered: Vec<AgentSettingOption>,
+) {
+    for setting in discovered {
+        if let Some(existing) = configured.iter_mut().find(|item| item.id == setting.id) {
+            *existing = setting;
+        } else {
+            configured.push(setting);
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionBinding {
     pub agent_id: String,
@@ -219,30 +232,34 @@ impl AgentManager {
         let mut summaries = self
             .agents
             .values()
-            .map(|managed| AgentSummary {
-                agent_id: managed.config.id.clone(),
-                name: managed.config.name.clone(),
-                mention_handle: Some(canonical_mention_handle(&managed.config.id)),
-                kind: managed
-                    .config
-                    .extra
-                    .get("kind")
-                    .and_then(Value::as_str)
-                    .unwrap_or(&managed.config.backend)
-                    .to_string(),
-                status: if managed.agent.is_alive() {
-                    AgentStatus::Online
-                } else {
-                    AgentStatus::Crashed
-                },
-                default_working_dir: managed.config.working_dir.clone(),
-                capabilities: vec![
-                    "session".into(),
-                    "prompt".into(),
-                    "cancel".into(),
-                    "distill".into(),
-                ],
-                settings: settings_for_config(&managed.config),
+            .map(|managed| {
+                let mut settings = settings_for_config(&managed.config);
+                merge_setting_options(&mut settings, managed.agent.setting_options());
+                AgentSummary {
+                    agent_id: managed.config.id.clone(),
+                    name: managed.config.name.clone(),
+                    mention_handle: Some(canonical_mention_handle(&managed.config.id)),
+                    kind: managed
+                        .config
+                        .extra
+                        .get("kind")
+                        .and_then(Value::as_str)
+                        .unwrap_or(&managed.config.backend)
+                        .to_string(),
+                    status: if managed.agent.is_alive() {
+                        AgentStatus::Online
+                    } else {
+                        AgentStatus::Crashed
+                    },
+                    default_working_dir: managed.config.working_dir.clone(),
+                    capabilities: vec![
+                        "session".into(),
+                        "prompt".into(),
+                        "cancel".into(),
+                        "distill".into(),
+                    ],
+                    settings,
+                }
             })
             .collect::<Vec<_>>();
         summaries.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));

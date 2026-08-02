@@ -14,7 +14,9 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tracing::{debug, error, info, warn};
 
-use agentchat_protocol::{AgentConfig, AgentSessionSettings};
+use agentchat_protocol::{
+    AgentConfig, AgentSessionSettings, AgentSettingOption, AgentSettingValue,
+};
 
 use crate::backend::{AgentBackend, AgentNotification, AgentPromptResult};
 use crate::capabilities::DaemonClient;
@@ -29,6 +31,7 @@ pub struct AcpAgent {
     /// Channel to receive session update notifications from the DaemonClient.
     update_rx: RefCell<Option<mpsc::UnboundedReceiver<AgentNotification>>>,
     session_config_options: RefCell<HashMap<String, Vec<SessionConfigOption>>>,
+    latest_session_id: RefCell<Option<String>>,
     /// Broadcasts whether the child process is still alive.
     health_tx: watch::Sender<bool>,
     /// Signals the child-process monitor task to terminate the subprocess.
@@ -149,6 +152,7 @@ impl AcpAgent {
             conn,
             update_rx: RefCell::new(Some(update_rx)),
             session_config_options: RefCell::new(HashMap::new()),
+            latest_session_id: RefCell::new(None),
             health_tx,
             kill_tx,
         })
@@ -175,6 +179,17 @@ impl AcpAgent {
 
         Ok(response)
     }
+
+    fn remember_session_config_options(
+        &self,
+        session_id: String,
+        options: Vec<SessionConfigOption>,
+    ) {
+        self.session_config_options
+            .borrow_mut()
+            .insert(session_id.clone(), options);
+        *self.latest_session_id.borrow_mut() = Some(session_id);
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -193,13 +208,13 @@ impl AgentBackend for AcpAgent {
             .new_session(request)
             .await
             .map_err(|err| err.to_string())?;
-        if let Some(options) = response.config_options.clone() {
-            self.session_config_options
-                .borrow_mut()
-                .insert(response.session_id.to_string(), options);
-        }
+        let session_id = response.session_id.to_string();
+        self.remember_session_config_options(
+            session_id.clone(),
+            response.config_options.unwrap_or_default(),
+        );
         info!("ACP session created: {}", response.session_id);
-        Ok(response.session_id.to_string())
+        Ok(session_id)
     }
 
     async fn set_session_settings(
@@ -240,9 +255,7 @@ impl AgentBackend for AcpAgent {
                 ))
                 .await
                 .map_err(|err| err.to_string())?;
-            self.session_config_options
-                .borrow_mut()
-                .insert(session_id.clone(), response.config_options);
+            self.remember_session_config_options(session_id.clone(), response.config_options);
         }
 
         Ok(())
@@ -267,6 +280,19 @@ impl AgentBackend for AcpAgent {
             .cancel(CancelNotification::new(SessionId::new(session_id)))
             .await
             .map_err(|err| err.to_string())
+    }
+
+    fn setting_options(&self) -> Vec<AgentSettingOption> {
+        let Some(session_id) = self.latest_session_id.borrow().clone() else {
+            return Vec::new();
+        };
+        let options = self
+            .session_config_options
+            .borrow()
+            .get(&session_id)
+            .cloned()
+            .unwrap_or_default();
+        acp_setting_options(&options)
     }
 
     fn take_update_rx(&self) -> Option<mpsc::UnboundedReceiver<AgentNotification>> {
@@ -317,5 +343,119 @@ fn acp_option_matches(option: &SessionConfigOption, category: &str) -> bool {
                 || id.contains("effort")
         }
         _ => false,
+    }
+}
+
+fn acp_setting_options(options: &[SessionConfigOption]) -> Vec<AgentSettingOption> {
+    let mut settings = Vec::new();
+    for option in options {
+        let Some(setting) = acp_setting_option(option) else {
+            continue;
+        };
+        if let Some(existing) = settings
+            .iter_mut()
+            .find(|item: &&mut AgentSettingOption| item.id == setting.id)
+        {
+            *existing = setting;
+        } else {
+            settings.push(setting);
+        }
+    }
+    settings
+}
+
+fn acp_setting_option(option: &SessionConfigOption) -> Option<AgentSettingOption> {
+    let (id, name) = if acp_option_matches(option, "model") {
+        ("model", "Model")
+    } else if acp_option_matches(option, "reasoning_effort") {
+        ("reasoning_effort", "Reasoning effort")
+    } else {
+        return None;
+    };
+
+    let SessionConfigKind::Select(select) = &option.kind else {
+        return None;
+    };
+    let values: Vec<AgentSettingValue> = match &select.options {
+        SessionConfigSelectOptions::Ungrouped(options) => options
+            .iter()
+            .map(|value| AgentSettingValue {
+                id: value.value.to_string(),
+                label: value.name.clone(),
+            })
+            .collect(),
+        SessionConfigSelectOptions::Grouped(groups) => groups
+            .iter()
+            .flat_map(|group| group.options.iter())
+            .map(|value| AgentSettingValue {
+                id: value.value.to_string(),
+                label: value.name.clone(),
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    if values.is_empty() {
+        return None;
+    }
+
+    Some(AgentSettingOption {
+        id: id.into(),
+        name: name.into(),
+        category: if id == "model" {
+            "model".into()
+        } else {
+            "thought_level".into()
+        },
+        values,
+        current_value: Some(select.current_value.to_string()),
+        apply_scope: "session".into(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acp_options_expose_model_and_reasoning_selectors() {
+        let options = vec![
+            SessionConfigOption::select(
+                "model",
+                "Model",
+                "openai/gpt-5",
+                vec![
+                    SessionConfigSelectOption::new("openai/gpt-5", "GPT-5"),
+                    SessionConfigSelectOption::new("anthropic/claude-sonnet", "Claude Sonnet"),
+                ],
+            )
+            .category(SessionConfigOptionCategory::Model),
+            SessionConfigOption::select(
+                "reasoning",
+                "Reasoning",
+                "high",
+                vec![
+                    SessionConfigSelectOption::new("low", "Low"),
+                    SessionConfigSelectOption::new("high", "High"),
+                ],
+            )
+            .category(SessionConfigOptionCategory::ThoughtLevel),
+            SessionConfigOption::select(
+                "mode",
+                "Mode",
+                "build",
+                vec![SessionConfigSelectOption::new("build", "Build")],
+            )
+            .category(SessionConfigOptionCategory::Mode),
+        ];
+
+        let settings = acp_setting_options(&options);
+
+        assert_eq!(settings.len(), 2);
+        assert_eq!(settings[0].id, "model");
+        assert_eq!(settings[0].current_value.as_deref(), Some("openai/gpt-5"));
+        assert_eq!(settings[0].values[1].id, "anthropic/claude-sonnet");
+        assert_eq!(settings[1].id, "reasoning_effort");
+        assert_eq!(settings[1].current_value.as_deref(), Some("high"));
+        assert_eq!(settings[1].values[0].id, "low");
     }
 }

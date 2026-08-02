@@ -998,8 +998,14 @@ impl AppProtocolSession {
             return;
         };
 
+        let upstream_session_id = self
+            .manager
+            .borrow()
+            .upstream_session_for_session(&session_id)
+            .map(str::to_owned)
+            .unwrap_or_else(|| session_id.clone());
         if let Err(message) = agent
-            .set_session_settings(session_id.clone(), settings.clone())
+            .set_session_settings(upstream_session_id, settings.clone())
             .await
         {
             let _ = self.response_tx.send(ResponseEvent::Error {
