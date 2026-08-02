@@ -5,7 +5,10 @@ use std::rc::Rc;
 use serde_json::Value;
 use tracing::info;
 
-use agentchat_protocol::{canonical_mention_handle, AgentConfig, AgentStatus, AgentSummary};
+use agentchat_protocol::{
+    canonical_mention_handle, AgentConfig, AgentSettingOption, AgentSettingValue, AgentStatus,
+    AgentSummary,
+};
 
 use crate::acp_client::AcpAgent;
 use crate::backend::AgentBackend;
@@ -14,6 +17,120 @@ use crate::codex_app_server::CodexAppServerAgent;
 struct ManagedAgent {
     config: AgentConfig,
     agent: Rc<dyn AgentBackend>,
+}
+
+fn extra_string(extra: &HashMap<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        extra
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn setting_values(value: Option<&Value>) -> Vec<AgentSettingValue> {
+    let Some(Value::Array(values)) = value else {
+        return Vec::new();
+    };
+
+    values
+        .iter()
+        .filter_map(|value| match value {
+            Value::String(id) if !id.trim().is_empty() => Some(AgentSettingValue {
+                id: id.clone(),
+                label: id.clone(),
+            }),
+            Value::Object(object) => {
+                let id = object
+                    .get("id")
+                    .or_else(|| object.get("value"))
+                    .or_else(|| object.get("model"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())?
+                    .to_string();
+                let label = object
+                    .get("label")
+                    .or_else(|| object.get("name"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| id.clone());
+                Some(AgentSettingValue { id, label })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn settings_for_config(config: &AgentConfig) -> Vec<AgentSettingOption> {
+    let is_codex = config.backend.to_ascii_lowercase().contains("codex")
+        || config.id.to_ascii_lowercase().contains("codex")
+        || config.name.to_ascii_lowercase().contains("codex");
+    let mut model_values = setting_values(
+        config
+            .extra
+            .get("model_options")
+            .or_else(|| config.extra.get("models")),
+    );
+    if model_values.is_empty() && is_codex {
+        model_values = ["gpt-5.6-luna", "gpt-5.6-sol"]
+            .into_iter()
+            .map(|id| AgentSettingValue {
+                id: id.into(),
+                label: id.into(),
+            })
+            .collect();
+    }
+    let reasoning_values = {
+        let configured = setting_values(
+            config
+                .extra
+                .get("reasoning_efforts")
+                .or_else(|| config.extra.get("reasoning_options")),
+        );
+        if configured.is_empty() && is_codex {
+            ["low", "medium", "high", "max"]
+                .into_iter()
+                .map(|id| AgentSettingValue {
+                    id: id.into(),
+                    label: id.into(),
+                })
+                .collect()
+        } else {
+            configured
+        }
+    };
+
+    let default_model = extra_string(&config.extra, &["model", "default_model"]);
+    let default_reasoning = extra_string(
+        &config.extra,
+        &["reasoning_effort", "default_reasoning_effort"],
+    );
+
+    let mut settings = Vec::new();
+    if is_codex || !model_values.is_empty() || default_model.is_some() {
+        settings.push(AgentSettingOption {
+            id: "model".into(),
+            name: "Model".into(),
+            category: "model".into(),
+            values: model_values,
+            current_value: default_model,
+            apply_scope: "session".into(),
+        });
+    }
+    if is_codex || !reasoning_values.is_empty() || default_reasoning.is_some() {
+        settings.push(AgentSettingOption {
+            id: "reasoning_effort".into(),
+            name: "Reasoning effort".into(),
+            category: "thought_level".into(),
+            values: reasoning_values,
+            current_value: default_reasoning,
+            apply_scope: "session".into(),
+        });
+    }
+    settings
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +242,7 @@ impl AgentManager {
                     "cancel".into(),
                     "distill".into(),
                 ],
+                settings: settings_for_config(&managed.config),
             })
             .collect::<Vec<_>>();
         summaries.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
@@ -287,5 +405,31 @@ mod tests {
             manager.public_session_for_upstream("agent-1", "upstream-2"),
             None
         );
+    }
+
+    #[test]
+    fn codex_settings_include_max_reasoning_effort() {
+        let config = AgentConfig {
+            id: "codex".into(),
+            name: "Codex".into(),
+            backend: "codex_app_server".into(),
+            command: "codex".into(),
+            args: Vec::new(),
+            working_dir: None,
+            env_vars: HashMap::new(),
+            extra: HashMap::new(),
+        };
+
+        let reasoning = settings_for_config(&config)
+            .into_iter()
+            .find(|setting| setting.id == "reasoning_effort")
+            .expect("Codex should expose reasoning effort settings");
+        let values = reasoning
+            .values
+            .iter()
+            .map(|value| value.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(values, vec!["low", "medium", "high", "max"]);
     }
 }

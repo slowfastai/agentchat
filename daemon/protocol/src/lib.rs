@@ -1,5 +1,6 @@
 pub mod relay;
 pub mod relay_crypto;
+pub mod run;
 
 use std::collections::HashMap;
 
@@ -33,6 +34,44 @@ pub struct AgentConfig {
     /// Extra configuration (agent-specific).
     #[serde(default)]
     pub extra: HashMap<String, Value>,
+}
+
+/// Runtime settings applied to one agent-backed participant.
+///
+/// Values are intentionally opaque. Different agent backends expose different
+/// model names and reasoning levels, so the daemon forwards them instead of
+/// maintaining a global enum.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct AgentSessionSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+}
+
+/// One value exposed by an agent setting selector.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentSettingValue {
+    pub id: String,
+    pub label: String,
+}
+
+/// A setting the client can render and change for an agent participant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentSettingOption {
+    pub id: String,
+    pub name: String,
+    pub category: String,
+    #[serde(default)]
+    pub values: Vec<AgentSettingValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_value: Option<String>,
+    #[serde(default = "default_setting_apply_scope")]
+    pub apply_scope: String,
+}
+
+fn default_setting_apply_scope() -> String {
+    "session".into()
 }
 
 fn default_agent_backend() -> String {
@@ -126,6 +165,8 @@ pub struct AgentSummary {
     pub status: AgentStatus,
     pub default_working_dir: Option<String>,
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub settings: Vec<AgentSettingOption>,
 }
 
 /// Coarse session execution state exposed to reconnecting clients.
@@ -210,6 +251,8 @@ pub struct ThreadParticipant {
     pub mention_handle: Option<String>,
     pub session_id: Option<String>,
     pub state: ParticipantState,
+    #[serde(default)]
+    pub settings: AgentSessionSettings,
 }
 
 /// Snapshot used by clients to rebuild thread UI after attach.
@@ -308,6 +351,13 @@ pub enum ResponseEvent {
 
     /// Agent participant added to a thread.
     ThreadParticipantAdded {
+        thread_id: String,
+        thread_seq: u64,
+        participant: ThreadParticipant,
+    },
+
+    /// Participant settings changed and will apply to the next turn.
+    ThreadParticipantSettingsUpdated {
         thread_id: String,
         thread_seq: u64,
         participant: ThreadParticipant,
@@ -502,6 +552,7 @@ impl ResponseEvent {
             | ResponseEvent::ThreadClosed { .. }
             | ResponseEvent::ThreadReplayComplete { .. }
             | ResponseEvent::ThreadParticipantAdded { .. }
+            | ResponseEvent::ThreadParticipantSettingsUpdated { .. }
             | ResponseEvent::ThreadParticipantRemoved { .. }
             | ResponseEvent::ThreadMessage { .. }
             | ResponseEvent::ThreadAssistantMessage { .. }
@@ -522,6 +573,7 @@ impl ResponseEvent {
             | ResponseEvent::ThreadClosed { thread_id, .. }
             | ResponseEvent::ThreadReplayComplete { thread_id, .. }
             | ResponseEvent::ThreadParticipantAdded { thread_id, .. }
+            | ResponseEvent::ThreadParticipantSettingsUpdated { thread_id, .. }
             | ResponseEvent::ThreadParticipantRemoved { thread_id, .. }
             | ResponseEvent::ThreadMessage { thread_id, .. }
             | ResponseEvent::ThreadAssistantMessage { thread_id, .. }
@@ -572,6 +624,7 @@ impl ResponseEvent {
             | ResponseEvent::ThreadClosed { .. }
             | ResponseEvent::ThreadReplayComplete { .. }
             | ResponseEvent::ThreadParticipantAdded { .. }
+            | ResponseEvent::ThreadParticipantSettingsUpdated { .. }
             | ResponseEvent::ThreadParticipantRemoved { .. }
             | ResponseEvent::ThreadMessage { .. }
             | ResponseEvent::ThreadAssistantMessage { .. }
@@ -588,6 +641,7 @@ impl ResponseEvent {
     pub fn thread_seq(&self) -> Option<u64> {
         match self {
             ResponseEvent::ThreadParticipantAdded { thread_seq, .. }
+            | ResponseEvent::ThreadParticipantSettingsUpdated { thread_seq, .. }
             | ResponseEvent::ThreadParticipantRemoved { thread_seq, .. }
             | ResponseEvent::ThreadMessage { thread_seq, .. }
             | ResponseEvent::ThreadAssistantMessage { thread_seq, .. }
@@ -653,6 +707,12 @@ pub enum ClientMessage {
     },
     /// Add a new agent-backed participant to an existing thread.
     AddThreadParticipant { thread_id: String, agent_id: String },
+    /// Change an agent participant's runtime settings for its next turn.
+    SetThreadParticipantSettings {
+        thread_id: String,
+        participant_id: String,
+        settings: AgentSessionSettings,
+    },
     /// Remove a participant from an existing thread.
     RemoveThreadParticipant {
         thread_id: String,
@@ -728,6 +788,14 @@ mod tests {
                 thread_id: "thread-1".into(),
                 agent_id: "agent-1".into(),
             },
+            ClientMessage::SetThreadParticipantSettings {
+                thread_id: "thread-1".into(),
+                participant_id: "participant-1".into(),
+                settings: AgentSessionSettings {
+                    model: Some("gpt-5.6-luna".into()),
+                    reasoning_effort: Some("high".into()),
+                },
+            },
             ClientMessage::RemoveThreadParticipant {
                 thread_id: "thread-1".into(),
                 participant_id: "participant-1".into(),
@@ -786,6 +854,7 @@ mod tests {
                     status: AgentStatus::Online,
                     default_working_dir: Some("/tmp/project".into()),
                     capabilities: vec!["session".into(), "prompt".into()],
+                    settings: Vec::new(),
                 }],
             },
             ResponseEvent::ThreadCreated {
@@ -821,6 +890,7 @@ mod tests {
                         mention_handle: Some("agent-1".into()),
                         session_id: Some("session-1".into()),
                         state: ParticipantState::Idle,
+                        settings: AgentSessionSettings::default(),
                     }],
                 },
             },
@@ -842,6 +912,7 @@ mod tests {
                     mention_handle: Some("agent-1".into()),
                     session_id: Some("session-1".into()),
                     state: ParticipantState::Idle,
+                    settings: AgentSessionSettings::default(),
                 },
             },
             ResponseEvent::ThreadParticipantRemoved {
@@ -1065,6 +1136,7 @@ mod tests {
             status: AgentStatus::Online,
             default_working_dir: Some("/tmp/project".into()),
             capabilities: vec!["session".into(), "prompt".into()],
+            settings: Vec::new(),
         };
 
         assert_round_trip(&agent);

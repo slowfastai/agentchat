@@ -4,6 +4,7 @@
 //! session creation, prompt/response streaming, and cancellation.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use agent_client_protocol::*;
@@ -13,7 +14,7 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tracing::{debug, error, info, warn};
 
-use agentchat_protocol::AgentConfig;
+use agentchat_protocol::{AgentConfig, AgentSessionSettings};
 
 use crate::backend::{AgentBackend, AgentNotification, AgentPromptResult};
 use crate::capabilities::DaemonClient;
@@ -27,6 +28,7 @@ pub struct AcpAgent {
     conn: ClientSideConnection,
     /// Channel to receive session update notifications from the DaemonClient.
     update_rx: RefCell<Option<mpsc::UnboundedReceiver<AgentNotification>>>,
+    session_config_options: RefCell<HashMap<String, Vec<SessionConfigOption>>>,
     /// Broadcasts whether the child process is still alive.
     health_tx: watch::Sender<bool>,
     /// Signals the child-process monitor task to terminate the subprocess.
@@ -146,6 +148,7 @@ impl AcpAgent {
         Ok(Self {
             conn,
             update_rx: RefCell::new(Some(update_rx)),
+            session_config_options: RefCell::new(HashMap::new()),
             health_tx,
             kill_tx,
         })
@@ -190,8 +193,59 @@ impl AgentBackend for AcpAgent {
             .new_session(request)
             .await
             .map_err(|err| err.to_string())?;
+        if let Some(options) = response.config_options.clone() {
+            self.session_config_options
+                .borrow_mut()
+                .insert(response.session_id.to_string(), options);
+        }
         info!("ACP session created: {}", response.session_id);
         Ok(response.session_id.to_string())
+    }
+
+    async fn set_session_settings(
+        &self,
+        session_id: String,
+        settings: AgentSessionSettings,
+    ) -> Result<(), String> {
+        let values = [
+            ("model", settings.model),
+            ("reasoning_effort", settings.reasoning_effort),
+        ];
+
+        for (category, value) in values {
+            let Some(value) = value else {
+                continue;
+            };
+            let options = self
+                .session_config_options
+                .borrow()
+                .get(&session_id)
+                .cloned()
+                .unwrap_or_default();
+            let option = options
+                .iter()
+                .find(|option| acp_option_matches(option, category))
+                .ok_or_else(|| {
+                    format!(
+                        "ACP agent does not expose a {category} setting for session {session_id}"
+                    )
+                })?;
+
+            let response = self
+                .conn
+                .set_session_config_option(SetSessionConfigOptionRequest::new(
+                    SessionId::new(session_id.clone()),
+                    option.id.clone(),
+                    value.as_str(),
+                ))
+                .await
+                .map_err(|err| err.to_string())?;
+            self.session_config_options
+                .borrow_mut()
+                .insert(session_id.clone(), response.config_options);
+        }
+
+        Ok(())
     }
 
     async fn prompt(&self, session_id: String, text: String) -> Result<AgentPromptResult, String> {
@@ -243,5 +297,25 @@ impl AgentBackend for AcpAgent {
                 break;
             }
         }
+    }
+}
+
+fn acp_option_matches(option: &SessionConfigOption, category: &str) -> bool {
+    let id = option.id.to_string().to_ascii_lowercase();
+    match category {
+        "model" => {
+            matches!(option.category, Some(SessionConfigOptionCategory::Model))
+                || id == "model"
+                || id.contains("model")
+        }
+        "reasoning_effort" => {
+            matches!(
+                option.category,
+                Some(SessionConfigOptionCategory::ThoughtLevel)
+            ) || id.contains("reason")
+                || id.contains("thought")
+                || id.contains("effort")
+        }
+        _ => false,
     }
 }

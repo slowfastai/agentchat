@@ -5,6 +5,7 @@ pub mod capabilities;
 pub mod codex_app_server;
 pub mod distiller;
 pub mod relay_client;
+pub mod run;
 pub mod session_event_log;
 pub mod session_store;
 pub mod skills;

@@ -233,7 +233,7 @@ async fn websocket_round_trip_streams_prompt_events_and_survives_reconnect() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn websocket_new_connection_replaces_existing_client() {
+async fn websocket_multiple_connections_stay_active() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -250,11 +250,18 @@ async fn websocket_new_connection_replaces_existing_client() {
             send_client_message(&mut second_ws, &ClientMessage::ListSessions).await;
             match receive_event(&mut second_ws).await {
                 ResponseEvent::SessionList { .. } => {}
-                event => panic!("unexpected event from replacement client: {event:?}"),
+                event => panic!("unexpected event from second client: {event:?}"),
+            }
+
+            send_client_message(&mut first_ws, &ClientMessage::ListSessions).await;
+            match receive_event(&mut first_ws).await {
+                ResponseEvent::SessionList { .. } => {}
+                event => panic!("unexpected event from first client: {event:?}"),
             }
 
             second_ws.send(Message::Close(None)).await.unwrap();
             drop(second_ws);
+            first_ws.send(Message::Close(None)).await.unwrap();
             drop(first_ws);
             harness.finish().await;
         })

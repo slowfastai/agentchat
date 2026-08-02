@@ -1,7 +1,7 @@
 //! WebSocket server that bridges the iOS app and ACP agents.
 //!
-//! M0: single client connection, single agent. Translates between
-//! the iOS WebSocket protocol and ACP session/prompt/update flows.
+//! Bridges multiple client connections to the shared ACP session and
+//! prompt/update flows.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -9,7 +9,7 @@ use std::rc::Rc;
 use futures::stream::StreamExt;
 use futures::SinkExt;
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio::time::{interval, Duration};
 use tokio_tungstenite::accept_async_with_config;
 use tokio_tungstenite::tungstenite::Message;
@@ -61,8 +61,7 @@ impl WebSocketServer {
             app_session.shutdown().await;
         });
 
-        let mut active_connection: Option<(oneshot::Sender<()>, tokio::task::JoinHandle<()>)> =
-            None;
+        let mut connection_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
         loop {
             let accepted = tokio::select! {
@@ -91,28 +90,16 @@ impl WebSocketServer {
                 }
             };
 
-            if let Some((replace_tx, handle)) = active_connection.take() {
-                info!("replacing existing client connection");
-                let _ = replace_tx.send(());
-                if let Err(err) = handle.await {
-                    error!("connection task panicked while replacing client: {err}");
-                }
-            }
-
-            let (replace_tx, replace_rx) = oneshot::channel();
+            connection_tasks.retain(|handle: &tokio::task::JoinHandle<()>| !handle.is_finished());
             let client_tx = client_tx.clone();
             let event_tx = event_tx.clone();
             let shutdown_rx = shutdown_rx.clone();
-            active_connection = Some((
-                replace_tx,
-                tokio::task::spawn_local(async move {
-                    Self::handle_connection(ws, client_tx, event_tx, shutdown_rx, replace_rx).await;
-                }),
-            ));
+            connection_tasks.push(tokio::task::spawn_local(async move {
+                Self::handle_connection(ws, client_tx, event_tx, shutdown_rx).await;
+            }));
         }
 
-        if let Some((replace_tx, handle)) = active_connection.take() {
-            let _ = replace_tx.send(());
+        for handle in connection_tasks {
             if let Err(err) = handle.await {
                 error!("connection task panicked during shutdown: {err}");
             }
@@ -131,7 +118,6 @@ impl WebSocketServer {
         client_tx: mpsc::UnboundedSender<ClientMessage>,
         event_tx: broadcast::Sender<ResponseEvent>,
         mut shutdown_rx: watch::Receiver<Option<DaemonStopReason>>,
-        mut replace_rx: oneshot::Receiver<()>,
     ) {
         let (mut ws_tx, mut ws_rx) = ws.split();
         let mut response_rx = event_tx.subscribe();
@@ -196,10 +182,6 @@ impl WebSocketServer {
                     if let Some(reason) = shutdown_rx.borrow().clone() {
                         send_shutdown_notice(&mut ws_tx, reason).await;
                     }
-                    break;
-                }
-                _ = &mut replace_rx => {
-                    info!("closing replaced client connection");
                     break;
                 }
             }

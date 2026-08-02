@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
 
+use agentchat_protocol::AgentSessionSettings;
+
 /// Backend-agnostic streaming update emitted by an agent session.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentNotification {
@@ -73,6 +75,35 @@ impl AgentPromptResult {
 pub trait AgentBackend {
     async fn initialize(&self) -> Result<(), String>;
     async fn new_session(&self, cwd: PathBuf) -> Result<String, String>;
+
+    /// Creates a session and applies settings before the first prompt.
+    async fn new_session_with_settings(
+        &self,
+        cwd: PathBuf,
+        settings: AgentSessionSettings,
+    ) -> Result<String, String> {
+        let session_id = self.new_session(cwd).await?;
+        self.set_session_settings(session_id.clone(), settings)
+            .await?;
+        Ok(session_id)
+    }
+
+    /// Changes settings for the next turn of a session.
+    ///
+    /// Backends that do not support runtime settings reject non-empty values
+    /// instead of silently pretending that the UI change took effect.
+    async fn set_session_settings(
+        &self,
+        _session_id: String,
+        settings: AgentSessionSettings,
+    ) -> Result<(), String> {
+        if settings.model.is_some() || settings.reasoning_effort.is_some() {
+            Err("agent backend does not support runtime session settings".into())
+        } else {
+            Ok(())
+        }
+    }
+
     async fn prompt(&self, session_id: String, text: String) -> Result<AgentPromptResult, String>;
     async fn cancel(&self, session_id: String) -> Result<(), String>;
     fn take_update_rx(&self) -> Option<mpsc::UnboundedReceiver<AgentNotification>>;

@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use agentchat_protocol::{
-    canonical_mention_handle, now_millis, ParticipantKind, ThreadParticipant, ThreadSnapshot,
-    ThreadSummary,
+    canonical_mention_handle, now_millis, AgentSessionSettings, ParticipantKind, ThreadParticipant,
+    ThreadSnapshot, ThreadSummary,
 };
 
 #[derive(Debug, Clone)]
@@ -23,6 +23,7 @@ pub struct ThreadParticipantRecord {
     pub display_name: String,
     pub agent_id: Option<String>,
     pub session_id: Option<String>,
+    pub settings: AgentSessionSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +61,7 @@ impl ThreadStore {
                 display_name: "You".into(),
                 agent_id: None,
                 session_id: None,
+                settings: AgentSessionSettings::default(),
             }],
         };
         self.threads.insert(thread_id, record.clone());
@@ -81,6 +83,23 @@ impl ThreadStore {
         display_name: String,
         session_id: String,
     ) -> Result<ThreadParticipantRecord, String> {
+        self.add_agent_participant_with_settings(
+            thread_id,
+            agent_id,
+            display_name,
+            session_id,
+            AgentSessionSettings::default(),
+        )
+    }
+
+    pub fn add_agent_participant_with_settings(
+        &mut self,
+        thread_id: &str,
+        agent_id: String,
+        display_name: String,
+        session_id: String,
+        settings: AgentSessionSettings,
+    ) -> Result<ThreadParticipantRecord, String> {
         let thread = self
             .threads
             .get_mut(thread_id)
@@ -91,6 +110,7 @@ impl ThreadStore {
             display_name: display_name.clone(),
             agent_id: Some(agent_id.clone()),
             session_id: Some(session_id.clone()),
+            settings,
         };
         thread.participants.push(participant.clone());
         self.session_to_binding.insert(
@@ -104,6 +124,28 @@ impl ThreadStore {
             },
         );
         Ok(participant)
+    }
+
+    pub fn set_participant_settings(
+        &mut self,
+        thread_id: &str,
+        participant_id: &str,
+        settings: AgentSessionSettings,
+    ) -> Result<ThreadParticipantRecord, String> {
+        let thread = self
+            .threads
+            .get_mut(thread_id)
+            .ok_or_else(|| "thread not found".to_string())?;
+        let participant = thread
+            .participants
+            .iter_mut()
+            .find(|participant| participant.participant_id == participant_id)
+            .ok_or_else(|| "participant not found".to_string())?;
+        if participant.kind != ParticipantKind::Agent {
+            return Err("human participants do not have agent settings".into());
+        }
+        participant.settings = settings;
+        Ok(participant.clone())
     }
 
     pub fn remove_participant(
@@ -193,6 +235,7 @@ pub fn participant_to_protocol(
             .map(canonical_mention_handle),
         session_id: participant.session_id.clone(),
         state,
+        settings: participant.settings.clone(),
     }
 }
 

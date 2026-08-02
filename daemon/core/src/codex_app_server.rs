@@ -10,7 +10,7 @@ use tokio::process::{ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, watch, Mutex};
 use tracing::{debug, error, info, warn};
 
-use agentchat_protocol::AgentConfig;
+use agentchat_protocol::{AgentConfig, AgentSessionSettings};
 
 use crate::backend::{AgentBackend, AgentNotification, AgentPromptResult, AgentUpdate};
 
@@ -105,6 +105,7 @@ struct CodexOptions {
     experimental_raw_events: bool,
     persist_extended_history: bool,
     approval_strategy: CodexApprovalStrategy,
+    default_settings: AgentSessionSettings,
 }
 
 impl CodexOptions {
@@ -187,6 +188,13 @@ impl CodexOptions {
                 false,
             )?,
             approval_strategy: CodexApprovalStrategy::from_config(config)?,
+            default_settings: AgentSessionSettings {
+                model: config_extra_string(config, &["model", "default_model"]),
+                reasoning_effort: config_extra_string(
+                    config,
+                    &["reasoning_effort", "default_reasoning_effort"],
+                ),
+            },
         })
     }
 
@@ -222,6 +230,18 @@ fn config_extra_bool(
     }
 }
 
+fn config_extra_string(config: &AgentConfig, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        config
+            .extra
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
 #[derive(Clone, Debug)]
 struct RequestFlowUpdate {
     thread_id: String,
@@ -242,6 +262,7 @@ pub struct CodexAppServerAgent {
     kill_tx: watch::Sender<bool>,
     project_root: PathBuf,
     options: CodexOptions,
+    session_settings: Rc<RefCell<HashMap<String, AgentSessionSettings>>>,
 }
 
 async fn monitor_agent_process(
@@ -1065,6 +1086,7 @@ impl CodexAppServerAgent {
         let active_turns: ActiveTurns = Rc::new(RefCell::new(HashMap::new()));
         let turn_waiters: TurnWaiters = Rc::new(RefCell::new(HashMap::new()));
         let completed_turns: CompletedTurns = Rc::new(RefCell::new(HashMap::new()));
+        let session_settings = Rc::new(RefCell::new(HashMap::new()));
         let (health_tx, _) = watch::channel(true);
         let (kill_tx, kill_rx) = watch::channel(false);
 
@@ -1175,6 +1197,7 @@ impl CodexAppServerAgent {
             kill_tx,
             project_root,
             options,
+            session_settings,
         })
     }
 
@@ -1228,6 +1251,15 @@ impl AgentBackend for CodexAppServerAgent {
     }
 
     async fn new_session(&self, cwd: PathBuf) -> Result<String, String> {
+        self.new_session_with_settings(cwd, self.options.default_settings.clone())
+            .await
+    }
+
+    async fn new_session_with_settings(
+        &self,
+        cwd: PathBuf,
+        settings: AgentSessionSettings,
+    ) -> Result<String, String> {
         let resolved_cwd = self.resolve_cwd(cwd);
         let mut params = json!({
             "cwd": resolved_cwd.display().to_string(),
@@ -1236,17 +1268,41 @@ impl AgentBackend for CodexAppServerAgent {
             "experimentalRawEvents": self.options.experimental_raw_events,
             "persistExtendedHistory": self.options.persist_extended_history,
         });
+        if let Some(model) = &settings.model {
+            params["model"] = Value::String(model.clone());
+        }
+        if let Some(reasoning_effort) = &settings.reasoning_effort {
+            params["reasoningEffort"] = Value::String(reasoning_effort.clone());
+        }
         if let Some(reviewer) = &self.options.approvals_reviewer {
             params["approvalsReviewer"] = Value::String(reviewer.clone());
         }
         let result = self.send_request("thread/start", params).await?;
 
-        result
+        let session_id = result
             .get("thread")
             .and_then(|thread| thread.get("id"))
             .and_then(Value::as_str)
             .map(str::to_string)
-            .ok_or_else(|| "codex thread/start response missing thread.id".into())
+            .ok_or_else(|| String::from("codex thread/start response missing thread.id"))?;
+        self.session_settings
+            .borrow_mut()
+            .insert(session_id.clone(), settings);
+        Ok(session_id)
+    }
+
+    async fn set_session_settings(
+        &self,
+        session_id: String,
+        settings: AgentSessionSettings,
+    ) -> Result<(), String> {
+        if self.active_turns.borrow().contains_key(&session_id) {
+            return Err("cannot change Codex settings while a turn is running".into());
+        }
+        self.session_settings
+            .borrow_mut()
+            .insert(session_id, settings);
+        Ok(())
     }
 
     async fn prompt(&self, session_id: String, text: String) -> Result<AgentPromptResult, String> {
@@ -1261,6 +1317,14 @@ impl AgentBackend for CodexAppServerAgent {
             ],
             "approvalPolicy": self.options.approval_policy.clone(),
         });
+        if let Some(settings) = self.session_settings.borrow().get(&thread_id) {
+            if let Some(model) = &settings.model {
+                params["model"] = Value::String(model.clone());
+            }
+            if let Some(reasoning_effort) = &settings.reasoning_effort {
+                params["reasoningEffort"] = Value::String(reasoning_effort.clone());
+            }
+        }
         if let Some(reviewer) = &self.options.approvals_reviewer {
             params["approvalsReviewer"] = Value::String(reviewer.clone());
         }

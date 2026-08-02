@@ -72,4 +72,5 @@ fastlane/test_output
 
 docs/*
 !docs/agentchat-three-layer-design.md
+!docs/workflow-orchestration-design.md
 product_design.md

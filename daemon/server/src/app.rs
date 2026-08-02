@@ -19,10 +19,10 @@ use agentchat_core::thread_store::{
     ThreadRecord, ThreadStore,
 };
 use agentchat_protocol::{
-    canonical_mention_handle, AgentSummary, AssistantMessageState, ClientMessage, DeltaType,
-    ParticipantKind, ParticipantState, ResponseEvent, SessionEvent, SessionSnapshot, SessionState,
-    SessionSummary, SessionTranscript, SkillInfo, ThreadParticipant, ThreadSender, ThreadSnapshot,
-    ThreadState,
+    canonical_mention_handle, AgentSessionSettings, AgentSummary, AssistantMessageState,
+    ClientMessage, DeltaType, ParticipantKind, ParticipantState, ResponseEvent, SessionEvent,
+    SessionSnapshot, SessionState, SessionSummary, SessionTranscript, SkillInfo, ThreadParticipant,
+    ThreadSender, ThreadSnapshot, ThreadState,
 };
 
 pub struct AppProtocolSession {
@@ -539,6 +539,14 @@ impl AppProtocolSession {
                 self.handle_add_thread_participant(thread_id, agent_id)
                     .await;
             }
+            ClientMessage::SetThreadParticipantSettings {
+                thread_id,
+                participant_id,
+                settings,
+            } => {
+                self.handle_set_thread_participant_settings(thread_id, participant_id, settings)
+                    .await;
+            }
             ClientMessage::RemoveThreadParticipant {
                 thread_id,
                 participant_id,
@@ -636,6 +644,20 @@ impl AppProtocolSession {
         requested_agent_id: Option<String>,
         working_dir: String,
     ) -> Result<(String, String), ResponseEvent> {
+        self.create_session_for_agent_with_settings(
+            requested_agent_id,
+            working_dir,
+            AgentSessionSettings::default(),
+        )
+        .await
+    }
+
+    async fn create_session_for_agent_with_settings(
+        &mut self,
+        requested_agent_id: Option<String>,
+        working_dir: String,
+        settings: AgentSessionSettings,
+    ) -> Result<(String, String), ResponseEvent> {
         let cwd = {
             let p = PathBuf::from(&working_dir);
             if p.is_relative() {
@@ -673,32 +695,40 @@ impl AppProtocolSession {
                 code: "agent_unavailable".into(),
                 message: "agent is not online".into(),
             }),
-            (Some(agent_id), Some(agent), true) => match agent.new_session(cwd).await {
-                Ok(upstream_session_id) => {
-                    let public_session_id = format!("session-{}", Uuid::new_v4().simple());
-                    self.manager.borrow_mut().register_session(
-                        public_session_id.clone(),
-                        agent_id.clone(),
-                        upstream_session_id,
-                    );
-                    self.created_sessions.push(public_session_id.clone());
-                    self.session_store.borrow_mut().start_session(
-                        &public_session_id,
-                        &agent_id,
-                        &working_dir,
-                    );
-                    self.session_event_log
-                        .borrow_mut()
-                        .init_session(&public_session_id);
-                    Ok((public_session_id, agent_id))
+            (Some(agent_id), Some(agent), true) => {
+                let session_result =
+                    if settings.model.is_none() && settings.reasoning_effort.is_none() {
+                        agent.new_session(cwd).await
+                    } else {
+                        agent.new_session_with_settings(cwd, settings).await
+                    };
+                match session_result {
+                    Ok(upstream_session_id) => {
+                        let public_session_id = format!("session-{}", Uuid::new_v4().simple());
+                        self.manager.borrow_mut().register_session(
+                            public_session_id.clone(),
+                            agent_id.clone(),
+                            upstream_session_id,
+                        );
+                        self.created_sessions.push(public_session_id.clone());
+                        self.session_store.borrow_mut().start_session(
+                            &public_session_id,
+                            &agent_id,
+                            &working_dir,
+                        );
+                        self.session_event_log
+                            .borrow_mut()
+                            .init_session(&public_session_id);
+                        Ok((public_session_id, agent_id))
+                    }
+                    Err(err) => Err(ResponseEvent::Error {
+                        session_id: None,
+                        event_seq: None,
+                        code: "create_session_failed".into(),
+                        message: err.to_string(),
+                    }),
                 }
-                Err(err) => Err(ResponseEvent::Error {
-                    session_id: None,
-                    event_seq: None,
-                    code: "create_session_failed".into(),
-                    message: err.to_string(),
-                }),
-            },
+            }
             _ => Err(ResponseEvent::Error {
                 session_id: None,
                 event_seq: None,
@@ -840,17 +870,35 @@ impl AppProtocolSession {
             }
         };
 
-        let display_name = self
+        let (display_name, settings) = self
             .manager
             .borrow()
             .list_agents()
             .into_iter()
             .find(|summary| summary.agent_id == agent_id)
-            .map(|summary| summary.name)
-            .unwrap_or_else(|| agent_id.clone());
+            .map(|summary| {
+                let settings = AgentSessionSettings {
+                    model: summary
+                        .settings
+                        .iter()
+                        .find(|setting| setting.id == "model")
+                        .and_then(|setting| setting.current_value.clone()),
+                    reasoning_effort: summary
+                        .settings
+                        .iter()
+                        .find(|setting| setting.id == "reasoning_effort")
+                        .and_then(|setting| setting.current_value.clone()),
+                };
+                (summary.name, settings)
+            })
+            .unwrap_or_else(|| (agent_id.clone(), AgentSessionSettings::default()));
 
         let session_id = match self
-            .create_session_for_agent(Some(agent_id.clone()), working_dir)
+            .create_session_for_agent_with_settings(
+                Some(agent_id.clone()),
+                working_dir,
+                settings.clone(),
+            )
             .await
         {
             Ok((session_id, _)) => session_id,
@@ -860,12 +908,16 @@ impl AppProtocolSession {
             }
         };
 
-        let participant = match self.thread_store.borrow_mut().add_agent_participant(
-            &thread_id,
-            agent_id,
-            display_name,
-            session_id,
-        ) {
+        let participant = match self
+            .thread_store
+            .borrow_mut()
+            .add_agent_participant_with_settings(
+                &thread_id,
+                agent_id,
+                display_name,
+                session_id,
+                settings,
+            ) {
             Ok(participant) => participant,
             Err(_) => {
                 let _ = self.response_tx.send(ResponseEvent::Error {
@@ -884,6 +936,104 @@ impl AppProtocolSession {
             &self.thread_event_log,
             &self.response_tx,
             ResponseEvent::ThreadParticipantAdded {
+                thread_id,
+                thread_seq,
+                participant,
+            },
+        );
+    }
+
+    async fn handle_set_thread_participant_settings(
+        &mut self,
+        thread_id: String,
+        participant_id: String,
+        settings: AgentSessionSettings,
+    ) {
+        let participant = match self.thread_store.borrow().get_thread(&thread_id) {
+            Some(thread) => thread
+                .participants
+                .iter()
+                .find(|participant| participant.participant_id == participant_id)
+                .cloned(),
+            None => None,
+        };
+        let Some(participant) = participant else {
+            let _ = self.response_tx.send(ResponseEvent::Error {
+                session_id: None,
+                event_seq: None,
+                code: "thread_participant_not_found".into(),
+                message: "no participant with this id in the thread".into(),
+            });
+            return;
+        };
+        let (Some(agent_id), Some(session_id)) = (participant.agent_id, participant.session_id)
+        else {
+            let _ = self.response_tx.send(ResponseEvent::Error {
+                session_id: None,
+                event_seq: None,
+                code: "thread_participant_not_found".into(),
+                message: "only agent participants have runtime settings".into(),
+            });
+            return;
+        };
+
+        if self.active_prompt_sessions.borrow().contains(&session_id) {
+            let _ = self.response_tx.send(ResponseEvent::Error {
+                session_id: Some(session_id),
+                event_seq: None,
+                code: "participant_busy".into(),
+                message: "settings apply after the current turn finishes".into(),
+            });
+            return;
+        }
+
+        let agent = self.manager.borrow().get_agent(&agent_id);
+        let Some(agent) = agent else {
+            let _ = self.response_tx.send(ResponseEvent::Error {
+                session_id: Some(session_id),
+                event_seq: None,
+                code: "agent_not_found".into(),
+                message: "no agent backend for this participant".into(),
+            });
+            return;
+        };
+
+        if let Err(message) = agent
+            .set_session_settings(session_id.clone(), settings.clone())
+            .await
+        {
+            let _ = self.response_tx.send(ResponseEvent::Error {
+                session_id: Some(session_id),
+                event_seq: None,
+                code: "participant_settings_failed".into(),
+                message,
+            });
+            return;
+        }
+
+        let participant = match self.thread_store.borrow_mut().set_participant_settings(
+            &thread_id,
+            &participant_id,
+            settings,
+        ) {
+            Ok(participant) => participant,
+            Err(message) => {
+                let _ = self.response_tx.send(ResponseEvent::Error {
+                    session_id: None,
+                    event_seq: None,
+                    code: "thread_participant_settings_failed".into(),
+                    message,
+                });
+                return;
+            }
+        };
+
+        let participant = self.build_thread_participant(&participant);
+        let thread_seq = self.thread_event_log.borrow_mut().next_seq(&thread_id);
+        journal_and_broadcast_thread_event(
+            &self.thread_event_log,
+            &self.response_tx,
+            ResponseEvent::ThreadParticipantSettingsUpdated {
                 thread_id,
                 thread_seq,
                 participant,

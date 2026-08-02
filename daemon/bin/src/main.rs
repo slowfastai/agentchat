@@ -3,7 +3,7 @@ use std::env;
 use std::fs::File;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, IsTerminal, Read, Write};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -13,19 +13,27 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use agentchat_core::agent_manager::AgentManager;
 use agentchat_core::distiller::Distiller;
 use agentchat_core::relay_client::{
     RelayClientConfig, RelayClientCryptoConfig, DEFAULT_RELAY_USER_AGENT,
 };
+use agentchat_core::run::supervisor::{SharedSupervisor, SupervisorGate, SupervisorProgress};
+use agentchat_core::run::{
+    FileApprovalGate, PromptSet, RoleAgent, RunOrchestrator, RunRoles, RunState, TerminalProgress,
+};
 use agentchat_core::session_store::SessionStore;
 use agentchat_core::skills::SkillStore;
 use agentchat_protocol::relay_crypto::{
     decode_base64url_exact, ed25519_public_key, seed_from_label,
 };
+use agentchat_protocol::run::PhaseKind;
 use agentchat_protocol::DaemonStopReason;
 use agentchat_protocol::{AgentConfig, AgentStatus, AgentSummary};
+use agentchat_server::console::{self, shared_supervisor, RunLauncher, StartRequest};
+use agentchat_server::http;
 use agentchat_server::relay::RelayTransportServer;
 use agentchat_server::ws::WebSocketServer;
 use if_addrs::{get_if_addrs, IfAddr, Interface};
@@ -299,6 +307,572 @@ fn env_flag(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// How long an agent gets to spawn and finish its handshake before the run
+/// gives up on it and continues with the others.
+const AGENT_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Loopback port for the run console.
+const DEFAULT_CONSOLE_PORT: u16 = 9391;
+
+/// Starts runs on behalf of the console, using agents this process already has.
+struct ConsoleLauncher {
+    manager: Rc<RefCell<AgentManager>>,
+    supervisor: SharedSupervisor,
+    working_dir: PathBuf,
+    prompts: PromptSet,
+}
+
+impl RunLauncher for ConsoleLauncher {
+    fn agent_ids(&self) -> Vec<String> {
+        self.manager.borrow().agent_ids()
+    }
+
+    fn working_dir(&self) -> PathBuf {
+        self.working_dir.clone()
+    }
+
+    fn start(&self, request: StartRequest) -> Result<String, String> {
+        let args = RunArgs {
+            brief: PathBuf::new(),
+            planner: request.planner.clone(),
+            plan_reviewers: Some(request.plan_reviewers.clone()).filter(|r| !r.is_empty()),
+            implementer: request.implementer.clone(),
+            code_reviewers: Some(request.code_reviewers.clone()).filter(|r| !r.is_empty()),
+            run_id: None,
+            poll_secs: 0,
+            plan_only: request.plan_only,
+        };
+        // Resolve roles before anything is created, so a bad selection is a
+        // form error rather than a run that dies on its first stage.
+        let roles = resolve_roles(&self.manager.borrow(), &args)?;
+
+        let run_id = format!("run-{}", agentchat_protocol::now_millis());
+        let working_dir = self.working_dir.clone();
+        let supervisor = self.supervisor.clone();
+        let prompts = self.prompts.clone();
+        let plan_only = request.plan_only;
+        let brief = request.brief.clone();
+        let id = run_id.clone();
+
+        tokio::task::spawn_local(async move {
+            let outcome = drive_console_run(
+                &working_dir,
+                &id,
+                prompts,
+                supervisor.clone(),
+                roles,
+                brief,
+                plan_only,
+            )
+            .await;
+            let error = outcome.err();
+            if let Some(message) = &error {
+                supervisor
+                    .borrow_mut()
+                    .append_log(&id, format!("✗ run failed: {message}"));
+                error!("run {id} failed: {message}");
+            }
+            supervisor.borrow_mut().finish(&id, error);
+        });
+
+        Ok(run_id)
+    }
+}
+
+/// Drives one console-started run to its stopping point.
+async fn drive_console_run(
+    working_dir: &Path,
+    run_id: &str,
+    prompts: PromptSet,
+    supervisor: SharedSupervisor,
+    roles: RunRoles,
+    brief: String,
+    plan_only: bool,
+) -> Result<(), String> {
+    let mut orchestrator = RunOrchestrator::new(working_dir.to_path_buf(), run_id, prompts)
+        .with_progress(Rc::new(SupervisorProgress::new(supervisor.clone(), run_id)));
+
+    // The console supplies the brief as text; the run still owns a copy on disk
+    // so human feedback can be appended to it between rounds.
+    let brief_path = orchestrator.layout().brief();
+    if let Some(parent) = brief_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    }
+    tokio::fs::write(&brief_path, brief)
+        .await
+        .map_err(|e| format!("cannot write {}: {e}", brief_path.display()))?;
+
+    let mut run = RunState::new(run_id, working_dir.to_string_lossy());
+    supervisor.borrow_mut().sync(&run);
+    supervisor.borrow_mut().append_log(
+        run_id,
+        format!(
+            "▶ started in {}{}",
+            working_dir.display(),
+            if plan_only { " (plan only)" } else { "" }
+        ),
+    );
+
+    let gate = SupervisorGate::new(supervisor.clone(), run_id);
+    let status = orchestrator
+        .drive_until(
+            &mut run,
+            &roles,
+            &gate,
+            plan_only.then_some(PhaseKind::Plan),
+        )
+        .await?;
+
+    supervisor.borrow_mut().sync(&run);
+    supervisor
+        .borrow_mut()
+        .append_log(run_id, format!("■ finished: {}", status.as_str()));
+    Ok(())
+}
+
+/// Arguments for the `run` subcommand.
+struct RunArgs {
+    brief: PathBuf,
+    planner: Option<String>,
+    plan_reviewers: Option<Vec<String>>,
+    implementer: Option<String>,
+    code_reviewers: Option<Vec<String>>,
+    run_id: Option<String>,
+    poll_secs: u64,
+    plan_only: bool,
+}
+
+fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
+    let mut brief = None;
+    let mut planner = None;
+    let mut plan_reviewers = None;
+    let mut implementer = None;
+    let mut code_reviewers = None;
+    let mut run_id = None;
+    let mut poll_secs = 5u64;
+    let mut plan_only = false;
+
+    let mut iter = args.iter();
+    while let Some(flag) = iter.next() {
+        let mut value = || {
+            iter.next()
+                .cloned()
+                .ok_or_else(|| format!("{flag} needs a value"))
+        };
+        match flag.as_str() {
+            "--brief" => brief = Some(PathBuf::from(value()?)),
+            "--planner" => planner = Some(value()?),
+            "--plan-reviewers" => plan_reviewers = Some(split_ids(&value()?)),
+            "--implementer" => implementer = Some(value()?),
+            "--code-reviewers" => code_reviewers = Some(split_ids(&value()?)),
+            "--run-id" => run_id = Some(value()?),
+            "--plan-only" => plan_only = true,
+            "--poll-secs" => {
+                poll_secs = value()?
+                    .parse()
+                    .map_err(|_| "--poll-secs needs a number".to_string())?
+            }
+            other => {
+                return Err(format!(
+                    "unknown argument `{other}`\n\nRun `agentchat-daemon run --help` for usage."
+                ))
+            }
+        }
+    }
+
+    Ok(RunArgs {
+        brief: brief.ok_or("--brief is required")?,
+        planner,
+        plan_reviewers,
+        implementer,
+        code_reviewers,
+        run_id,
+        poll_secs,
+        plan_only,
+    })
+}
+
+fn parse_web_port(args: &[String]) -> Result<u16, String> {
+    let mut port = DEFAULT_CONSOLE_PORT;
+    let mut iter = args.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--port" => {
+                port = iter
+                    .next()
+                    .ok_or("--port needs a value")?
+                    .parse()
+                    .map_err(|_| "--port needs a number".to_string())?
+            }
+            other => {
+                return Err(format!(
+                    "unknown argument `{other}`\n\nRun `agentchat-daemon web --help` for usage."
+                ))
+            }
+        }
+    }
+    Ok(port)
+}
+
+fn split_ids(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Maps configured agents onto the roles a run needs.
+///
+/// Defaults are chosen so `run --brief x.md` works with no other flags: the
+/// first configured agent authors, and everyone else reviews.
+fn resolve_roles(manager: &AgentManager, args: &RunArgs) -> Result<RunRoles, String> {
+    let ids = manager.agent_ids();
+    let role = |id: &str| -> Result<RoleAgent, String> {
+        manager
+            .get_agent(id)
+            .map(|backend| RoleAgent::new(id, backend))
+            .ok_or_else(|| format!("unknown agent `{id}`; running agents: {}", ids.join(", ")))
+    };
+    let others = |exclude: &str| -> Vec<String> {
+        ids.iter().filter(|id| *id != exclude).cloned().collect()
+    };
+
+    let planner_id = args
+        .planner
+        .clone()
+        .or_else(|| ids.first().cloned())
+        .ok_or("no agents available")?;
+    let implementer_id = args
+        .implementer
+        .clone()
+        .unwrap_or_else(|| planner_id.clone());
+
+    let plan_reviewer_ids = args
+        .plan_reviewers
+        .clone()
+        .unwrap_or_else(|| others(&planner_id));
+    let code_reviewer_ids = args
+        .code_reviewers
+        .clone()
+        .unwrap_or_else(|| others(&implementer_id));
+
+    if plan_reviewer_ids.is_empty() || code_reviewer_ids.is_empty() {
+        return Err(format!(
+            "a run needs at least one reviewer besides the author, but only these agents started: {}\n\
+             Configure another agent, or name reviewers explicitly with --plan-reviewers/--code-reviewers.",
+            ids.join(", ")
+        ));
+    }
+
+    Ok(RunRoles {
+        planner: role(&planner_id)?,
+        plan_reviewers: plan_reviewer_ids
+            .iter()
+            .map(|id| role(id))
+            .collect::<Result<Vec<_>, _>>()?,
+        implementer: role(&implementer_id)?,
+        code_reviewers: code_reviewer_ids
+            .iter()
+            .map(|id| role(id))
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+async fn execute_run(
+    project_root: PathBuf,
+    daemon_paths: &DaemonPaths,
+    args: RunArgs,
+) -> Result<(), String> {
+    // Cheap checks before anything is spawned. Starting agents takes real time,
+    // and discovering a missing brief afterwards looks exactly like a hang.
+    if !args.brief.is_file() {
+        return Err(format!(
+            "brief not found: {}\n\
+             Create it first — it is the requirement the agents work from, in your words.",
+            args.brief.display()
+        ));
+    }
+
+    let agent_configs = load_agent_configs(&project_root, daemon_paths)
+        .map_err(|e| format!("failed to load agent configuration: {e}"))?;
+
+    let mut manager = AgentManager::new();
+    for config in agent_configs {
+        let agent_id = config.id.clone();
+        print!("starting agent '{agent_id}'… ");
+        let _ = io::stdout().flush();
+
+        // An agent waiting on an interactive login would otherwise wedge the run
+        // with no indication of which one is stuck.
+        match tokio::time::timeout(
+            AGENT_STARTUP_TIMEOUT,
+            manager.add_agent(config, project_root.clone()),
+        )
+        .await
+        {
+            Ok(Ok(())) => println!("ok"),
+            Ok(Err(e)) => {
+                println!("failed");
+                warn!("skipping agent '{agent_id}': {e}");
+                eprintln!("  {agent_id}: {e} — is it installed and logged in?");
+            }
+            Err(_) => {
+                println!("timed out");
+                warn!("agent '{agent_id}' did not initialize within {AGENT_STARTUP_TIMEOUT:?}");
+                eprintln!(
+                    "  {agent_id}: no response in {}s — try running it once by hand to finish login.",
+                    AGENT_STARTUP_TIMEOUT.as_secs()
+                );
+            }
+        }
+    }
+    if manager.is_empty() {
+        return Err("no agents started successfully".into());
+    }
+
+    let roles = resolve_roles(&manager, &args)?;
+    let run_id = args
+        .run_id
+        .clone()
+        .unwrap_or_else(|| format!("run-{}", agentchat_protocol::now_millis()));
+
+    let mut prompts = PromptSet::builtin();
+    let overrides = prompts
+        .load_overrides(&project_root.join(".agentchat").join("prompts"))
+        .await?;
+    if !overrides.is_empty() {
+        println!("using project prompt overrides: {}", overrides.join(", "));
+    }
+
+    let mut orchestrator = RunOrchestrator::new(project_root.clone(), &run_id, prompts)
+        .with_progress(Rc::new(TerminalProgress::new()));
+    let (mut run, resumed) = orchestrator.load_or_start(&run_id, &project_root).await?;
+    if resumed {
+        println!("resuming {run_id} at {}", run.status.as_str());
+    } else {
+        orchestrator.import_brief(&args.brief).await?;
+        println!("starting {run_id} in {}", project_root.display());
+    }
+
+    let gate = FileApprovalGate::new(orchestrator.layout().run_dir().to_path_buf())
+        .with_poll_interval(Duration::from_secs(args.poll_secs));
+
+    let stop_after = args.plan_only.then_some(PhaseKind::Plan);
+    if args.plan_only {
+        println!("plan-only: stopping after the plan is approved, no code will be written");
+    }
+
+    let status = orchestrator
+        .drive_until(&mut run, &roles, &gate, stop_after)
+        .await;
+    manager.shutdown_all().await;
+
+    let status = status?;
+    println!("\nrun {run_id} finished: {}", status.as_str());
+    println!("files: {}", orchestrator.layout().run_dir().display());
+    if args.plan_only && !status.is_terminal() {
+        println!("continue with: agentchat-daemon run --brief <file> --run-id {run_id}");
+    }
+    Ok(())
+}
+
+/// Boots agents, then serves the console until interrupted.
+async fn execute_web(
+    project_root: PathBuf,
+    daemon_paths: &DaemonPaths,
+    port: u16,
+) -> Result<(), String> {
+    let manager = Rc::new(RefCell::new(
+        start_agents(&project_root, daemon_paths).await?,
+    ));
+
+    let mut prompts = PromptSet::builtin();
+    let overrides = prompts
+        .load_overrides(&project_root.join(".agentchat").join("prompts"))
+        .await?;
+    if !overrides.is_empty() {
+        println!("using project prompt overrides: {}", overrides.join(", "));
+    }
+
+    let supervisor = shared_supervisor();
+    let launcher = Rc::new(ConsoleLauncher {
+        manager: manager.clone(),
+        supervisor: supervisor.clone(),
+        working_dir: project_root.clone(),
+        prompts,
+    });
+
+    let session_store = Rc::new(RefCell::new(SessionStore::new_with_sessions_dir(
+        daemon_paths.sessions_dir.clone(),
+    )));
+    let skill_store = Rc::new(SkillStore::new_with_skills_dir(
+        daemon_paths.skills_dir.clone(),
+    ));
+    let distiller = Rc::new(Distiller::new(skill_store.clone()));
+    let (shutdown_tx, shutdown_rx) = watch::channel::<Option<DaemonStopReason>>(None);
+    let signal_tx = shutdown_tx.clone();
+    tokio::task::spawn_local(async move {
+        if let Err(err) = wait_for_shutdown_signal().await {
+            error!("web command shutdown signal handler failed: {err}");
+        }
+        let _ = signal_tx.send(Some(DaemonStopReason::Signal));
+    });
+
+    let websocket_manager = manager.clone();
+    let websocket_session_store = session_store.clone();
+    let websocket_skill_store = skill_store.clone();
+    let websocket_distiller = distiller.clone();
+    let websocket_shutdown_rx = shutdown_rx.clone();
+    let mut websocket_task = tokio::task::spawn_local(async move {
+        WebSocketServer::new(DEFAULT_PORT)
+            .run(
+                websocket_manager,
+                websocket_shutdown_rx,
+                websocket_session_store,
+                websocket_skill_store,
+                websocket_distiller,
+            )
+            .await
+    });
+
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    println!("\nconsole:  http://{addr}");
+    println!("chat:     http://{addr}/chat");
+    println!("socket:   ws://0.0.0.0:{DEFAULT_PORT}");
+    println!("working:  {}", project_root.display());
+    println!("\nOpen /chat to talk with agents, or / for the run console.\n");
+
+    let http_server = http::serve(addr, console::handler(supervisor, launcher));
+    tokio::pin!(http_server);
+
+    tokio::select! {
+        websocket_result = &mut websocket_task => {
+            match websocket_result {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(err)) => Err(err),
+                Err(err) => Err(format!("websocket task failed: {err}")),
+            }
+        }
+        http_result = &mut http_server => {
+            let _ = shutdown_tx.send(Some(DaemonStopReason::UserShutdown));
+            let _ = websocket_task.await;
+            http_result.map_err(|err| http::describe_bind_error(addr, &err))
+        }
+    }
+}
+
+/// Spawns every configured agent, reporting each one as it comes up.
+async fn start_agents(
+    project_root: &Path,
+    daemon_paths: &DaemonPaths,
+) -> Result<AgentManager, String> {
+    let agent_configs = load_agent_configs(project_root, daemon_paths)
+        .map_err(|e| format!("failed to load agent configuration: {e}"))?;
+
+    let mut manager = AgentManager::new();
+    for config in agent_configs {
+        let agent_id = config.id.clone();
+        print!("starting agent '{agent_id}'… ");
+        let _ = io::stdout().flush();
+
+        // An agent waiting on an interactive login would otherwise wedge startup
+        // with no indication of which one is stuck.
+        match tokio::time::timeout(
+            AGENT_STARTUP_TIMEOUT,
+            manager.add_agent(config, project_root.to_path_buf()),
+        )
+        .await
+        {
+            Ok(Ok(())) => println!("ok"),
+            Ok(Err(e)) => {
+                println!("failed");
+                warn!("skipping agent '{agent_id}': {e}");
+                eprintln!("  {agent_id}: {e} — is it installed and logged in?");
+            }
+            Err(_) => {
+                println!("timed out");
+                warn!("agent '{agent_id}' did not initialize within {AGENT_STARTUP_TIMEOUT:?}");
+                eprintln!(
+                    "  {agent_id}: no response in {}s — try running it once by hand to finish login.",
+                    AGENT_STARTUP_TIMEOUT.as_secs()
+                );
+            }
+        }
+    }
+
+    if manager.is_empty() {
+        return Err("no agents started successfully".into());
+    }
+    Ok(manager)
+}
+
+fn print_web_usage() {
+    println!(
+        r#"agentchat-daemon web — run console in your browser
+
+Usage:
+  agentchat-daemon web [--port <n>]
+
+Run this from inside the working tree you want changed. Preparing an isolated
+worktree is up to you:
+
+  git worktree add ../feature-a -b feature-a
+  cd ../feature-a
+  agentchat-daemon web
+
+Then open http://127.0.0.1:{DEFAULT_CONSOLE_PORT}. The page lets you paste a brief, pick which
+agent plans and which review, watch the run live, and answer at the two
+approval gates.
+
+Options:
+  --port <n>    Loopback port for the console. Default {DEFAULT_CONSOLE_PORT}.
+
+The console binds loopback only — nothing is reachable from the network."#
+    );
+}
+
+fn print_run_usage() {
+    println!(
+        r#"agentchat-daemon run — drive a brief through plan and code review
+
+Usage:
+  agentchat-daemon run --brief <file> [options]
+
+Run this from inside the working tree you want changed. Preparing an isolated
+worktree is up to you:
+
+  git worktree add ../feature-a -b feature-a
+  cd ../feature-a
+  agentchat-daemon run --brief ./requirement.md
+
+Options:
+  --brief <file>            Requirement to work from. Required.
+  --planner <agent-id>      Writes the plan. Defaults to the first agent.
+  --plan-reviewers <a,b,c>  Review the plan. Defaults to every other agent.
+  --implementer <agent-id>  Writes the code. Defaults to the planner.
+  --code-reviewers <a,b>    Review the code. Defaults to every other agent.
+  --run-id <id>             Reuse an id to resume an interrupted run.
+  --plan-only               Stop once the plan is approved. Nothing is written
+                            to your working tree. Good for a first outing —
+                            continue later with the same --run-id.
+  --poll-secs <n>           How often to check for your decision. Default 5.
+
+The run pauses twice, once for the plan and once for the code. Each time it
+writes an approval page next to the run and waits for you to answer:
+
+  echo '{{"decision":"approve"}}' > .agentchat/runs/<id>/decision-plan.json
+  echo '{{"decision":"request_changes","comments":"..."}}' > ...
+  echo '{{"decision":"cancel"}}' > ...
+
+Everything is under .agentchat/runs/<id>/, and progress is checkpointed after
+every stage, so an interrupted run resumes where it stopped."#
+    );
+}
+
 fn parse_cli_options() -> Result<Option<CliOptions>, String> {
     let mut options = CliOptions::default();
 
@@ -322,7 +896,7 @@ fn parse_cli_options() -> Result<Option<CliOptions>, String> {
 
 fn print_usage() {
     println!(
-        "agentchat-daemon\n\nUsage:\n  agentchat-daemon [--mobile]\n\nOptions:\n  --mobile            Print a terminal QR code for the current direct or relay connection so the iOS app can scan it\n  -h, --help          Show this help text\n\nEnvironment:\n  AGENTCHAT_HOME            Managed daemon home, for example ~/Library/Application Support/AgentChat\n  AGENTCHAT_AGENTS_FILE     Override the daemon-owned agents.json path\n  AGENTCHAT_MOBILE_WS_URL   Override the websocket endpoint embedded in the QR payload (must be ws://... or wss://...)\n  AGENTCHAT_AGENT_BACKEND   Select the agent backend adapter for single-agent mode\n\nAgent config precedence:\n  1. AGENTCHAT_AGENTS_JSON\n  2. AGENTCHAT_AGENTS_FILE or $AGENTCHAT_HOME/config/agents.json\n  3. .agentchat/agents.json\n  4. Single-agent AGENTCHAT_AGENT_* env vars\n  5. Built-in defaults (Codex only)\n\nExamples:\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon\n    Starts the default Codex agent\n\n  AGENTCHAT_HOME=\"$HOME/Library/Application Support/AgentChat\" \\\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon\n\n  AGENTCHAT_AGENT_ID=opencode \\\n  AGENTCHAT_AGENT_NAME=\"OpenCode (ACP)\" \\\n  AGENTCHAT_AGENT_BACKEND=acp \\\n  AGENTCHAT_AGENT_COMMAND=opencode \\\n  AGENTCHAT_AGENT_ARGS=\"acp\" \\\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon -- --mobile"
+        "agentchat-daemon\n\nUsage:\n  agentchat-daemon [--mobile]        Start the daemon for the app to connect to\n  agentchat-daemon web               Run console in your browser (recommended).\n                                     See `agentchat-daemon web --help`.\n  agentchat-daemon run --brief <file>\n                                     Same pipeline from the terminal.\n                                     See `agentchat-daemon run --help`.\n\nOptions:\n  --mobile            Print a terminal QR code for the current direct or relay connection so the iOS app can scan it\n  -h, --help          Show this help text\n\nEnvironment:\n  AGENTCHAT_HOME            Managed daemon home, for example ~/Library/Application Support/AgentChat\n  AGENTCHAT_AGENTS_FILE     Override the daemon-owned agents.json path\n  AGENTCHAT_MOBILE_WS_URL   Override the websocket endpoint embedded in the QR payload (must be ws://... or wss://...)\n  AGENTCHAT_AGENT_BACKEND   Select the agent backend adapter for single-agent mode\n\nAgent config precedence:\n  1. AGENTCHAT_AGENTS_JSON\n  2. AGENTCHAT_AGENTS_FILE or $AGENTCHAT_HOME/config/agents.json\n  3. .agentchat/agents.json\n  4. Single-agent AGENTCHAT_AGENT_* env vars\n  5. Built-in defaults (Codex only)\n\nExamples:\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon\n    Starts the default Codex agent\n\n  AGENTCHAT_HOME=\"$HOME/Library/Application Support/AgentChat\" \\\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon\n\n  AGENTCHAT_AGENT_ID=opencode \\\n  AGENTCHAT_AGENT_NAME=\"OpenCode (ACP)\" \\\n  AGENTCHAT_AGENT_BACKEND=acp \\\n  AGENTCHAT_AGENT_COMMAND=opencode \\\n  AGENTCHAT_AGENT_ARGS=\"acp\" \\\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon -- --mobile"
     );
 }
 
@@ -442,7 +1016,10 @@ fn built_in_agent_configs() -> Vec<AgentConfig> {
             name: "Claude Code".into(),
             backend: "acp".into(),
             command: "npx".into(),
-            args: vec!["--yes".into(), "@agentclientprotocol/claude-agent-acp".into()],
+            args: vec![
+                "--yes".into(),
+                "@agentclientprotocol/claude-agent-acp".into(),
+            ],
             working_dir: None,
             env_vars: Default::default(),
             extra: Default::default(),
@@ -1496,6 +2073,67 @@ async fn main() {
             eprintln!("{err}");
             std::process::exit(1);
         }
+    }
+
+    let raw_args: Vec<String> = env::args().skip(1).collect();
+    if raw_args.first().map(String::as_str) == Some("web") {
+        if raw_args.iter().any(|arg| arg == "-h" || arg == "--help") {
+            print_web_usage();
+            return;
+        }
+        let port = match parse_web_port(&raw_args[1..]) {
+            Ok(port) => port,
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(err) = init_tracing(&daemon_paths) {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+
+        // Agents and run state are `!Send`, so the console shares their thread.
+        let local = tokio::task::LocalSet::new();
+        if let Err(err) = local
+            .run_until(execute_web(project_root, &daemon_paths, port))
+            .await
+        {
+            error!("console failed: {err}");
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if raw_args.first().map(String::as_str) == Some("run") {
+        if raw_args.iter().any(|arg| arg == "-h" || arg == "--help") {
+            print_run_usage();
+            return;
+        }
+        let run_args = match parse_run_args(&raw_args[1..]) {
+            Ok(args) => args,
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(err) = init_tracing(&daemon_paths) {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+
+        // Agents are `!Send`, so the whole run lives on one thread.
+        let local = tokio::task::LocalSet::new();
+        let outcome = local
+            .run_until(execute_run(project_root, &daemon_paths, run_args))
+            .await;
+        if let Err(err) = outcome {
+            error!("run failed: {err}");
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+        return;
     }
 
     let cli_options = match parse_cli_options() {
