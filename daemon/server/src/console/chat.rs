@@ -152,7 +152,7 @@ pub const PAGE: &str = r##"<!doctype html>
     color: var(--faint);
     font: 10px var(--mono);
   }
-  .empty-list, .empty-copy { color: var(--muted); font-size: 12px; }
+  .empty-list { color: var(--muted); font-size: 12px; }
   .empty-list { padding: 18px 10px; }
   .sidebar-foot {
     padding: 13px 16px 16px;
@@ -392,31 +392,12 @@ pub const PAGE: &str = r##"<!doctype html>
     background: var(--bg);
   }
   .composer {
+    position: relative;
     max-width: 850px;
     margin: 0 auto;
     border: 1px solid var(--line);
     background: var(--surface);
   }
-  .recipient-bar {
-    display: flex;
-    min-height: 35px;
-    align-items: center;
-    gap: 7px;
-    overflow-x: auto;
-    padding: 7px 10px 0;
-    color: var(--muted);
-    font-size: 11px;
-    white-space: nowrap;
-  }
-  .recipient-label { margin-right: 2px; color: var(--faint); font: 10px var(--mono); text-transform: uppercase; }
-  .recipient {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    cursor: pointer;
-  }
-  .recipient input { width: 12px; height: 12px; accent-color: var(--accent); }
-  .recipient.offline { opacity: .5; }
   .composer textarea {
     display: block;
     width: 100%;
@@ -430,6 +411,38 @@ pub const PAGE: &str = r##"<!doctype html>
     line-height: 1.5;
   }
   .composer textarea::placeholder { color: var(--faint); }
+  .mention-suggestions {
+    position: absolute;
+    right: 0;
+    bottom: 100%;
+    left: 0;
+    z-index: 4;
+    max-height: 230px;
+    margin-bottom: 8px;
+    overflow-y: auto;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, .3);
+  }
+  .mention-suggestion {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: 9px;
+    padding: 8px 10px;
+    border: 0;
+    border-bottom: 1px solid var(--line-soft);
+    background: transparent;
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+  }
+  .mention-suggestion:last-child { border-bottom: 0; }
+  .mention-suggestion:hover, .mention-suggestion.selected { background: var(--surface-3); }
+  .mention-suggestion .participant-avatar { width: 25px; height: 25px; }
+  .mention-suggestion-copy { min-width: 0; }
+  .mention-suggestion-name { overflow: hidden; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+  .mention-suggestion-handle { margin-top: 1px; color: var(--cyan); font: 10px var(--mono); }
   .composer-foot {
     display: flex;
     align-items: center;
@@ -630,10 +643,10 @@ pub const PAGE: &str = r##"<!doctype html>
 
     <div class="composer-wrap hidden" id="composerWrap">
       <div class="composer">
-        <div class="recipient-bar" id="recipientBar"></div>
-        <textarea id="messageInput" rows="3" placeholder="Message the selected agents..." spellcheck="true"></textarea>
+        <textarea id="messageInput" rows="3" placeholder="Message the thread agents..." spellcheck="true" aria-autocomplete="list" aria-controls="mentionSuggestions"></textarea>
+        <div class="mention-suggestions hidden" id="mentionSuggestions" role="listbox" aria-label="Mention agents"></div>
         <div class="composer-foot">
-          <span class="composer-status" id="composerStatus">Select a recipient</span>
+          <span class="composer-status" id="composerStatus">Attach an agent to start.</span>
           <button class="primary-button" id="sendButton" type="button">Send</button>
         </div>
       </div>
@@ -956,10 +969,12 @@ const state = {
   threads: new Map(),
   snapshots: new Map(),
   messages: new Map(),
-  targets: new Map(),
   currentThreadId: null,
   attached: new Set(),
   configuringParticipantId: null,
+  mentionCandidates: [],
+  mentionIndex: 0,
+  mentionRange: null,
 };
 
 let toastTimer = null;
@@ -1059,14 +1074,6 @@ function ensureMessages(threadId) {
   return state.messages.get(threadId);
 }
 
-function ensureTargets(threadId) {
-  if (!state.targets.has(threadId)) {
-    const snapshot = ensureSnapshot(threadId);
-    state.targets.set(threadId, new Set(snapshot.participants.filter((p) => p.kind === "agent").map((p) => p.participant_id)));
-  }
-  return state.targets.get(threadId);
-}
-
 function timelineIsNearBottom() {
   const timeline = $("timeline");
   return timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 96;
@@ -1142,6 +1149,135 @@ function participantStatus(participant) {
 
 function agentSummary(agentId) {
   return state.agents.find((agent) => agent.agent_id === agentId);
+}
+
+function mentionHandleForParticipant(participant) {
+  return participant && (participant.mention_handle || participant.agent_id || "");
+}
+
+function mentionedParticipants(content, participants) {
+  const handles = Array.from(
+    String(content || "").matchAll(/(?:^|[\s([{"'，。,:;])@([\p{L}\p{N}._-]+)/gu),
+    (match) => match[1].toLowerCase(),
+  );
+  if (!handles.length) return [];
+  return (participants || []).filter((participant) => {
+    if (participant.kind !== "agent") return false;
+    const aliases = [mentionHandleForParticipant(participant), participant.agent_id]
+      .filter(Boolean)
+      .map((handle) => handle.toLowerCase());
+    return handles.some((handle) => aliases.includes(handle));
+  });
+}
+
+function currentMentionToken() {
+  const input = $("messageInput");
+  const cursor = input.selectionStart;
+  if (cursor !== input.selectionEnd) return null;
+  const before = input.value.slice(0, cursor);
+  const match = before.match(/(?:^|[\s([{"'，。,:;])@([\p{L}\p{N}._-]*)$/u);
+  if (!match) return null;
+  const start = before.lastIndexOf("@");
+  return { start, end: cursor, query: match[1].toLowerCase() };
+}
+
+function hideMentionSuggestions() {
+  state.mentionCandidates = [];
+  state.mentionIndex = 0;
+  state.mentionRange = null;
+  $("mentionSuggestions").classList.add("hidden");
+}
+
+function updateMentionSuggestionSelection() {
+  document.querySelectorAll("[data-mention-index]").forEach((element) => {
+    element.classList.toggle("selected", Number(element.dataset.mentionIndex) === state.mentionIndex);
+    element.setAttribute("aria-selected", Number(element.dataset.mentionIndex) === state.mentionIndex ? "true" : "false");
+  });
+}
+
+function renderMentionSuggestions() {
+  const snapshot = currentSnapshot();
+  const token = currentMentionToken();
+  if (!snapshot || !token) {
+    hideMentionSuggestions();
+    return;
+  }
+
+  const participants = snapshot.participants;
+  const candidates = participants
+    .filter((participant) => participant.kind === "agent")
+    .filter((participant) => {
+      const name = participantDisplayName(participant, participants).toLowerCase();
+      const handle = mentionHandleForParticipant(participant).toLowerCase();
+      return !token.query || name.includes(token.query) || handle.includes(token.query);
+    });
+  if (!candidates.length) {
+    hideMentionSuggestions();
+    return;
+  }
+
+  state.mentionCandidates = candidates;
+  state.mentionIndex = Math.min(state.mentionIndex, candidates.length - 1);
+  state.mentionRange = token;
+  $("mentionSuggestions").innerHTML = candidates.map((participant, index) => {
+    const name = participantDisplayName(participant, participants);
+    const avatar = participant.avatar || defaultAvatarForName(name);
+    const handle = mentionHandleForParticipant(participant);
+    return "<button class=\"mention-suggestion\" type=\"button\" role=\"option\" data-mention-index=\"" + index + "\" aria-selected=\"" + (index === state.mentionIndex ? "true" : "false") + "\">" +
+      "<span class=\"participant-avatar\">" + escapeHtml(avatar) + "</span>" +
+      "<span class=\"mention-suggestion-copy\"><span class=\"mention-suggestion-name\">" + escapeHtml(name) + "</span><span class=\"mention-suggestion-handle\">@" + escapeHtml(handle) + "</span></span>" +
+      "</button>";
+  }).join("");
+  $("mentionSuggestions").classList.remove("hidden");
+  document.querySelectorAll("[data-mention-index]").forEach((element) => {
+    element.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      chooseMention(Number(element.dataset.mentionIndex));
+    });
+  });
+  updateMentionSuggestionSelection();
+}
+
+function chooseMention(index) {
+  const participant = state.mentionCandidates[index];
+  const range = state.mentionRange;
+  if (!participant || !range) return;
+  const input = $("messageInput");
+  const handle = mentionHandleForParticipant(participant);
+  const replacement = "@" + handle + " ";
+  input.value = input.value.slice(0, range.start) + replacement + input.value.slice(range.end);
+  const cursor = range.start + replacement.length;
+  input.focus();
+  input.setSelectionRange(cursor, cursor);
+  hideMentionSuggestions();
+  renderComposerStatus();
+}
+
+function handleMentionKeydown(event) {
+  if ($("mentionSuggestions").classList.contains("hidden") || !state.mentionCandidates.length) return false;
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    state.mentionIndex = (state.mentionIndex + 1) % state.mentionCandidates.length;
+    updateMentionSuggestionSelection();
+    return true;
+  }
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    state.mentionIndex = (state.mentionIndex - 1 + state.mentionCandidates.length) % state.mentionCandidates.length;
+    updateMentionSuggestionSelection();
+    return true;
+  }
+  if (event.key === "Enter" || event.key === "Tab") {
+    event.preventDefault();
+    chooseMention(state.mentionIndex);
+    return true;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    hideMentionSuggestions();
+    return true;
+  }
+  return false;
 }
 
 function settingDescriptor(participant, settingId) {
@@ -1300,34 +1436,26 @@ function renderParticipants() {
   renderAddAgentButton();
 }
 
-function renderRecipients() {
+function renderComposerStatus() {
   const snapshot = currentSnapshot();
   if (!snapshot) {
-    $("recipientBar").innerHTML = "";
     $("composerStatus").textContent = "Select a thread";
+    $("sendButton").disabled = true;
     return;
   }
   const agents = snapshot.participants.filter((participant) => participant.kind === "agent");
-  const targets = ensureTargets(snapshot.thread_id);
-  $("recipientBar").innerHTML = `<span class="recipient-label">Route to</span>` + (agents.length ? agents.map((participant) => `
-    <label class="recipient ${participant.state === "offline" ? "offline" : ""}"><input type="checkbox" data-recipient="${escapeHtml(participant.participant_id)}" ${targets.has(participant.participant_id) ? "checked" : ""}><span>${escapeHtml(participantDisplayName(participant, agents))}</span></label>`).join("") : '<span class="empty-copy">Attach an agent to start.</span>');
-  document.querySelectorAll("[data-recipient]").forEach((element) => {
-    element.addEventListener("change", () => {
-      if (element.checked) targets.add(element.dataset.recipient);
-      else targets.delete(element.dataset.recipient);
-      renderComposerStatus();
-    });
-  });
-  renderComposerStatus();
-}
-
-function renderComposerStatus() {
-  const snapshot = currentSnapshot();
-  if (!snapshot) return;
-  const agents = snapshot.participants.filter((participant) => participant.kind === "agent");
-  const selected = agents.filter((participant) => ensureTargets(snapshot.thread_id).has(participant.participant_id));
-  $("composerStatus").textContent = selected.length ? `${selected.length} recipient${selected.length === 1 ? "" : "s"} selected` : "Select a recipient";
-  $("sendButton").disabled = !selected.length || !state.socket || state.socket.readyState !== WebSocket.OPEN;
+  const mentioned = mentionedParticipants($("messageInput").value, agents);
+  if (!agents.length) {
+    $("composerStatus").textContent = "Attach an agent to start.";
+    $("sendButton").disabled = true;
+    return;
+  }
+  if (mentioned.length) {
+    $("composerStatus").textContent = "Mention route: " + mentioned.map((participant) => "@" + mentionHandleForParticipant(participant)).join(", ");
+  } else {
+    $("composerStatus").textContent = "All thread agents";
+  }
+  $("sendButton").disabled = !state.socket || state.socket.readyState !== WebSocket.OPEN;
 }
 
 function renderTimeline() {
@@ -1338,7 +1466,7 @@ function renderTimeline() {
   state.timelineFollowing = shouldFollow;
   const messages = ensureMessages(threadId);
   if (!messages.length) {
-    timeline.innerHTML = '<div class="timeline-empty">No messages yet. Select agents above and send the first message.</div>';
+    timeline.innerHTML = '<div class="timeline-empty">No messages yet. Attach an agent and send the first message.</div>';
   } else {
     timeline.innerHTML = messages.map(renderMessage).join("");
   }
@@ -1393,7 +1521,6 @@ function selectThread(threadId) {
   state.timelineFollowing = true;
   state.attached.delete(threadId);
   state.messages.set(threadId, []);
-  ensureTargets(threadId).clear();
   renderAll();
   send({ type: "attach_thread", thread_id: threadId, after_seq: 0 });
 }
@@ -1419,7 +1546,6 @@ function handleEvent(event) {
       break;
     case "thread_snapshot":
       state.snapshots.set(event.snapshot.thread_id, event.snapshot);
-      ensureTargets(event.snapshot.thread_id);
       updateThreadSummary(event.snapshot.thread_id, {
         title: event.snapshot.title,
         working_dir: event.snapshot.working_dir,
@@ -1435,7 +1561,6 @@ function handleEvent(event) {
       break;
     case "thread_participant_added":
       applyParticipant(event.thread_id, event.participant);
-      ensureTargets(event.thread_id).add(event.participant.participant_id);
       updateThreadSummary(event.thread_id, { participant_count: ensureSnapshot(event.thread_id).participants.length, last_thread_seq: event.thread_seq });
       if (state.currentThreadId === event.thread_id) {
         renderAll();
@@ -1455,7 +1580,6 @@ function handleEvent(event) {
       {
         const snapshot = ensureSnapshot(event.thread_id);
         snapshot.participants = snapshot.participants.filter((participant) => participant.participant_id !== event.participant_id);
-        ensureTargets(event.thread_id).delete(event.participant_id);
         updateThreadSummary(event.thread_id, { participant_count: snapshot.participants.length, last_thread_seq: event.thread_seq });
         if (state.currentThreadId === event.thread_id) renderAll();
       }
@@ -1513,7 +1637,6 @@ function handleEvent(event) {
       state.threads.delete(event.thread_id);
       state.snapshots.delete(event.thread_id);
       state.messages.delete(event.thread_id);
-      state.targets.delete(event.thread_id);
       if (state.currentThreadId === event.thread_id) {
         state.currentThreadId = null;
         renderAll();
@@ -1555,7 +1678,7 @@ function renderAll() {
   renderHeader();
   renderThreadList();
   renderParticipants();
-  renderRecipients();
+  renderComposerStatus();
   renderTimeline();
   const snapshot = currentSnapshot();
   const messages = snapshot ? ensureMessages(snapshot.thread_id) : [];
@@ -1635,7 +1758,14 @@ $("participantConfigForm").addEventListener("submit", (event) => {
   if (send(message)) closeParticipantConfig();
 });
 $("sendButton").addEventListener("click", sendMessage);
+$("messageInput").addEventListener("input", () => {
+  state.mentionIndex = 0;
+  renderMentionSuggestions();
+  renderComposerStatus();
+});
+$("messageInput").addEventListener("blur", () => setTimeout(hideMentionSuggestions, 120));
 $("messageInput").addEventListener("keydown", (event) => {
+  if (handleMentionKeydown(event)) return;
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     sendMessage();
@@ -1656,15 +1786,17 @@ function sendMessage() {
   const content = $("messageInput").value.trim();
   const snapshot = currentSnapshot();
   if (!content || !snapshot) return;
-  const targets = Array.from(ensureTargets(snapshot.thread_id));
-  if (!targets.length) {
-    showToast("Select at least one agent.");
+  const agents = snapshot.participants.filter((participant) => participant.kind === "agent");
+  if (!agents.length) {
+    showToast("Attach at least one agent.");
     return;
   }
   state.timelineFollowing = true;
-  if (send({ type: "send_thread_message", thread_id: snapshot.thread_id, content, target_participant_ids: targets })) {
+  if (send({ type: "send_thread_message", thread_id: snapshot.thread_id, content, target_participant_ids: null })) {
     $("messageInput").value = "";
     $("messageInput").focus();
+    hideMentionSuggestions();
+    renderComposerStatus();
   }
 }
 

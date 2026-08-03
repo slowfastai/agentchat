@@ -683,6 +683,10 @@ async fn websocket_thread_allows_duplicate_agent_sessions_with_independent_setti
                 ResponseEvent::ThreadParticipantAdded { participant, .. } => {
                     assert_eq!(participant.display_name, "Frontend Codex");
                     assert_eq!(participant.avatar, "FE");
+                    assert_eq!(
+                        participant.mention_handle.as_deref(),
+                        Some("frontend-codex")
+                    );
                     assert_eq!(participant.settings.model.as_deref(), Some("gpt-5.6-luna"));
                     (
                         participant.participant_id,
@@ -701,6 +705,7 @@ async fn websocket_thread_allows_duplicate_agent_sessions_with_independent_setti
                 ResponseEvent::ThreadParticipantAdded { participant, .. } => {
                     assert_eq!(participant.display_name, "Backend Codex");
                     assert_eq!(participant.avatar, "BE");
+                    assert_eq!(participant.mention_handle.as_deref(), Some("backend-codex"));
                     assert_eq!(participant.settings.model.as_deref(), Some("gpt-5.6-sol"));
                     (
                         participant.participant_id,
@@ -734,6 +739,7 @@ async fn websocket_thread_allows_duplicate_agent_sessions_with_independent_setti
                     assert_eq!(participant.participant_id, first_participant_id);
                     assert_eq!(participant.display_name, "UI Codex");
                     assert_eq!(participant.avatar, "UI");
+                    assert_eq!(participant.mention_handle.as_deref(), Some("ui-codex"));
                     assert_eq!(participant.settings.model.as_deref(), Some("gpt-5.6-luna"));
                     assert_eq!(
                         participant.settings.reasoning_effort.as_deref(),
@@ -966,7 +972,7 @@ async fn websocket_thread_message_mentions_route_only_selected_agents() {
                         assert_eq!(participant_id, opencode_participant_id);
                         assert_ne!(participant_id, codex_participant_id);
                         assert_eq!(session_id, opencode_session_id);
-                        if response == "echo: @opencode how are you" {
+                        if response == "echo: how are you" {
                             saw_opencode_text = true;
                         }
                         if state == AssistantMessageState::Completed {
@@ -1005,7 +1011,7 @@ async fn websocket_thread_message_mentions_route_only_selected_agents() {
             wait_for_file_contains(&opencode_events_path, "[Original User Message]").await;
             assert!(file_contains(
                 &opencode_events_path,
-                "@opencode how are you",
+                "[Original User Message]\nhow are you",
             ));
             sleep(Duration::from_millis(100)).await;
             assert!(!file_contains(
@@ -1144,7 +1150,7 @@ async fn websocket_thread_mentions_intersect_with_explicit_target_selection() {
                         assert_eq!(participant_id, codex_participant_id);
                         assert_ne!(participant_id, opencode_participant_id);
                         assert_eq!(session_id, codex_session_id);
-                        if response == "echo: @opencode @codex what date is today?" {
+                        if response == "echo: what date is today?" {
                             saw_codex_text = true;
                         }
                         if state == AssistantMessageState::Completed {
@@ -1183,7 +1189,7 @@ async fn websocket_thread_mentions_intersect_with_explicit_target_selection() {
             wait_for_file_contains(&codex_events_path, "[Original User Message]").await;
             assert!(file_contains(
                 &codex_events_path,
-                "@codex what date is today?",
+                "[Original User Message]\nwhat date is today?",
             ));
             sleep(Duration::from_millis(100)).await;
             assert!(!file_contains(

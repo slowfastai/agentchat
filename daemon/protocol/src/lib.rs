@@ -82,8 +82,8 @@ pub fn canonical_mention_handle(value: &str) -> String {
     let mut result = String::new();
     let mut previous_was_separator = false;
 
-    for ch in value.trim().chars().map(|ch| ch.to_ascii_lowercase()) {
-        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+    for ch in value.trim().chars().flat_map(char::to_lowercase) {
+        if ch.is_alphanumeric() || matches!(ch, '-' | '_' | '.') {
             result.push(ch);
             previous_was_separator = false;
         } else if !previous_was_separator {

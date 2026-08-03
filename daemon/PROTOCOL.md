@@ -400,11 +400,11 @@ Request:
 {
   "type": "add_thread_participant_with_config",
   "thread_id": "thread-1",
-  "agent_id": "codex",
-  "config": {
-    "display_name": "Backend Codex",
-    "avatar": "BE",
-    "settings": {
+    "agent_id": "codex",
+    "config": {
+      "display_name": "Backend Codex",
+      "avatar": "BE",
+      "settings": {
       "model": "gpt-5.6-sol",
       "reasoning_effort": "max"
     }
@@ -412,8 +412,17 @@ Request:
 }
 ```
 
-The response is `thread_participant_added` with the configured profile and
-settings in `participant`.
+The response is `thread_participant_added` with the configured profile,
+`mention_handle`, and settings in `participant`. The handle is a canonical
+lowercase form of `display_name`; if the handle is already used in the thread,
+the daemon appends `-2`, `-3`, and so on. This makes two instances of the same
+backend addressable independently, for example `@frontend-codex` and
+`@backend-codex`.
+
+The legacy `add_thread_participant` request keeps using the canonical
+`agent_id` as its handle (for example `@codex`), even when the daemon's agent
+display name is different. A configured participant also accepts its canonical
+agent id as a compatibility alias.
 
 ## `set_thread_participant_configuration`
 
@@ -476,7 +485,9 @@ Busy-thread error:
 
 ## `send_thread_message`
 
-Record one user message in the thread and fan it out to one or more agent participants.
+Record one user message in the thread and fan it out to one or more agent
+participants. `target_participant_ids` is optional. When omitted, the message
+is broadcast to all agent participants unless it contains recognized mentions.
 
 Request to broadcast to all agent participants:
 
@@ -489,6 +500,31 @@ Request targeting a subset of participants:
 ```json
 {"type":"send_thread_message","thread_id":"thread-1","content":"only beta","target_participant_ids":["participant-2"]}
 ```
+
+### Mention routing
+
+An agent mention is an `@` token at a word boundary, such as `@frontend-codex`
+or `@后端`. The daemon resolves it against each participant's
+`mention_handle` and canonical `agent_id` alias. A message can assign separate
+segments in one turn:
+
+```text
+@frontend-codex review the web UI @backend-codex inspect the API
+```
+
+The first agent receives `review the web UI`; the second receives
+`inspect the API`. Mentions next to one another share the following segment,
+so `@frontend-codex @backend-codex compare both approaches` is sent to both.
+Unknown mentions do not change routing. If explicit `target_participant_ids`
+are provided, mention routing is intersected with that set, while the complete
+original message is still recorded in the `thread_message` event and thread
+journal. Each agent prompt receives only its assigned segment plus its routing
+context.
+
+When no explicit `target_participant_ids` are provided and the message has no
+recognized participant mentions, all agent participants receive the original
+content unchanged. When recognized mentions are present, only the mentioned
+participants are routed the corresponding content segments.
 
 Success response sequence:
 

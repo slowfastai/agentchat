@@ -79,6 +79,19 @@ enum ThreadMessageTargetError {
     ParticipantNotFound,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedAgentMention {
+    handle: String,
+    start: usize,
+    end: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ThreadMessageRoute {
+    participant_ids: Vec<String>,
+    content: String,
+}
+
 fn resolve_thread_message_mentions(
     thread_store: &ThreadStore,
     thread_id: &str,
@@ -106,6 +119,13 @@ fn resolve_thread_message_mentions(
 }
 
 fn parse_agent_mentions(content: &str) -> Vec<String> {
+    parse_agent_mention_spans(content)
+        .into_iter()
+        .map(|mention| mention.handle)
+        .collect()
+}
+
+fn parse_agent_mention_spans(content: &str) -> Vec<ParsedAgentMention> {
     let indexed_chars = content.char_indices().collect::<Vec<_>>();
     let mut mentions = Vec::new();
 
@@ -144,14 +164,18 @@ fn parse_agent_mentions(content: &str) -> Vec<String> {
             continue;
         }
 
-        mentions.push(content[mention_start..mention_end].to_string());
+        mentions.push(ParsedAgentMention {
+            handle: content[mention_start..mention_end].to_string(),
+            start: *byte_index,
+            end: mention_end,
+        });
     }
 
     mentions
 }
 
 fn is_agent_mention_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.')
+    ch.is_alphanumeric() || matches!(ch, '-' | '_' | '.')
 }
 
 fn is_agent_mention_leading_boundary(ch: Option<char>) -> bool {
@@ -181,9 +205,28 @@ fn participant_matches_agent_mention(participant: &ThreadParticipantRecord, ment
         return false;
     }
 
-    participant_mention_handle(participant)
-        .map(|handle| handle.eq_ignore_ascii_case(mention))
-        .unwrap_or(false)
+    let normalized_mention = mention.to_lowercase();
+    participant_mention_handles(participant)
+        .iter()
+        .any(|handle| handle.to_lowercase() == normalized_mention)
+}
+
+fn participant_mention_handles(participant: &ThreadParticipantRecord) -> Vec<String> {
+    if participant.kind != ParticipantKind::Agent {
+        return Vec::new();
+    }
+
+    let mut handles = Vec::new();
+    if !participant.mention_handle.is_empty() {
+        handles.push(participant.mention_handle.clone());
+    }
+    if let Some(agent_id) = participant.agent_id.as_deref() {
+        let agent_handle = canonical_mention_handle(agent_id);
+        if !handles.iter().any(|handle| handle == &agent_handle) {
+            handles.push(agent_handle);
+        }
+    }
+    handles
 }
 
 fn participant_mention_handle(participant: &ThreadParticipantRecord) -> Option<String> {
@@ -191,11 +234,123 @@ fn participant_mention_handle(participant: &ThreadParticipantRecord) -> Option<S
         return None;
     }
 
-    participant
-        .agent_id
-        .as_deref()
-        .map(canonical_mention_handle)
-        .or_else(|| Some(canonical_mention_handle(&participant.display_name)))
+    participant_mention_handles(participant).into_iter().next()
+}
+
+fn build_thread_message_routes(
+    thread: &ThreadRecord,
+    selected_participants: &[ThreadParticipantRecord],
+    content: &str,
+) -> Vec<ThreadMessageRoute> {
+    let selected_ids = selected_participants
+        .iter()
+        .map(|participant| participant.participant_id.as_str())
+        .collect::<HashSet<_>>();
+    let resolved_mentions = parse_agent_mention_spans(content)
+        .into_iter()
+        .filter_map(|mention| {
+            let participant_ids = thread
+                .participants
+                .iter()
+                .filter(|participant| {
+                    participant_matches_agent_mention(participant, &mention.handle)
+                })
+                .map(|participant| participant.participant_id.clone())
+                .collect::<Vec<_>>();
+            (!participant_ids.is_empty()).then_some((mention, participant_ids))
+        })
+        .collect::<Vec<_>>();
+
+    if resolved_mentions.is_empty() {
+        return vec![ThreadMessageRoute {
+            participant_ids: selected_participants
+                .iter()
+                .map(|participant| participant.participant_id.clone())
+                .collect(),
+            content: content.to_string(),
+        }];
+    }
+
+    let shared_prefix = content[..resolved_mentions[0].0.start].trim();
+    let mut pending_participant_ids = Vec::new();
+    let mut routes = Vec::new();
+    for (index, (mention, participant_ids)) in resolved_mentions.iter().enumerate() {
+        extend_unique_ids(&mut pending_participant_ids, participant_ids);
+        let segment_end = resolved_mentions
+            .get(index + 1)
+            .map(|(next_mention, _)| next_mention.start)
+            .unwrap_or(content.len());
+        let segment = content[mention.end..segment_end].trim();
+        if segment.is_empty() {
+            continue;
+        }
+
+        let route_content = if routes.is_empty() && !shared_prefix.is_empty() {
+            format!("{shared_prefix}\n\n{segment}")
+        } else {
+            segment.to_string()
+        };
+        routes.push(ThreadMessageRoute {
+            participant_ids: std::mem::take(&mut pending_participant_ids),
+            content: route_content,
+        });
+    }
+
+    if routes.is_empty() {
+        return vec![ThreadMessageRoute {
+            participant_ids: resolved_mentions
+                .iter()
+                .flat_map(|(_, participant_ids)| participant_ids.iter().cloned())
+                .collect::<Vec<_>>(),
+            content: content.to_string(),
+        }];
+    }
+
+    let mut assignments = HashMap::<String, (Vec<String>, Vec<String>)>::new();
+    for route in routes {
+        let route_participant_ids = route
+            .participant_ids
+            .iter()
+            .filter(|participant_id| selected_ids.contains(participant_id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if route_participant_ids.is_empty() {
+            continue;
+        }
+        for participant_id in &route.participant_ids {
+            if !route_participant_ids
+                .iter()
+                .any(|selected_id| selected_id == participant_id)
+            {
+                continue;
+            }
+            let entry = assignments
+                .entry(participant_id.clone())
+                .or_insert_with(|| (Vec::new(), Vec::new()));
+            extend_unique_ids(&mut entry.0, &route_participant_ids);
+            entry.1.push(route.content.clone());
+        }
+    }
+
+    selected_participants
+        .iter()
+        .filter_map(|participant| {
+            assignments
+                .remove(&participant.participant_id)
+                .map(|(participant_ids, assignments)| ThreadMessageRoute {
+                    participant_ids,
+                    content: assignments.join("\n\n"),
+                })
+        })
+        .collect()
+}
+
+fn extend_unique_ids(target: &mut Vec<String>, ids: &[String]) {
+    for id in ids {
+        if !target.iter().any(|existing| existing == id) {
+            target.push(id.clone());
+        }
+    }
 }
 
 fn build_group_chat_routing_context(
@@ -252,8 +407,8 @@ fn build_group_chat_routing_context(
             "- routed_to_you: true\n",
             "- recipients_this_turn: {recipient_handles}\n",
             "- multiple_recipients: {multiple_recipients}\n",
-            "- the user message below is the original unmodified message from the thread\n",
-            "- mentions in the message may describe who should handle which part\n",
+            "- the user message below is the assigned portion for this turn\n",
+            "- the thread timeline retains the complete original user message\n",
             "- respond only as yourself, not on behalf of other agents"
         ),
         thread_id = thread.thread_id,
@@ -958,6 +1113,7 @@ impl AppProtocolSession {
         };
 
         let default_config = self.default_thread_participant_config(&agent_id);
+        let uses_custom_config = requested_config.is_some();
         let config = normalize_thread_participant_config(
             requested_config.unwrap_or_else(|| default_config.clone()),
             &default_config,
@@ -978,17 +1134,28 @@ impl AppProtocolSession {
             }
         };
 
-        let participant = match self
-            .thread_store
-            .borrow_mut()
-            .add_agent_participant_with_config(
-                &thread_id,
-                agent_id,
-                config.display_name,
-                config.avatar,
-                session_id,
-                config.settings,
-            ) {
+        let participant = match if uses_custom_config {
+            self.thread_store
+                .borrow_mut()
+                .add_agent_participant_with_config(
+                    &thread_id,
+                    agent_id,
+                    config.display_name,
+                    config.avatar,
+                    session_id,
+                    config.settings,
+                )
+        } else {
+            self.thread_store
+                .borrow_mut()
+                .add_agent_participant_with_settings(
+                    &thread_id,
+                    agent_id,
+                    config.display_name,
+                    session_id,
+                    config.settings,
+                )
+        } {
             Ok(participant) => participant,
             Err(_) => {
                 let _ = self.response_tx.send(ResponseEvent::Error {
@@ -1427,10 +1594,21 @@ impl AppProtocolSession {
             return;
         }
 
-        let targets = participants
-            .iter()
-            .map(|participant| participant.participant_id.clone())
-            .collect::<Vec<_>>();
+        let routes = build_thread_message_routes(&thread, &participants, &content);
+        let mut targets = Vec::new();
+        for route in &routes {
+            extend_unique_ids(&mut targets, &route.participant_ids);
+        }
+        if targets.is_empty() {
+            let _ = self.response_tx.send(ResponseEvent::Error {
+                session_id: None,
+                event_seq: None,
+                code: "thread_no_matching_targets".into(),
+                message: "no agent participants were matched by the @mentions".into(),
+            });
+            return;
+        }
+
         let thread_seq = self.thread_event_log.borrow_mut().next_seq(&thread_id);
         journal_and_broadcast_thread_event(
             &self.thread_event_log,
@@ -1449,12 +1627,24 @@ impl AppProtocolSession {
             },
         );
 
-        for participant in &participants {
-            if let Some(session_id) = participant.session_id.clone() {
-                let group_chat_context =
-                    build_group_chat_routing_context(&thread, participant, &participants);
-                self.handle_prompt(session_id, content.clone(), Some(group_chat_context))
-                    .await;
+        for route in routes {
+            let route_participants = route
+                .participant_ids
+                .iter()
+                .filter_map(|participant_id| {
+                    participants
+                        .iter()
+                        .find(|participant| participant.participant_id == *participant_id)
+                        .cloned()
+                })
+                .collect::<Vec<_>>();
+            for participant in &route_participants {
+                if let Some(session_id) = participant.session_id.clone() {
+                    let group_chat_context =
+                        build_group_chat_routing_context(&thread, participant, &route_participants);
+                    self.handle_prompt(session_id, route.content.clone(), Some(group_chat_context))
+                        .await;
+                }
             }
         }
     }
@@ -2779,6 +2969,29 @@ mod tests {
     }
 
     #[test]
+    fn resolve_thread_message_mentions_matches_custom_unicode_handles() {
+        let mut store = ThreadStore::new();
+        let thread = store.create_thread(Some("Unicode handle".into()), ".".into());
+        let backend = store
+            .add_agent_participant_with_config(
+                &thread.thread_id,
+                "codex".into(),
+                "后端审查".into(),
+                "BE".into(),
+                "session-codex".into(),
+                AgentSessionSettings::default(),
+            )
+            .unwrap();
+
+        assert_eq!(backend.mention_handle, "后端审查");
+        assert_eq!(
+            resolve_thread_message_mentions(&store, &thread.thread_id, "请 @后端审查 检查接口",)
+                .unwrap(),
+            vec![backend.participant_id]
+        );
+    }
+
+    #[test]
     fn merge_thread_message_targets_intersects_mentions_with_explicit_targets() {
         assert_eq!(
             merge_thread_message_targets(
@@ -2803,6 +3016,77 @@ mod tests {
             Some(vec!["participant-codex".into()])
         );
         assert_eq!(merge_thread_message_targets(None, None), None);
+    }
+
+    #[test]
+    fn build_thread_message_routes_assigns_each_mention_segment() {
+        let mut store = ThreadStore::new();
+        let thread = store.create_thread(Some("Segmented routes".into()), ".".into());
+        let opencode = store
+            .add_agent_participant(
+                &thread.thread_id,
+                "opencode".into(),
+                "OpenCode".into(),
+                "session-opencode".into(),
+            )
+            .unwrap();
+        let codex = store
+            .add_agent_participant(
+                &thread.thread_id,
+                "codex".into(),
+                "Codex".into(),
+                "session-codex".into(),
+            )
+            .unwrap();
+        let thread = store.get_thread(&thread.thread_id).unwrap().clone();
+
+        let routes = build_thread_message_routes(
+            &thread,
+            &[opencode.clone(), codex.clone()],
+            "@opencode check backend, @codex check iOS",
+        );
+
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[0].participant_ids, vec![opencode.participant_id]);
+        assert_eq!(routes[0].content, "check backend,");
+        assert_eq!(routes[1].participant_ids, vec![codex.participant_id]);
+        assert_eq!(routes[1].content, "check iOS");
+    }
+
+    #[test]
+    fn build_thread_message_routes_intersects_explicit_targets_after_parsing_mentions() {
+        let mut store = ThreadStore::new();
+        let thread = store.create_thread(Some("Intersected routes".into()), ".".into());
+        let opencode = store
+            .add_agent_participant(
+                &thread.thread_id,
+                "opencode".into(),
+                "OpenCode".into(),
+                "session-opencode".into(),
+            )
+            .unwrap();
+        let codex = store
+            .add_agent_participant(
+                &thread.thread_id,
+                "codex".into(),
+                "Codex".into(),
+                "session-codex".into(),
+            )
+            .unwrap();
+        let thread = store.get_thread(&thread.thread_id).unwrap().clone();
+
+        let routes = build_thread_message_routes(
+            &thread,
+            std::slice::from_ref(&codex),
+            "@opencode handle backend @codex handle iOS",
+        );
+
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].participant_ids, vec![codex.participant_id]);
+        assert_eq!(routes[0].content, "handle iOS");
+        assert!(!routes
+            .iter()
+            .any(|route| route.participant_ids.contains(&opencode.participant_id)));
     }
 
     #[test]

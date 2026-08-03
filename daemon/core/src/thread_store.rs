@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use agentchat_protocol::{
     canonical_mention_handle, now_millis, AgentSessionSettings, ParticipantKind, ThreadParticipant,
-    ThreadSnapshot, ThreadSummary,
+    ThreadParticipantConfig, ThreadSnapshot, ThreadSummary,
 };
 
 #[derive(Debug, Clone)]
@@ -22,6 +22,7 @@ pub struct ThreadParticipantRecord {
     pub kind: ParticipantKind,
     pub display_name: String,
     pub avatar: String,
+    pub mention_handle: String,
     pub agent_id: Option<String>,
     pub session_id: Option<String>,
     pub settings: AgentSessionSettings,
@@ -61,6 +62,7 @@ impl ThreadStore {
                 kind: ParticipantKind::Human,
                 display_name: "You".into(),
                 avatar: "YOU".into(),
+                mention_handle: String::new(),
                 agent_id: None,
                 session_id: None,
                 settings: AgentSessionSettings::default(),
@@ -103,13 +105,16 @@ impl ThreadStore {
         settings: AgentSessionSettings,
     ) -> Result<ThreadParticipantRecord, String> {
         let avatar = default_avatar_for_name(&display_name);
-        self.add_agent_participant_with_config(
+        self.add_agent_participant_with_mention_handle(
             thread_id,
             agent_id,
-            display_name,
-            avatar,
             session_id,
-            settings,
+            ThreadParticipantConfig {
+                display_name,
+                avatar,
+                settings,
+            },
+            None,
         )
     }
 
@@ -122,15 +127,49 @@ impl ThreadStore {
         session_id: String,
         settings: AgentSessionSettings,
     ) -> Result<ThreadParticipantRecord, String> {
+        let preferred_mention_handle = canonical_mention_handle(&display_name);
+        self.add_agent_participant_with_mention_handle(
+            thread_id,
+            agent_id,
+            session_id,
+            ThreadParticipantConfig {
+                display_name,
+                avatar,
+                settings,
+            },
+            Some(preferred_mention_handle),
+        )
+    }
+
+    fn add_agent_participant_with_mention_handle(
+        &mut self,
+        thread_id: &str,
+        agent_id: String,
+        session_id: String,
+        config: ThreadParticipantConfig,
+        preferred_mention_handle: Option<String>,
+    ) -> Result<ThreadParticipantRecord, String> {
+        let ThreadParticipantConfig {
+            display_name,
+            avatar,
+            settings,
+        } = config;
         let thread = self
             .threads
             .get_mut(thread_id)
             .ok_or_else(|| "thread not found".to_string())?;
+        let preferred_mention_handle =
+            preferred_mention_handle.unwrap_or_else(|| canonical_mention_handle(&agent_id));
         let participant = ThreadParticipantRecord {
             participant_id: format!("participant-{}", Uuid::new_v4().simple()),
             kind: ParticipantKind::Agent,
             display_name: display_name.clone(),
             avatar: avatar.clone(),
+            mention_handle: unique_mention_handle(
+                &thread.participants,
+                &preferred_mention_handle,
+                None,
+            ),
             agent_id: Some(agent_id.clone()),
             session_id: Some(session_id.clone()),
             settings,
@@ -183,16 +222,33 @@ impl ThreadStore {
             .threads
             .get_mut(thread_id)
             .ok_or_else(|| "thread not found".to_string())?;
-        let participant = thread
+        let participant_index = thread
             .participants
-            .iter_mut()
+            .iter()
             .find(|participant| participant.participant_id == participant_id)
+            .and_then(|participant| {
+                if participant.kind != ParticipantKind::Agent {
+                    None
+                } else {
+                    Some(
+                        thread
+                            .participants
+                            .iter()
+                            .position(|candidate| candidate.participant_id == participant_id)
+                            .expect("participant was found"),
+                    )
+                }
+            })
             .ok_or_else(|| "participant not found".to_string())?;
-        if participant.kind != ParticipantKind::Agent {
-            return Err("human participants do not have agent configuration".into());
-        }
+        let mention_handle = unique_mention_handle(
+            &thread.participants,
+            &canonical_mention_handle(&display_name),
+            Some(participant_id),
+        );
+        let participant = &mut thread.participants[participant_index];
         participant.display_name = display_name;
         participant.avatar = avatar;
+        participant.mention_handle = mention_handle;
         participant.settings = settings;
         Ok(participant.clone())
     }
@@ -279,13 +335,59 @@ pub fn participant_to_protocol(
         display_name: participant.display_name.clone(),
         avatar: participant.avatar.clone(),
         agent_id: participant.agent_id.clone(),
-        mention_handle: participant
-            .agent_id
-            .as_deref()
-            .map(canonical_mention_handle),
+        mention_handle: if participant.mention_handle.is_empty() {
+            participant
+                .agent_id
+                .as_deref()
+                .map(canonical_mention_handle)
+        } else {
+            Some(participant.mention_handle.clone())
+        },
         session_id: participant.session_id.clone(),
         state,
         settings: participant.settings.clone(),
+    }
+}
+
+fn unique_mention_handle(
+    participants: &[ThreadParticipantRecord],
+    preferred: &str,
+    excluded_participant_id: Option<&str>,
+) -> String {
+    let base = if preferred.is_empty() {
+        "agent"
+    } else {
+        preferred
+    };
+    if !participants.iter().any(|participant| {
+        Some(participant.participant_id.as_str()) != excluded_participant_id
+            && effective_mention_handle(participant) == base
+    }) {
+        return base.to_string();
+    }
+
+    for index in 2..=999 {
+        let candidate = format!("{base}-{index}");
+        if !participants.iter().any(|participant| {
+            Some(participant.participant_id.as_str()) != excluded_participant_id
+                && effective_mention_handle(participant) == candidate
+        }) {
+            return candidate;
+        }
+    }
+
+    format!("{base}-{}", uuid::Uuid::new_v4().simple())
+}
+
+fn effective_mention_handle(participant: &ThreadParticipantRecord) -> String {
+    if participant.mention_handle.is_empty() {
+        participant
+            .agent_id
+            .as_deref()
+            .map(canonical_mention_handle)
+            .unwrap_or_default()
+    } else {
+        participant.mention_handle.clone()
     }
 }
 
@@ -354,6 +456,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(participant.kind, ParticipantKind::Agent);
+        assert_eq!(participant.mention_handle, "agent-1");
         assert_eq!(
             store.binding_for_session("session-1"),
             Some(&ThreadSessionBinding {
@@ -426,5 +529,34 @@ mod tests {
         assert_eq!(targets.len(), 2);
         assert_eq!(targets[0].participant_id, first.participant_id);
         assert_eq!(targets[1].participant_id, second.participant_id);
+    }
+
+    #[test]
+    fn custom_participant_names_get_unique_mention_handles() {
+        let mut store = ThreadStore::new();
+        let thread = store.create_thread(Some("Custom handles".into()), ".".into());
+        let first = store
+            .add_agent_participant_with_config(
+                &thread.thread_id,
+                "codex".into(),
+                "Frontend Codex".into(),
+                "FE".into(),
+                "session-codex-1".into(),
+                AgentSessionSettings::default(),
+            )
+            .unwrap();
+        let second = store
+            .add_agent_participant_with_config(
+                &thread.thread_id,
+                "codex".into(),
+                "Frontend Codex".into(),
+                "BE".into(),
+                "session-codex-2".into(),
+                AgentSessionSettings::default(),
+            )
+            .unwrap();
+
+        assert_eq!(first.mention_handle, "frontend-codex");
+        assert_eq!(second.mention_handle, "frontend-codex-2");
     }
 }
