@@ -267,6 +267,15 @@ pub const PAGE: &str = r##"<!doctype html>
     color: var(--muted);
     font-size: 11px;
   }
+  .message-avatar {
+    display: inline-grid;
+    width: 20px;
+    height: 20px;
+    place-items: center;
+    border: 1px solid var(--line);
+    color: var(--cyan);
+    font: 9px var(--mono);
+  }
   .message-name { color: var(--text); font-weight: 700; }
   .message-tag {
     padding: 1px 5px;
@@ -454,9 +463,12 @@ pub const PAGE: &str = r##"<!doctype html>
     height: 25px;
     flex: 0 0 auto;
     place-items: center;
+    overflow: hidden;
     border: 1px solid var(--line);
     color: var(--cyan);
     font: 10px var(--mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .participant-human .participant-avatar { color: var(--warm); }
   .participant-name { overflow: hidden; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
@@ -466,11 +478,15 @@ pub const PAGE: &str = r##"<!doctype html>
   .state-dot.idle { background: var(--accent); }
   .state-dot.prompting { background: var(--warm); }
   .state-dot.offline, .state-dot.error { background: var(--danger); }
+  .participant-actions { display: flex; gap: 9px; margin-top: 8px; }
+  .configure-participant, .remove-participant { padding: 0; border: 0; background: transparent; cursor: pointer; font-size: 10px; }
+  .configure-participant { color: var(--cyan); }
+  .configure-participant:hover { color: var(--text); }
   .remove-participant { padding: 0 3px; border: 0; background: transparent; color: var(--faint); cursor: pointer; }
   .remove-participant:hover { color: var(--danger); }
   .setting { margin-top: 11px; }
   .setting label, .add-agent label, .dialog-field label { display: block; margin-bottom: 4px; color: var(--faint); font: 10px var(--mono); text-transform: uppercase; }
-  .setting select, .setting input, .add-agent select, .dialog-field input {
+  .setting select, .setting input, .add-agent select, .dialog-field input, .dialog-field select {
     width: 100%;
     min-height: 30px;
     padding: 5px 7px;
@@ -480,15 +496,13 @@ pub const PAGE: &str = r##"<!doctype html>
     color: var(--text);
     font-size: 12px;
   }
-  .setting select:hover, .setting input:hover, .add-agent select:hover, .dialog-field input:hover { border-color: var(--muted); }
+  .setting select:hover, .setting input:hover, .add-agent select:hover, .dialog-field input:hover, .dialog-field select:hover { border-color: var(--muted); }
   .setting-saving { margin-top: 4px; color: var(--accent); font-size: 10px; }
   .add-agent {
     padding: 16px;
     border-top: 1px solid var(--line);
   }
-  .add-agent-row { display: flex; gap: 6px; }
-  .add-agent-row select { min-width: 0; flex: 1; }
-  .add-agent-row button { flex: 0 0 auto; }
+  .add-agent .primary-button { width: 100%; }
   .inspector-note { padding: 15px 16px; color: var(--faint); font-size: 11px; }
   dialog {
     width: min(430px, calc(100vw - 32px));
@@ -503,6 +517,31 @@ pub const PAGE: &str = r##"<!doctype html>
   .dialog-inner h2 { margin: 0 0 4px; font-size: 16px; }
   .dialog-inner p { margin: 0 0 18px; color: var(--muted); font-size: 12px; }
   .dialog-field { margin-bottom: 13px; }
+  .avatar-config-row { display: flex; align-items: center; gap: 9px; }
+  .avatar-preview {
+    display: grid;
+    width: 36px;
+    height: 36px;
+    flex: 0 0 auto;
+    place-items: center;
+    border: 1px solid var(--cyan);
+    color: var(--cyan);
+    font: 11px var(--mono);
+  }
+  .avatar-config-row input { min-width: 0; flex: 1; }
+  .avatar-picker { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+  .avatar-choice {
+    min-width: 32px;
+    height: 28px;
+    padding: 0 6px;
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    color: var(--muted);
+    cursor: pointer;
+    font: 10px var(--mono);
+  }
+  .avatar-choice:hover, .avatar-choice.selected { border-color: var(--cyan); color: var(--cyan); }
+  .config-setting-note { margin-top: 5px; color: var(--faint); font-size: 10px; }
   .dialog-path-row { display: flex; gap: 8px; align-items: stretch; }
   .dialog-path-row input { min-width: 0; flex: 1; }
   .dialog-path-row button { white-space: nowrap; }
@@ -607,11 +646,7 @@ pub const PAGE: &str = r##"<!doctype html>
     </div>
     <div class="participants" id="participants"></div>
     <div class="add-agent">
-      <label for="agentPicker">Add agent</label>
-      <div class="add-agent-row">
-        <select id="agentPicker"><option value="">Choose an agent</option></select>
-        <button class="quiet-button" id="addAgentButton" type="button">Attach</button>
-      </div>
+      <button class="primary-button" id="addAgentButton" type="button">Add agent</button>
     </div>
     <div class="inspector-note">Settings apply to the next turn. A running participant must finish before its configuration can change.</div>
   </aside>
@@ -635,6 +670,35 @@ pub const PAGE: &str = r##"<!doctype html>
     <div class="dialog-actions">
       <button class="quiet-button" id="cancelNewThreadButton" value="cancel" type="button">Cancel</button>
       <button class="primary-button" value="default" type="submit">Create thread</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="participantConfigDialog">
+  <form class="dialog-inner" id="participantConfigForm" method="dialog">
+    <h2 id="participantConfigTitle">Add agent</h2>
+    <p id="participantConfigDescription">Create a named participant with its own session settings.</p>
+    <div class="dialog-field">
+      <label for="participantAgent">Agent</label>
+      <select id="participantAgent"></select>
+    </div>
+    <div class="dialog-field">
+      <label for="participantName">Name</label>
+      <input id="participantName" type="text" maxlength="80" placeholder="Frontend Codex" autocomplete="off">
+    </div>
+    <div class="dialog-field">
+      <label for="participantAvatar">Avatar</label>
+      <div class="avatar-config-row">
+        <span class="avatar-preview" id="participantAvatarPreview">AI</span>
+        <input id="participantAvatar" type="text" maxlength="8" placeholder="AI" autocomplete="off">
+      </div>
+      <div class="avatar-picker" id="participantAvatarPicker" aria-label="Avatar presets"></div>
+    </div>
+    <div class="dialog-field" id="participantModelField"></div>
+    <div class="dialog-field" id="participantReasoningField"></div>
+    <div class="config-setting-note">Settings apply to this participant's next turn.</div>
+    <div class="dialog-actions">
+      <button class="quiet-button" id="cancelParticipantConfigButton" value="cancel" type="button">Cancel</button>
+      <button class="primary-button" id="saveParticipantConfigButton" value="default" type="submit">Add agent</button>
     </div>
   </form>
 </dialog>
@@ -895,6 +959,7 @@ const state = {
   targets: new Map(),
   currentThreadId: null,
   attached: new Set(),
+  configuringParticipantId: null,
 };
 
 let toastTimer = null;
@@ -1088,26 +1153,105 @@ function settingMarkup(participant, settingId, label, key) {
   const descriptor = settingDescriptor(participant, settingId);
   if (!descriptor) return "";
   const current = participant.settings && participant.settings[key] ? participant.settings[key] : (descriptor.current_value || "");
+  return `<div class="setting"><label>${escapeHtml(label)}</label><select data-setting="${escapeHtml(settingId)}" data-participant="${escapeHtml(participant.participant_id)}">${settingOptionsMarkup(descriptor, current)}</select></div>`;
+}
+
+function settingOptionsMarkup(descriptor, current) {
   const values = Array.isArray(descriptor.values) ? descriptor.values.slice() : [];
   if (current && !values.some((value) => value.id === current)) values.unshift({ id: current, label: current });
-  const options = `<option value="">Default</option>${values.map((value) => `<option value="${escapeHtml(value.id)}" ${value.id === current ? "selected" : ""}>${escapeHtml(value.label)}</option>`).join("")}`;
-  return `<div class="setting"><label>${escapeHtml(label)}</label><select data-setting="${escapeHtml(settingId)}" data-participant="${escapeHtml(participant.participant_id)}">${options}</select></div>`;
+  return `<option value="">Default</option>${values.map((value) => `<option value="${escapeHtml(value.id)}" ${value.id === current ? "selected" : ""}>${escapeHtml(value.label)}</option>`).join("")}`;
 }
 
 function participantDisplayName(participant, participants) {
   if (participant.kind !== "agent" || !participant.agent_id) return participant.display_name;
   const sameAgents = (participants || []).filter((item) => item.kind === "agent" && item.agent_id === participant.agent_id);
   if (sameAgents.length < 2) return participant.display_name;
+  if (sameAgents.some((item) => item.display_name !== participant.display_name)) return participant.display_name;
   const instance = sameAgents.findIndex((item) => item.participant_id === participant.participant_id) + 1;
   return `${participant.display_name} #${instance}`;
 }
 
-function renderAgentPicker() {
-  // Every attach creates a fresh participant/session, so an agent remains selectable.
+function defaultAvatarForName(value) {
+  const words = String(value ?? "").trim().split(/\s+/).filter(Boolean);
+  const initials = words.slice(0, 2).map((word) => word[0]).join("").toUpperCase();
+  return initials || "AI";
+}
+
+function renderAddAgentButton() {
   const availableAgents = state.agents.filter((agent) => agent.status === "online");
-  $("agentPicker").innerHTML = '<option value="">Choose an agent</option>' + availableAgents
-    .map((agent) => `<option value="${escapeHtml(agent.agent_id)}">${escapeHtml(agent.name)}</option>`).join("");
   $("addAgentButton").disabled = !state.currentThreadId || !availableAgents.length;
+}
+
+function configSettingMarkup(agentId, settingId, label, key, settings) {
+  const summary = agentSummary(agentId);
+  const descriptor = summary && (summary.settings || []).find((setting) => setting.id === settingId);
+  if (!descriptor) return "";
+  const current = settings && settings[key] ? settings[key] : (descriptor.current_value || "");
+  return `<label for="participantConfig${key === "model" ? "Model" : "Reasoning"}">${escapeHtml(label)}</label><select id="participantConfig${key === "model" ? "Model" : "Reasoning"}">${settingOptionsMarkup(descriptor, current)}</select>`;
+}
+
+function renderConfigSettings(agentId, settings) {
+  $("participantModelField").innerHTML = configSettingMarkup(agentId, "model", "Model", "model", settings);
+  $("participantReasoningField").innerHTML = configSettingMarkup(agentId, "reasoning_effort", "Reasoning effort", "reasoning_effort", settings);
+}
+
+function renderConfigAvatarPresets() {
+  const presets = ["AI", "DEV", "QA", "OPS", "DOC", "UX"];
+  $("participantAvatarPicker").innerHTML = presets.map((preset) => `<button class="avatar-choice" type="button" data-avatar-preset="${preset}">${preset}</button>`).join("");
+  document.querySelectorAll("[data-avatar-preset]").forEach((element) => {
+    element.addEventListener("click", () => {
+      $("participantAvatar").value = element.dataset.avatarPreset;
+      updateConfigAvatarPreview();
+    });
+  });
+}
+
+function updateConfigAvatarPreview() {
+  const name = $("participantName").value.trim();
+  const avatar = $("participantAvatar").value.trim() || defaultAvatarForName(name);
+  $("participantAvatarPreview").textContent = avatar.slice(0, 8);
+  document.querySelectorAll("[data-avatar-preset]").forEach((element) => {
+    element.classList.toggle("selected", element.dataset.avatarPreset === avatar);
+  });
+}
+
+function renderConfigAgentOptions(selectedAgentId, locked) {
+  const agents = state.agents.filter((agent) => agent.status === "online" || agent.agent_id === selectedAgentId);
+  $("participantAgent").innerHTML = agents.map((agent) => `<option value="${escapeHtml(agent.agent_id)}" ${agent.agent_id === selectedAgentId ? "selected" : ""}>${escapeHtml(agent.name)}</option>`).join("");
+  $("participantAgent").disabled = locked;
+}
+
+function openParticipantConfig(participantId = null) {
+  if (!state.currentThreadId) return;
+  const snapshot = currentSnapshot();
+  const participant = participantId && snapshot ? snapshot.participants.find((item) => item.participant_id === participantId) : null;
+  const fallbackAgent = state.agents.find((agent) => agent.status === "online");
+  const agentId = participant ? participant.agent_id : (fallbackAgent && fallbackAgent.agent_id);
+  if (!agentId) {
+    showToast("No online agents are available.");
+    return;
+  }
+  const summary = agentSummary(agentId);
+  const defaultName = participant ? participant.display_name : (summary ? summary.name : agentId);
+  const defaultAvatar = participant ? (participant.avatar || defaultAvatarForName(defaultName)) : defaultAvatarForName(defaultName);
+  const settings = participant ? (participant.settings || {}) : {
+    model: summary && (summary.settings || []).find((setting) => setting.id === "model")?.current_value || null,
+    reasoning_effort: summary && (summary.settings || []).find((setting) => setting.id === "reasoning_effort")?.current_value || null,
+  };
+  state.configuringParticipantId = participantId;
+  $("participantConfigTitle").textContent = participant ? "Configure agent" : "Add agent";
+  $("participantConfigDescription").textContent = participant ? "Update this participant's name, avatar, or session settings." : "Create a named participant with its own session settings.";
+  $("saveParticipantConfigButton").textContent = participant ? "Save configuration" : "Add agent";
+  renderConfigAgentOptions(agentId, Boolean(participant));
+  $("participantName").value = defaultName;
+  $("participantAvatar").value = defaultAvatar;
+  renderConfigSettings(agentId, settings);
+  renderConfigAvatarPresets();
+  updateConfigAvatarPreview();
+  const dialog = $("participantConfigDialog");
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "open");
+  setTimeout(() => $(participant ? "participantName" : "participantAgent").focus(), 0);
 }
 
 function renderParticipants() {
@@ -1116,13 +1260,14 @@ function renderParticipants() {
   $("participantCount").textContent = `${participants.filter((p) => p.kind === "agent").length} connected`;
   if (!snapshot) {
     $("participants").innerHTML = '<div class="inspector-note">Select a thread to manage its agents.</div>';
-    renderAgentPicker();
+    renderAddAgentButton();
     return;
   }
   $("participants").innerHTML = participants.map((participant) => {
     const isHuman = participant.kind === "human";
     const status = participantStatus(participant);
     const displayName = participantDisplayName(participant, participants);
+    const avatar = participant.avatar || (isHuman ? "YOU" : "AI");
     const label = participant.agent_id ? `@${participant.mention_handle || participant.agent_id}` : "thread owner";
     const controls = isHuman ? "" : `
       ${settingMarkup(participant, "model", "Model", "model")}
@@ -1130,12 +1275,12 @@ function renderParticipants() {
     return `<div class="participant ${isHuman ? "participant-human" : ""}">
       <div class="participant-head">
         <div class="participant-identity">
-          <span class="participant-avatar">${isHuman ? "YOU" : "AI"}</span>
+          <span class="participant-avatar">${escapeHtml(avatar)}</span>
           <div><div class="participant-name">${escapeHtml(displayName)}</div><div class="participant-sub">${escapeHtml(label)}</div></div>
         </div>
         <div class="participant-state"><span class="state-dot ${escapeHtml(status)}"></span>${escapeHtml(status)}</div>
       </div>
-      ${isHuman ? "" : `<button class="remove-participant" data-remove-participant="${escapeHtml(participant.participant_id)}" type="button" title="Remove participant" aria-label="Remove ${escapeHtml(displayName)}">x remove</button>${controls}`}
+      ${isHuman ? "" : `<div class="participant-actions"><button class="configure-participant" data-configure-participant="${escapeHtml(participant.participant_id)}" type="button" title="Configure participant">Configure</button><button class="remove-participant" data-remove-participant="${escapeHtml(participant.participant_id)}" type="button" title="Remove participant" aria-label="Remove ${escapeHtml(displayName)}">x remove</button></div>${controls}`}
     </div>`;
   }).join("") || '<div class="inspector-note">No participants yet.</div>';
 
@@ -1149,7 +1294,10 @@ function renderParticipants() {
       }
     });
   });
-  renderAgentPicker();
+  document.querySelectorAll("[data-configure-participant]").forEach((element) => {
+    element.addEventListener("click", () => openParticipantConfig(element.dataset.configureParticipant));
+  });
+  renderAddAgentButton();
 }
 
 function renderRecipients() {
@@ -1207,7 +1355,8 @@ function renderMessage(message) {
   const plan = message.plan ? `<details class="assistant-plan"><summary>Plan update</summary><div class="detail">${escapeHtml(JSON.stringify(message.plan, null, 2))}</div></details>` : "";
   const body = message.response ? `<div class="message-body markdown">${renderMarkdown(message.response)}</div>` : (status === "streaming" ? '<div class="message-body">Working...</div>' : "");
   const footer = status === "streaming" ? "streaming" : (message.stop_reason || status);
-  return `<article class="message assistant ${escapeHtml(status)}"><div class="message-head"><span class="message-name">${escapeHtml(message.display_name || message.agent_id || "Agent")}</span><span class="message-tag">agent</span><span>${escapeHtml(formatTime(message.created_at || Date.now()))}</span></div>${thinking}${tools}${plan}${body}<div class="assistant-footer">${escapeHtml(footer)}</div></article>`;
+  const avatar = message.avatar ? `<span class="message-avatar">${escapeHtml(message.avatar)}</span>` : "";
+  return `<article class="message assistant ${escapeHtml(status)}"><div class="message-head">${avatar}<span class="message-name">${escapeHtml(message.display_name || message.agent_id || "Agent")}</span><span class="message-tag">agent</span><span>${escapeHtml(formatTime(message.created_at || Date.now()))}</span></div>${thinking}${tools}${plan}${body}<div class="assistant-footer">${escapeHtml(footer)}</div></article>`;
 }
 
 function assistantMessage(event) {
@@ -1217,7 +1366,7 @@ function assistantMessage(event) {
   if (!message) {
     const participants = ensureSnapshot(event.thread_id).participants;
     const participant = participants.find((item) => item.participant_id === event.participant_id);
-    message = { kind: "assistant", key, participant_id: event.participant_id, agent_id: event.agent_id, display_name: participant ? participantDisplayName(participant, participants) : event.agent_id, thinking: "", response: "", tools: [], state: "streaming", created_at: Date.now() };
+    message = { kind: "assistant", key, participant_id: event.participant_id, agent_id: event.agent_id, display_name: participant ? participantDisplayName(participant, participants) : event.agent_id, avatar: participant ? (participant.avatar || "AI") : "AI", thinking: "", response: "", tools: [], state: "streaming", created_at: Date.now() };
     messages.push(message);
   }
   return message;
@@ -1424,9 +1573,17 @@ function openNewThreadDialog() {
   setTimeout(() => $("newThreadTitle").focus(), 0);
 }
 
+function closeParticipantConfig() {
+  const dialog = $("participantConfigDialog");
+  if (typeof dialog.close === "function") dialog.close();
+  else dialog.removeAttribute("open");
+  state.configuringParticipantId = null;
+}
+
 $("newThreadButton").addEventListener("click", openNewThreadDialog);
 $("emptyNewThreadButton").addEventListener("click", openNewThreadDialog);
 $("cancelNewThreadButton").addEventListener("click", () => $("newThreadDialog").close());
+$("cancelParticipantConfigButton").addEventListener("click", closeParticipantConfig);
 $("chooseWorkingDirButton").addEventListener("click", chooseWorkingDirectory);
 $("newThreadForm").addEventListener("submit", (event) => {
   event.preventDefault();
@@ -1439,11 +1596,43 @@ $("refreshButton").addEventListener("click", () => {
   send({ type: "list_agents" });
   send({ type: "list_threads" });
 });
-$("addAgentButton").addEventListener("click", () => {
-  const agentId = $("agentPicker").value;
-  if (!state.currentThreadId || !agentId) return;
-  send({ type: "add_thread_participant", thread_id: state.currentThreadId, agent_id: agentId });
-  $("agentPicker").value = "";
+$("addAgentButton").addEventListener("click", () => openParticipantConfig());
+$("participantAgent").addEventListener("change", () => {
+  if (state.configuringParticipantId) return;
+  const summary = agentSummary($("participantAgent").value);
+  if (!summary) return;
+  $("participantName").value = summary.name;
+  $("participantAvatar").value = defaultAvatarForName(summary.name);
+  const settings = {
+    model: (summary.settings || []).find((setting) => setting.id === "model")?.current_value || null,
+    reasoning_effort: (summary.settings || []).find((setting) => setting.id === "reasoning_effort")?.current_value || null,
+  };
+  renderConfigSettings(summary.agent_id, settings);
+  updateConfigAvatarPreview();
+});
+$("participantName").addEventListener("input", updateConfigAvatarPreview);
+$("participantAvatar").addEventListener("input", updateConfigAvatarPreview);
+$("participantConfigForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const snapshot = currentSnapshot();
+  const agentId = $("participantAgent").value;
+  const name = $("participantName").value.trim();
+  if (!snapshot || !agentId || !name) {
+    showToast("Choose an agent and enter a name.");
+    return;
+  }
+  const config = {
+    display_name: name,
+    avatar: $("participantAvatar").value.trim() || defaultAvatarForName(name),
+    settings: {
+      model: $("participantConfigModel") ? ($("participantConfigModel").value || null) : null,
+      reasoning_effort: $("participantConfigReasoning") ? ($("participantConfigReasoning").value || null) : null,
+    },
+  };
+  const message = state.configuringParticipantId
+    ? { type: "set_thread_participant_configuration", thread_id: snapshot.thread_id, participant_id: state.configuringParticipantId, config }
+    : { type: "add_thread_participant_with_config", thread_id: snapshot.thread_id, agent_id: agentId, config };
+  if (send(message)) closeParticipantConfig();
 });
 $("sendButton").addEventListener("click", sendMessage);
 $("messageInput").addEventListener("keydown", (event) => {

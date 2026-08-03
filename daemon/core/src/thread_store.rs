@@ -21,6 +21,7 @@ pub struct ThreadParticipantRecord {
     pub participant_id: String,
     pub kind: ParticipantKind,
     pub display_name: String,
+    pub avatar: String,
     pub agent_id: Option<String>,
     pub session_id: Option<String>,
     pub settings: AgentSessionSettings,
@@ -59,6 +60,7 @@ impl ThreadStore {
                 participant_id: "participant-user".into(),
                 kind: ParticipantKind::Human,
                 display_name: "You".into(),
+                avatar: "YOU".into(),
                 agent_id: None,
                 session_id: None,
                 settings: AgentSessionSettings::default(),
@@ -100,6 +102,26 @@ impl ThreadStore {
         session_id: String,
         settings: AgentSessionSettings,
     ) -> Result<ThreadParticipantRecord, String> {
+        let avatar = default_avatar_for_name(&display_name);
+        self.add_agent_participant_with_config(
+            thread_id,
+            agent_id,
+            display_name,
+            avatar,
+            session_id,
+            settings,
+        )
+    }
+
+    pub fn add_agent_participant_with_config(
+        &mut self,
+        thread_id: &str,
+        agent_id: String,
+        display_name: String,
+        avatar: String,
+        session_id: String,
+        settings: AgentSessionSettings,
+    ) -> Result<ThreadParticipantRecord, String> {
         let thread = self
             .threads
             .get_mut(thread_id)
@@ -108,6 +130,7 @@ impl ThreadStore {
             participant_id: format!("participant-{}", Uuid::new_v4().simple()),
             kind: ParticipantKind::Agent,
             display_name: display_name.clone(),
+            avatar: avatar.clone(),
             agent_id: Some(agent_id.clone()),
             session_id: Some(session_id.clone()),
             settings,
@@ -144,6 +167,32 @@ impl ThreadStore {
         if participant.kind != ParticipantKind::Agent {
             return Err("human participants do not have agent settings".into());
         }
+        participant.settings = settings;
+        Ok(participant.clone())
+    }
+
+    pub fn set_participant_configuration(
+        &mut self,
+        thread_id: &str,
+        participant_id: &str,
+        display_name: String,
+        avatar: String,
+        settings: AgentSessionSettings,
+    ) -> Result<ThreadParticipantRecord, String> {
+        let thread = self
+            .threads
+            .get_mut(thread_id)
+            .ok_or_else(|| "thread not found".to_string())?;
+        let participant = thread
+            .participants
+            .iter_mut()
+            .find(|participant| participant.participant_id == participant_id)
+            .ok_or_else(|| "participant not found".to_string())?;
+        if participant.kind != ParticipantKind::Agent {
+            return Err("human participants do not have agent configuration".into());
+        }
+        participant.display_name = display_name;
+        participant.avatar = avatar;
         participant.settings = settings;
         Ok(participant.clone())
     }
@@ -228,6 +277,7 @@ pub fn participant_to_protocol(
         participant_id: participant.participant_id.clone(),
         kind: participant.kind.clone(),
         display_name: participant.display_name.clone(),
+        avatar: participant.avatar.clone(),
         agent_id: participant.agent_id.clone(),
         mention_handle: participant
             .agent_id
@@ -236,6 +286,20 @@ pub fn participant_to_protocol(
         session_id: participant.session_id.clone(),
         state,
         settings: participant.settings.clone(),
+    }
+}
+
+fn default_avatar_for_name(display_name: &str) -> String {
+    let initials = display_name
+        .split_whitespace()
+        .filter_map(|word| word.chars().next())
+        .take(2)
+        .map(|character| character.to_ascii_uppercase())
+        .collect::<String>();
+    if initials.is_empty() {
+        "AI".into()
+    } else {
+        initials
     }
 }
 

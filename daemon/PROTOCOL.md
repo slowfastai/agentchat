@@ -315,6 +315,7 @@ Success responses:
         "participant_id": "participant-user",
         "kind": "human",
         "display_name": "You",
+        "avatar": "YOU",
         "agent_id": null,
         "session_id": null,
         "state": "idle"
@@ -323,6 +324,7 @@ Success responses:
         "participant_id": "participant-1",
         "kind": "agent",
         "display_name": "Pi",
+        "avatar": "PI",
         "agent_id": "pi",
         "mention_handle": "pi",
         "session_id": "session-1",
@@ -377,6 +379,7 @@ Success response:
     "participant_id": "participant-1",
     "kind": "agent",
     "display_name": "Pi",
+    "avatar": "PI",
     "agent_id": "pi",
     "mention_handle": "pi",
     "session_id": "session-1",
@@ -384,6 +387,61 @@ Success response:
   }
 }
 ```
+
+## `add_thread_participant_with_config`
+
+Add a participant with a thread-local name, avatar, and session settings. This
+allows the same backend agent to appear more than once with independent model
+and reasoning choices.
+
+Request:
+
+```json
+{
+  "type": "add_thread_participant_with_config",
+  "thread_id": "thread-1",
+  "agent_id": "codex",
+  "config": {
+    "display_name": "Backend Codex",
+    "avatar": "BE",
+    "settings": {
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "max"
+    }
+  }
+}
+```
+
+The response is `thread_participant_added` with the configured profile and
+settings in `participant`.
+
+## `set_thread_participant_configuration`
+
+Update an existing agent participant's thread-local profile and settings. The
+new settings apply to its next turn; a participant currently running a turn
+is rejected with `participant_busy`.
+
+Request:
+
+```json
+{
+  "type": "set_thread_participant_configuration",
+  "thread_id": "thread-1",
+  "participant_id": "participant-1",
+  "config": {
+    "display_name": "UI Codex",
+    "avatar": "UI",
+    "settings": {
+      "model": "gpt-5.6-luna",
+      "reasoning_effort": "high"
+    }
+  }
+}
+```
+
+The daemon broadcasts `thread_participant_settings_updated` with the complete
+updated `participant` record. The older `set_thread_participant_settings`
+message remains supported for clients that only change runtime settings.
 
 ## `close_thread`
 

@@ -13,7 +13,7 @@ use agentchat_core::skills::SkillStore;
 use agentchat_protocol::{
     AgentConfig, AgentSessionSettings, AgentStatus, AssistantMessageState, ClientMessage,
     DaemonLifecycleState, DaemonStopReason, DeltaType, ResponseEvent, SessionEvent, SessionState,
-    SessionTranscript,
+    SessionTranscript, ThreadParticipantConfig,
 };
 use agentchat_server::ws::WebSocketServer;
 use futures::{SinkExt, StreamExt};
@@ -659,25 +659,54 @@ async fn websocket_thread_allows_duplicate_agent_sessions_with_independent_setti
                 event => panic!("unexpected event while creating thread: {event:?}"),
             };
 
-            let add_participant = |thread_id: &str| ClientMessage::AddThreadParticipant {
-                thread_id: thread_id.to_string(),
-                agent_id: "fake".into(),
-            };
-            send_client_message(&mut ws, &add_participant(&thread_id)).await;
+            let add_participant =
+                |thread_id: &str, name: &str, avatar: &str, model: &str, reasoning: &str| {
+                    ClientMessage::AddThreadParticipantWithConfig {
+                        thread_id: thread_id.to_string(),
+                        agent_id: "fake".into(),
+                        config: ThreadParticipantConfig {
+                            display_name: name.into(),
+                            avatar: avatar.into(),
+                            settings: AgentSessionSettings {
+                                model: Some(model.into()),
+                                reasoning_effort: Some(reasoning.into()),
+                            },
+                        },
+                    }
+                };
+            send_client_message(
+                &mut ws,
+                &add_participant(&thread_id, "Frontend Codex", "FE", "gpt-5.6-luna", "high"),
+            )
+            .await;
             let (first_participant_id, first_session_id) = match receive_event(&mut ws).await {
-                ResponseEvent::ThreadParticipantAdded { participant, .. } => (
-                    participant.participant_id,
-                    participant.session_id.expect("missing first session id"),
-                ),
+                ResponseEvent::ThreadParticipantAdded { participant, .. } => {
+                    assert_eq!(participant.display_name, "Frontend Codex");
+                    assert_eq!(participant.avatar, "FE");
+                    assert_eq!(participant.settings.model.as_deref(), Some("gpt-5.6-luna"));
+                    (
+                        participant.participant_id,
+                        participant.session_id.expect("missing first session id"),
+                    )
+                }
                 event => panic!("unexpected event while adding first participant: {event:?}"),
             };
 
-            send_client_message(&mut ws, &add_participant(&thread_id)).await;
+            send_client_message(
+                &mut ws,
+                &add_participant(&thread_id, "Backend Codex", "BE", "gpt-5.6-sol", "max"),
+            )
+            .await;
             let (second_participant_id, second_session_id) = match receive_event(&mut ws).await {
-                ResponseEvent::ThreadParticipantAdded { participant, .. } => (
-                    participant.participant_id,
-                    participant.session_id.expect("missing second session id"),
-                ),
+                ResponseEvent::ThreadParticipantAdded { participant, .. } => {
+                    assert_eq!(participant.display_name, "Backend Codex");
+                    assert_eq!(participant.avatar, "BE");
+                    assert_eq!(participant.settings.model.as_deref(), Some("gpt-5.6-sol"));
+                    (
+                        participant.participant_id,
+                        participant.session_id.expect("missing second session id"),
+                    )
+                }
                 event => panic!("unexpected event while adding second participant: {event:?}"),
             };
 
@@ -686,12 +715,16 @@ async fn websocket_thread_allows_duplicate_agent_sessions_with_independent_setti
 
             send_client_message(
                 &mut ws,
-                &ClientMessage::SetThreadParticipantSettings {
+                &ClientMessage::SetThreadParticipantConfiguration {
                     thread_id: thread_id.clone(),
                     participant_id: first_participant_id.clone(),
-                    settings: AgentSessionSettings {
-                        model: Some("gpt-5.6-luna".into()),
-                        reasoning_effort: Some("high".into()),
+                    config: ThreadParticipantConfig {
+                        display_name: "UI Codex".into(),
+                        avatar: "UI".into(),
+                        settings: AgentSessionSettings {
+                            model: Some("gpt-5.6-luna".into()),
+                            reasoning_effort: Some("medium".into()),
+                        },
                     },
                 },
             )
@@ -699,10 +732,12 @@ async fn websocket_thread_allows_duplicate_agent_sessions_with_independent_setti
             match receive_event(&mut ws).await {
                 ResponseEvent::ThreadParticipantSettingsUpdated { participant, .. } => {
                     assert_eq!(participant.participant_id, first_participant_id);
+                    assert_eq!(participant.display_name, "UI Codex");
+                    assert_eq!(participant.avatar, "UI");
                     assert_eq!(participant.settings.model.as_deref(), Some("gpt-5.6-luna"));
                     assert_eq!(
                         participant.settings.reasoning_effort.as_deref(),
-                        Some("high")
+                        Some("medium")
                     );
                 }
                 event => panic!("unexpected event while setting first participant: {event:?}"),
@@ -723,6 +758,8 @@ async fn websocket_thread_allows_duplicate_agent_sessions_with_independent_setti
             match receive_event(&mut ws).await {
                 ResponseEvent::ThreadParticipantSettingsUpdated { participant, .. } => {
                     assert_eq!(participant.participant_id, second_participant_id);
+                    assert_eq!(participant.display_name, "Backend Codex");
+                    assert_eq!(participant.avatar, "BE");
                     assert_eq!(participant.settings.model.as_deref(), Some("gpt-5.6-sol"));
                     assert_eq!(
                         participant.settings.reasoning_effort.as_deref(),

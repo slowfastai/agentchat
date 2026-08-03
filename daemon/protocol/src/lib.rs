@@ -246,11 +246,23 @@ pub struct ThreadParticipant {
     pub participant_id: String,
     pub kind: ParticipantKind,
     pub display_name: String,
+    #[serde(default)]
+    pub avatar: String,
     pub agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mention_handle: Option<String>,
     pub session_id: Option<String>,
     pub state: ParticipantState,
+    #[serde(default)]
+    pub settings: AgentSessionSettings,
+}
+
+/// Profile and runtime settings used when creating or editing a thread participant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThreadParticipantConfig {
+    pub display_name: String,
+    #[serde(default)]
+    pub avatar: String,
     #[serde(default)]
     pub settings: AgentSessionSettings,
 }
@@ -356,7 +368,7 @@ pub enum ResponseEvent {
         participant: ThreadParticipant,
     },
 
-    /// Participant settings changed and will apply to the next turn.
+    /// Participant configuration changed and will apply to the next turn.
     ThreadParticipantSettingsUpdated {
         thread_id: String,
         thread_seq: u64,
@@ -705,13 +717,25 @@ pub enum ClientMessage {
         #[serde(default)]
         after_seq: Option<u64>,
     },
-    /// Add a new agent-backed participant to an existing thread.
+    /// Add a new agent-backed participant to an existing thread with defaults.
     AddThreadParticipant { thread_id: String, agent_id: String },
+    /// Add a new agent-backed participant with a thread-local profile and settings.
+    AddThreadParticipantWithConfig {
+        thread_id: String,
+        agent_id: String,
+        config: ThreadParticipantConfig,
+    },
     /// Change an agent participant's runtime settings for its next turn.
     SetThreadParticipantSettings {
         thread_id: String,
         participant_id: String,
         settings: AgentSessionSettings,
+    },
+    /// Change a participant's thread-local profile and runtime settings.
+    SetThreadParticipantConfiguration {
+        thread_id: String,
+        participant_id: String,
+        config: ThreadParticipantConfig,
     },
     /// Remove a participant from an existing thread.
     RemoveThreadParticipant {
@@ -788,12 +812,36 @@ mod tests {
                 thread_id: "thread-1".into(),
                 agent_id: "agent-1".into(),
             },
+            ClientMessage::AddThreadParticipantWithConfig {
+                thread_id: "thread-1".into(),
+                agent_id: "agent-1".into(),
+                config: ThreadParticipantConfig {
+                    display_name: "Backend Codex".into(),
+                    avatar: "BE".into(),
+                    settings: AgentSessionSettings {
+                        model: Some("gpt-5.6-sol".into()),
+                        reasoning_effort: Some("max".into()),
+                    },
+                },
+            },
             ClientMessage::SetThreadParticipantSettings {
                 thread_id: "thread-1".into(),
                 participant_id: "participant-1".into(),
                 settings: AgentSessionSettings {
                     model: Some("gpt-5.6-luna".into()),
                     reasoning_effort: Some("high".into()),
+                },
+            },
+            ClientMessage::SetThreadParticipantConfiguration {
+                thread_id: "thread-1".into(),
+                participant_id: "participant-1".into(),
+                config: ThreadParticipantConfig {
+                    display_name: "Frontend Codex".into(),
+                    avatar: "FE".into(),
+                    settings: AgentSessionSettings {
+                        model: Some("gpt-5.6-luna".into()),
+                        reasoning_effort: Some("high".into()),
+                    },
                 },
             },
             ClientMessage::RemoveThreadParticipant {
@@ -886,6 +934,7 @@ mod tests {
                         participant_id: "participant-1".into(),
                         kind: ParticipantKind::Agent,
                         display_name: "Agent 1".into(),
+                        avatar: "A1".into(),
                         agent_id: Some("agent-1".into()),
                         mention_handle: Some("agent-1".into()),
                         session_id: Some("session-1".into()),
@@ -908,6 +957,7 @@ mod tests {
                     participant_id: "participant-1".into(),
                     kind: ParticipantKind::Agent,
                     display_name: "Agent 1".into(),
+                    avatar: "A1".into(),
                     agent_id: Some("agent-1".into()),
                     mention_handle: Some("agent-1".into()),
                     session_id: Some("session-1".into()),

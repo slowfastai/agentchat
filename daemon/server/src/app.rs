@@ -22,7 +22,7 @@ use agentchat_protocol::{
     canonical_mention_handle, AgentSessionSettings, AgentSummary, AssistantMessageState,
     ClientMessage, DeltaType, ParticipantKind, ParticipantState, ResponseEvent, SessionEvent,
     SessionSnapshot, SessionState, SessionSummary, SessionTranscript, SkillInfo, ThreadParticipant,
-    ThreadSender, ThreadSnapshot, ThreadState,
+    ThreadParticipantConfig, ThreadSender, ThreadSnapshot, ThreadState,
 };
 
 pub struct AppProtocolSession {
@@ -315,6 +315,43 @@ fn merge_thread_message_targets(
     }
 }
 
+fn default_participant_avatar(display_name: &str) -> String {
+    let initials = display_name
+        .split_whitespace()
+        .filter_map(|word| word.chars().next())
+        .take(2)
+        .map(|character| character.to_ascii_uppercase())
+        .collect::<String>();
+    if initials.is_empty() {
+        "AI".into()
+    } else {
+        initials
+    }
+}
+
+fn bounded_profile_value(value: &str, fallback: &str, max_chars: usize) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        fallback.to_string()
+    } else {
+        value.chars().take(max_chars).collect()
+    }
+}
+
+fn normalize_thread_participant_config(
+    config: ThreadParticipantConfig,
+    defaults: &ThreadParticipantConfig,
+) -> ThreadParticipantConfig {
+    let display_name = bounded_profile_value(&config.display_name, &defaults.display_name, 80);
+    let avatar_fallback = default_participant_avatar(&display_name);
+    let avatar = bounded_profile_value(&config.avatar, &avatar_fallback, 8);
+    ThreadParticipantConfig {
+        display_name,
+        avatar,
+        settings: config.settings,
+    }
+}
+
 impl AppProtocolSession {
     #[allow(clippy::result_large_err)]
     pub fn new(
@@ -536,7 +573,15 @@ impl AppProtocolSession {
                 thread_id,
                 agent_id,
             } => {
-                self.handle_add_thread_participant(thread_id, agent_id)
+                self.handle_add_thread_participant(thread_id, agent_id, None)
+                    .await;
+            }
+            ClientMessage::AddThreadParticipantWithConfig {
+                thread_id,
+                agent_id,
+                config,
+            } => {
+                self.handle_add_thread_participant(thread_id, agent_id, Some(config))
                     .await;
             }
             ClientMessage::SetThreadParticipantSettings {
@@ -545,6 +590,14 @@ impl AppProtocolSession {
                 settings,
             } => {
                 self.handle_set_thread_participant_settings(thread_id, participant_id, settings)
+                    .await;
+            }
+            ClientMessage::SetThreadParticipantConfiguration {
+                thread_id,
+                participant_id,
+                config,
+            } => {
+                self.handle_set_thread_participant_configuration(thread_id, participant_id, config)
                     .await;
             }
             ClientMessage::RemoveThreadParticipant {
@@ -856,7 +909,41 @@ impl AppProtocolSession {
         });
     }
 
-    async fn handle_add_thread_participant(&mut self, thread_id: String, agent_id: String) {
+    fn default_thread_participant_config(&self, agent_id: &str) -> ThreadParticipantConfig {
+        self.manager
+            .borrow()
+            .list_agents()
+            .into_iter()
+            .find(|summary| summary.agent_id == agent_id)
+            .map(|summary| ThreadParticipantConfig {
+                avatar: default_participant_avatar(&summary.name),
+                display_name: summary.name,
+                settings: AgentSessionSettings {
+                    model: summary
+                        .settings
+                        .iter()
+                        .find(|setting| setting.id == "model")
+                        .and_then(|setting| setting.current_value.clone()),
+                    reasoning_effort: summary
+                        .settings
+                        .iter()
+                        .find(|setting| setting.id == "reasoning_effort")
+                        .and_then(|setting| setting.current_value.clone()),
+                },
+            })
+            .unwrap_or_else(|| ThreadParticipantConfig {
+                display_name: agent_id.to_string(),
+                avatar: default_participant_avatar(agent_id),
+                settings: AgentSessionSettings::default(),
+            })
+    }
+
+    async fn handle_add_thread_participant(
+        &mut self,
+        thread_id: String,
+        agent_id: String,
+        requested_config: Option<ThreadParticipantConfig>,
+    ) {
         let working_dir = match self.thread_store.borrow().get_thread(&thread_id) {
             Some(thread) => thread.working_dir.clone(),
             None => {
@@ -870,34 +957,17 @@ impl AppProtocolSession {
             }
         };
 
-        let (display_name, settings) = self
-            .manager
-            .borrow()
-            .list_agents()
-            .into_iter()
-            .find(|summary| summary.agent_id == agent_id)
-            .map(|summary| {
-                let settings = AgentSessionSettings {
-                    model: summary
-                        .settings
-                        .iter()
-                        .find(|setting| setting.id == "model")
-                        .and_then(|setting| setting.current_value.clone()),
-                    reasoning_effort: summary
-                        .settings
-                        .iter()
-                        .find(|setting| setting.id == "reasoning_effort")
-                        .and_then(|setting| setting.current_value.clone()),
-                };
-                (summary.name, settings)
-            })
-            .unwrap_or_else(|| (agent_id.clone(), AgentSessionSettings::default()));
+        let default_config = self.default_thread_participant_config(&agent_id);
+        let config = normalize_thread_participant_config(
+            requested_config.unwrap_or_else(|| default_config.clone()),
+            &default_config,
+        );
 
         let session_id = match self
             .create_session_for_agent_with_settings(
                 Some(agent_id.clone()),
                 working_dir,
-                settings.clone(),
+                config.settings.clone(),
             )
             .await
         {
@@ -911,12 +981,13 @@ impl AppProtocolSession {
         let participant = match self
             .thread_store
             .borrow_mut()
-            .add_agent_participant_with_settings(
+            .add_agent_participant_with_config(
                 &thread_id,
                 agent_id,
-                display_name,
+                config.display_name,
+                config.avatar,
                 session_id,
-                settings,
+                config.settings,
             ) {
             Ok(participant) => participant,
             Err(_) => {
@@ -949,6 +1020,37 @@ impl AppProtocolSession {
         participant_id: String,
         settings: AgentSessionSettings,
     ) {
+        self.handle_set_thread_participant_configuration_internal(
+            thread_id,
+            participant_id,
+            settings,
+            None,
+        )
+        .await;
+    }
+
+    async fn handle_set_thread_participant_configuration(
+        &mut self,
+        thread_id: String,
+        participant_id: String,
+        config: ThreadParticipantConfig,
+    ) {
+        self.handle_set_thread_participant_configuration_internal(
+            thread_id,
+            participant_id,
+            config.settings,
+            Some((config.display_name, config.avatar)),
+        )
+        .await;
+    }
+
+    async fn handle_set_thread_participant_configuration_internal(
+        &mut self,
+        thread_id: String,
+        participant_id: String,
+        settings: AgentSessionSettings,
+        profile: Option<(String, String)>,
+    ) {
         let participant = match self.thread_store.borrow().get_thread(&thread_id) {
             Some(thread) => thread
                 .participants
@@ -966,7 +1068,8 @@ impl AppProtocolSession {
             });
             return;
         };
-        let (Some(agent_id), Some(session_id)) = (participant.agent_id, participant.session_id)
+        let (Some(agent_id), Some(session_id)) =
+            (participant.agent_id.clone(), participant.session_id.clone())
         else {
             let _ = self.response_tx.send(ResponseEvent::Error {
                 session_id: None,
@@ -986,6 +1089,37 @@ impl AppProtocolSession {
             });
             return;
         }
+
+        let (display_name, avatar) = match profile {
+            Some((display_name, avatar)) => {
+                let defaults = ThreadParticipantConfig {
+                    display_name: participant.display_name.clone(),
+                    avatar: if participant.avatar.is_empty() {
+                        default_participant_avatar(&participant.display_name)
+                    } else {
+                        participant.avatar.clone()
+                    },
+                    settings: AgentSessionSettings::default(),
+                };
+                let normalized = normalize_thread_participant_config(
+                    ThreadParticipantConfig {
+                        display_name,
+                        avatar,
+                        settings: AgentSessionSettings::default(),
+                    },
+                    &defaults,
+                );
+                (normalized.display_name, normalized.avatar)
+            }
+            None => (
+                participant.display_name.clone(),
+                if participant.avatar.is_empty() {
+                    default_participant_avatar(&participant.display_name)
+                } else {
+                    participant.avatar.clone()
+                },
+            ),
+        };
 
         let agent = self.manager.borrow().get_agent(&agent_id);
         let Some(agent) = agent else {
@@ -1017,11 +1151,16 @@ impl AppProtocolSession {
             return;
         }
 
-        let participant = match self.thread_store.borrow_mut().set_participant_settings(
-            &thread_id,
-            &participant_id,
-            settings,
-        ) {
+        let participant = match self
+            .thread_store
+            .borrow_mut()
+            .set_participant_configuration(
+                &thread_id,
+                &participant_id,
+                display_name,
+                avatar,
+                settings,
+            ) {
             Ok(participant) => participant,
             Err(message) => {
                 let _ = self.response_tx.send(ResponseEvent::Error {
