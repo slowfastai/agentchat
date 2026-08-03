@@ -20,13 +20,33 @@ extension FocusedValues {
     }
 }
 
+struct AgentChatWebCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandMenu("AgentChat") {
+            Button("Open Native Workspace") {
+                openWindow(id: "desktop-workspace")
+            }
+        }
+    }
+}
+
 struct AgentChatDesktopCommands: Commands {
     @FocusedValue(\.agentChatDesktopActions) private var actions
+    @Environment(\.openWindow) private var openWindow
 
     let env: DesktopEnvironment
 
     var body: some Commands {
         CommandMenu("AgentChat") {
+            Button("Open Web Chat") {
+                openWindow(id: "web-chat")
+            }
+            .keyboardShortcut("w", modifiers: [.command, .shift])
+
+            Divider()
+
             Button("New Project") {
                 actions?.showNewProjectSheet()
             }

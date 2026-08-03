@@ -158,6 +158,46 @@ struct LocalDaemonControllerTests {
         #expect(command?.currentDirectoryURL?.path == "/tmp/agentchat")
     }
 
+    @Test func resolvedWebLaunchCommandAddsWebArgumentsToBundledBinary() {
+        let command = LocalDaemonController.resolvedWebLaunchCommand(
+            environment: ["AGENTCHAT_DAEMON_EXECUTABLE": "/custom/bin/agentchat-daemon"],
+            sourceFilePath: "/tmp/agentchat/clients/apple/AgentChatPrototype/AgentChat/AgentChatDesktop/LocalDaemonController.swift",
+            pathExists: { _ in false },
+            executableExists: { _ in false }
+        )
+
+        #expect(command?.executableURL.path == "/custom/bin/agentchat-daemon")
+        #expect(command?.arguments == ["web", "--port", "9391"])
+    }
+
+    @Test func resolvedWebLaunchCommandPassesArgumentsThroughCargoRun() {
+        let sourceFilePath = "/tmp/agentchat/clients/apple/AgentChatPrototype/AgentChat/AgentChatDesktop/LocalDaemonController.swift"
+        let manifestPath = "/tmp/agentchat/daemon/Cargo.toml"
+
+        let command = LocalDaemonController.resolvedWebLaunchCommand(
+            environment: [:],
+            sourceFilePath: sourceFilePath,
+            pathExists: { path in path == manifestPath },
+            executableExists: { _ in false }
+        )
+
+        #expect(command?.executableURL.path == "/usr/bin/env")
+        #expect(command?.arguments == [
+            "cargo",
+            "run",
+            "--manifest-path",
+            manifestPath,
+            "-p",
+            "agentchat-daemon",
+            "--bin",
+            "agentchat-daemon",
+            "--",
+            "web",
+            "--port",
+            "9391",
+        ])
+    }
+
     @Test func resolvedInstallableDaemonBinaryURLRejectsCargoRunFallback() {
         let sourceFilePath = "/tmp/agentchat/clients/apple/AgentChatPrototype/AgentChat/AgentChatDesktop/LocalDaemonController.swift"
         let installableURL = LocalDaemonController.resolvedInstallableDaemonBinaryURL(
@@ -199,5 +239,20 @@ struct LocalDaemonControllerTests {
         #expect(plist.contains("/Users/tester/Library/Application Support/AgentChat/config/agents.json"))
         #expect(plist.contains("/Users/tester/Library/Application Support/AgentChat/logs/daemon.stdout.log"))
         #expect(plist.contains("<key>KeepAlive</key>"))
+    }
+
+    @Test func webLaunchAgentPlistStartsTheWebConsole() {
+        let layout = LocalDaemonInstallLayout.make(
+            homeDirectoryURL: URL(fileURLWithPath: "/Users/tester", isDirectory: true)
+        )
+        let plist = makeLaunchAgentPlist(
+            layout: layout,
+            environment: [:],
+            daemonArguments: LocalDaemonController.webDaemonArguments
+        )
+
+        #expect(plist.contains("<string>web</string>"))
+        #expect(plist.contains("<string>--port</string>"))
+        #expect(plist.contains("<string>9391</string>"))
     }
 }

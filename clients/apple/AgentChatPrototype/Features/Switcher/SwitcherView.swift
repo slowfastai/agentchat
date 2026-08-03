@@ -38,7 +38,9 @@ private extension SwitcherMode {
     }
 }
 
+#if DEBUG
 #Preview {
     SwitcherView(selectedMode: .constant(.list))
         .padding()
 }
+#endif

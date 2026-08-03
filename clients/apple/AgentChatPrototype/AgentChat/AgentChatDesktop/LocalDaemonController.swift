@@ -270,15 +270,18 @@ private nonisolated func xmlEscaped(_ value: String) -> String {
 
 nonisolated func makeLaunchAgentPlist(
     layout: LocalDaemonInstallLayout,
-    environment: [String: String]
+    environment: [String: String],
+    daemonArguments: [String] = []
 ) -> String {
     let path = xmlEscaped(environment["PATH"] ?? "")
     let agentChatHome = xmlEscaped(environment["AGENTCHAT_HOME"] ?? layout.agentChatHomeURL.path)
     let agentsFile = xmlEscaped(environment["AGENTCHAT_AGENTS_FILE"] ?? layout.agentsFileURL.path)
-    let daemonBinary = xmlEscaped(layout.daemonBinaryURL.path)
     let workingDirectory = xmlEscaped(layout.workingDirectoryURL.path)
     let stdoutPath = xmlEscaped(layout.stdoutLogURL.path)
     let stderrPath = xmlEscaped(layout.stderrLogURL.path)
+    let programArguments = ([layout.daemonBinaryURL.path] + daemonArguments)
+        .map { "        <string>\(xmlEscaped($0))</string>" }
+        .joined(separator: "\n")
 
     return """
     <?xml version="1.0" encoding="UTF-8"?>
@@ -289,7 +292,7 @@ nonisolated func makeLaunchAgentPlist(
       <string>\(LocalDaemonInstallLayout.launchAgentLabel)</string>
       <key>ProgramArguments</key>
       <array>
-        <string>\(daemonBinary)</string>
+    \(programArguments)
       </array>
       <key>WorkingDirectory</key>
       <string>\(workingDirectory)</string>
@@ -318,6 +321,13 @@ nonisolated func makeLaunchAgentPlist(
 @MainActor
 final class LocalDaemonController {
     static let shared = LocalDaemonController()
+
+    nonisolated static let webSocketPort: UInt16 = 9390
+    nonisolated static let webConsolePort: UInt16 = 9391
+    nonisolated static let webConsoleURL = URL(string: "http://127.0.0.1:\(webConsolePort)/chat")!
+    nonisolated static var webDaemonArguments: [String] {
+        ["web", "--port", String(webConsolePort)]
+    }
 
     private let logger = Logger(subsystem: "dev.slowfast.AgentChatDesktop", category: "LocalDaemon")
     private var daemonProcess: Process?
@@ -372,6 +382,46 @@ final class LocalDaemonController {
         }
     }
 
+    @discardableResult
+    func ensureWebRunning(for connectionLink: String) async -> Bool {
+        guard Self.shouldManageLocalDaemon(for: connectionLink) else {
+            return false
+        }
+
+        if await Self.canLoadWebConsole() {
+            return true
+        }
+
+        if let daemonProcess, daemonProcess.isRunning {
+            return await Self.waitUntilWebConsoleIsReachable()
+        }
+
+        if isStarting {
+            return await Self.waitUntilWebConsoleIsReachable()
+        }
+
+        isStarting = true
+        defer { isStarting = false }
+
+        do {
+            if try await installAndStartLaunchAgentIfPossible(daemonArguments: Self.webDaemonArguments) {
+                logger.info("Started local web daemon via launchd LaunchAgent")
+            } else {
+                try await launchDevelopmentChildProcess(daemonArguments: Self.webDaemonArguments)
+            }
+
+            let reachable = await Self.waitUntilWebConsoleIsReachable()
+            if !reachable {
+                logger.error("Local web daemon did not become reachable at \(Self.webConsoleURL.absoluteString, privacy: .public)")
+            }
+            return reachable
+        } catch {
+            logger.error("Failed to launch local web daemon: \(error.localizedDescription, privacy: .public)")
+            daemonProcess = nil
+            return false
+        }
+    }
+
     func stopManagedDaemonIfNeeded() {
         guard let daemonProcess, daemonProcess.isRunning else {
             return
@@ -390,7 +440,7 @@ final class LocalDaemonController {
         daemonProcess = nil
     }
 
-    private func installAndStartLaunchAgentIfPossible() async throws -> Bool {
+    private func installAndStartLaunchAgentIfPossible(daemonArguments: [String] = []) async throws -> Bool {
         if Self.isSandboxedDesktopBuild() {
             logger.notice("Skipping LaunchAgent install because the desktop app is running sandboxed")
             return false
@@ -409,14 +459,18 @@ final class LocalDaemonController {
         try Self.installManagedDaemon(
             from: installableBinaryURL,
             layout: layout,
-            environment: environment
+            environment: environment,
+            daemonArguments: daemonArguments
         )
         try Self.bootstrapManagedDaemon(layout: layout)
         return true
     }
 
-    private func launchDevelopmentChildProcess() async throws {
-        guard let launchCommand = Self.resolvedLaunchCommand() else {
+    private func launchDevelopmentChildProcess(daemonArguments: [String] = []) async throws {
+        let launchCommand = daemonArguments.isEmpty
+            ? Self.resolvedLaunchCommand()
+            : Self.resolvedWebLaunchCommand()
+        guard let launchCommand else {
             logger.error("Unable to resolve a local agentchat-daemon launch command")
             return
         }
@@ -449,7 +503,7 @@ final class LocalDaemonController {
 
         daemonProcess = process
         logger.info(
-            "Launched dev-only local daemon child via \(launchCommand.executableURL.path(percentEncoded: false), privacy: .public)"
+            "Launched dev-only local daemon child via \(launchCommand.executableURL.path(percentEncoded: false), privacy: .public) with arguments \(launchCommand.arguments.joined(separator: " "), privacy: .public)"
         )
     }
 
@@ -569,6 +623,37 @@ final class LocalDaemonController {
         return command.executableURL
     }
 
+    nonisolated static func resolvedWebLaunchCommand(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        sourceFilePath: String = #filePath,
+        pathExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
+        executableExists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> LocalDaemonLaunchCommand? {
+        guard let command = resolvedLaunchCommand(
+            environment: environment,
+            sourceFilePath: sourceFilePath,
+            pathExists: pathExists,
+            executableExists: executableExists
+        ) else {
+            return nil
+        }
+
+        let arguments: [String]
+        if command.executableURL.path == "/usr/bin/env", command.arguments.first == "cargo" {
+            arguments = command.arguments + ["--"] + webDaemonArguments
+        } else if command.executableURL.path == "/usr/bin/env" {
+            arguments = command.arguments + webDaemonArguments
+        } else {
+            arguments = webDaemonArguments
+        }
+
+        return LocalDaemonLaunchCommand(
+            executableURL: command.executableURL,
+            arguments: arguments,
+            currentDirectoryURL: command.currentDirectoryURL
+        )
+    }
+
     nonisolated static func developmentRepoRoot(
         sourceFilePath: String = #filePath,
         pathExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
@@ -614,6 +699,7 @@ final class LocalDaemonController {
         from sourceBinaryURL: URL,
         layout: LocalDaemonInstallLayout,
         environment: [String: String],
+        daemonArguments: [String] = [],
         fileManager: FileManager = .default
     ) throws {
         for directory in [
@@ -647,7 +733,11 @@ final class LocalDaemonController {
             fileManager: fileManager
         )
 
-        let plist = makeLaunchAgentPlist(layout: layout, environment: environment)
+        let plist = makeLaunchAgentPlist(
+            layout: layout,
+            environment: environment,
+            daemonArguments: daemonArguments
+        )
         try plist.write(to: layout.launchAgentPlistURL, atomically: true, encoding: .utf8)
     }
 
@@ -813,6 +903,33 @@ final class LocalDaemonController {
                 finish(false)
             }
         }
+    }
+
+    private static func canLoadWebConsole(timeoutSeconds: TimeInterval = 0.75) async -> Bool {
+        var request = URLRequest(url: webConsoleURL)
+        request.timeoutInterval = timeoutSeconds
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            return (response as? HTTPURLResponse)?.statusCode == 200
+        } catch {
+            return false
+        }
+    }
+
+    private static func waitUntilWebConsoleIsReachable(
+        timeoutSeconds: TimeInterval = 8,
+        pollIntervalNanoseconds: UInt64 = 250_000_000
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+
+        while Date() < deadline {
+            if await canLoadWebConsole() {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: pollIntervalNanoseconds)
+        }
+
+        return await canLoadWebConsole(timeoutSeconds: 1)
     }
 
     private static func waitUntilDaemonIsReachable(

@@ -83,7 +83,16 @@ struct AgentChatDesktopApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("AgentChat Desktop") {
+        WindowGroup("AgentChat Web", id: "web-chat") {
+            WebChatWindowView()
+        }
+        .defaultSize(width: 1440, height: 920)
+        .windowResizability(.contentSize)
+        .commands {
+            AgentChatWebCommands()
+        }
+
+        Window("AgentChat Desktop", id: "desktop-workspace") {
             RootView()
                 .environmentObject(env.workspace)
                 .preferredColorScheme(.light)

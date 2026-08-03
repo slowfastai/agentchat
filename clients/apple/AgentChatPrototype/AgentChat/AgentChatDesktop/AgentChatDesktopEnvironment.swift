@@ -18,7 +18,7 @@ final class DesktopEnvironment: ObservableObject {
             .dropFirst()
             .sink { [weak self] url in
                 self?.daemon.updateDaemonURL(url)
-                Task { await LocalDaemonController.shared.ensureRunning(for: url) }
+                Task { await LocalDaemonController.shared.ensureWebRunning(for: url) }
             }
             .store(in: &cancellables)
 
@@ -28,7 +28,7 @@ final class DesktopEnvironment: ObservableObject {
 
         daemon.updateDaemonURL(workspace.daemonURL)
         Task {
-            await LocalDaemonController.shared.ensureRunning(for: workspace.daemonURL)
+            await LocalDaemonController.shared.ensureWebRunning(for: workspace.daemonURL)
             daemon.start()
             await workspace.refreshAgentsFromDaemon()
             await NotificationHelper.requestAuthorization()

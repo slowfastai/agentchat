@@ -82,7 +82,7 @@ struct AgentChatDesktopSettingsView: View {
 
         env.updateDaemonURL(trimmed)
         Task {
-            await LocalDaemonController.shared.ensureRunning(for: trimmed)
+            await LocalDaemonController.shared.ensureWebRunning(for: trimmed)
             await workspaceStore.refreshAgentsFromDaemon()
         }
     }
