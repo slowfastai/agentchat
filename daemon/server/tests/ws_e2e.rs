@@ -11,8 +11,9 @@ use agentchat_core::distiller::Distiller;
 use agentchat_core::session_store::SessionStore;
 use agentchat_core::skills::SkillStore;
 use agentchat_protocol::{
-    AgentConfig, AgentStatus, AssistantMessageState, ClientMessage, DaemonLifecycleState,
-    DaemonStopReason, DeltaType, ResponseEvent, SessionEvent, SessionState, SessionTranscript,
+    AgentConfig, AgentSessionSettings, AgentStatus, AssistantMessageState, ClientMessage,
+    DaemonLifecycleState, DaemonStopReason, DeltaType, ResponseEvent, SessionEvent, SessionState,
+    SessionTranscript,
 };
 use agentchat_server::ws::WebSocketServer;
 use futures::{SinkExt, StreamExt};
@@ -629,6 +630,167 @@ async fn websocket_thread_group_chat_fans_out_to_multiple_agents() {
             }
 
             assert!(saw_alpha_text && saw_beta_text && saw_alpha_end && saw_beta_end);
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn websocket_thread_allows_duplicate_agent_sessions_with_independent_settings() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_codex_harness(FakeAgentMode::Normal).await;
+            let mut ws = connect_ws(harness.port).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateThread {
+                    title: Some("Two Codex sessions".into()),
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+            let thread_id = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadCreated { thread_id, .. } => thread_id,
+                event => panic!("unexpected event while creating thread: {event:?}"),
+            };
+
+            let add_participant = |thread_id: &str| ClientMessage::AddThreadParticipant {
+                thread_id: thread_id.to_string(),
+                agent_id: "fake".into(),
+            };
+            send_client_message(&mut ws, &add_participant(&thread_id)).await;
+            let (first_participant_id, first_session_id) = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadParticipantAdded { participant, .. } => (
+                    participant.participant_id,
+                    participant.session_id.expect("missing first session id"),
+                ),
+                event => panic!("unexpected event while adding first participant: {event:?}"),
+            };
+
+            send_client_message(&mut ws, &add_participant(&thread_id)).await;
+            let (second_participant_id, second_session_id) = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadParticipantAdded { participant, .. } => (
+                    participant.participant_id,
+                    participant.session_id.expect("missing second session id"),
+                ),
+                event => panic!("unexpected event while adding second participant: {event:?}"),
+            };
+
+            assert_ne!(first_participant_id, second_participant_id);
+            assert_ne!(first_session_id, second_session_id);
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::SetThreadParticipantSettings {
+                    thread_id: thread_id.clone(),
+                    participant_id: first_participant_id.clone(),
+                    settings: AgentSessionSettings {
+                        model: Some("gpt-5.6-luna".into()),
+                        reasoning_effort: Some("high".into()),
+                    },
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::ThreadParticipantSettingsUpdated { participant, .. } => {
+                    assert_eq!(participant.participant_id, first_participant_id);
+                    assert_eq!(participant.settings.model.as_deref(), Some("gpt-5.6-luna"));
+                    assert_eq!(
+                        participant.settings.reasoning_effort.as_deref(),
+                        Some("high")
+                    );
+                }
+                event => panic!("unexpected event while setting first participant: {event:?}"),
+            }
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::SetThreadParticipantSettings {
+                    thread_id: thread_id.clone(),
+                    participant_id: second_participant_id.clone(),
+                    settings: AgentSessionSettings {
+                        model: Some("gpt-5.6-sol".into()),
+                        reasoning_effort: Some("max".into()),
+                    },
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::ThreadParticipantSettingsUpdated { participant, .. } => {
+                    assert_eq!(participant.participant_id, second_participant_id);
+                    assert_eq!(participant.settings.model.as_deref(), Some("gpt-5.6-sol"));
+                    assert_eq!(
+                        participant.settings.reasoning_effort.as_deref(),
+                        Some("max")
+                    );
+                }
+                event => panic!("unexpected event while setting second participant: {event:?}"),
+            }
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::SendThreadMessage {
+                    thread_id: thread_id.clone(),
+                    content: "compare these sessions".into(),
+                    target_participant_ids: Some(vec![
+                        first_participant_id.clone(),
+                        second_participant_id.clone(),
+                    ]),
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::ThreadMessage {
+                    target_participant_ids,
+                    ..
+                } => {
+                    assert_eq!(
+                        target_participant_ids,
+                        vec![first_participant_id.clone(), second_participant_id.clone()]
+                    );
+                }
+                event => panic!("unexpected thread message event: {event:?}"),
+            }
+
+            let mut saw_first = false;
+            let mut saw_second = false;
+            for _ in 0..24 {
+                match receive_event(&mut ws).await {
+                    ResponseEvent::ThreadAssistantMessage {
+                        participant_id,
+                        session_id,
+                        state,
+                        ..
+                    } => {
+                        if participant_id == first_participant_id {
+                            assert_eq!(session_id, first_session_id);
+                            if state == AssistantMessageState::Completed {
+                                saw_first = true;
+                            }
+                        } else if participant_id == second_participant_id {
+                            assert_eq!(session_id, second_session_id);
+                            if state == AssistantMessageState::Completed {
+                                saw_second = true;
+                            }
+                        }
+                    }
+                    ResponseEvent::ThreadAgentToolUpdate { .. }
+                    | ResponseEvent::ThreadAgentTurnEnd { .. }
+                    | ResponseEvent::Delta { .. }
+                    | ResponseEvent::ToolUpdate { .. }
+                    | ResponseEvent::TurnEnd { .. } => {}
+                    other => panic!("unexpected duplicate-session event: {other:?}"),
+                }
+                if saw_first && saw_second {
+                    break;
+                }
+            }
+            assert!(saw_first && saw_second);
 
             ws.send(Message::Close(None)).await.unwrap();
             drop(ws);

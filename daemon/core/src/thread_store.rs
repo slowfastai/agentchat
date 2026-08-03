@@ -313,4 +313,54 @@ mod tests {
         );
         assert_eq!(snapshot.last_thread_seq, 0);
     }
+
+    #[test]
+    fn allows_multiple_sessions_for_the_same_agent() {
+        let mut store = ThreadStore::new();
+        let thread = store.create_thread(Some("Duplicate agent".into()), ".".into());
+        let first = store
+            .add_agent_participant(
+                &thread.thread_id,
+                "codex".into(),
+                "Codex".into(),
+                "session-codex-1".into(),
+            )
+            .unwrap();
+        let second = store
+            .add_agent_participant(
+                &thread.thread_id,
+                "codex".into(),
+                "Codex".into(),
+                "session-codex-2".into(),
+            )
+            .unwrap();
+
+        assert_eq!(first.agent_id, second.agent_id);
+        assert_ne!(first.participant_id, second.participant_id);
+        assert_ne!(first.session_id, second.session_id);
+        assert_eq!(
+            store
+                .binding_for_session("session-codex-1")
+                .unwrap()
+                .participant_id,
+            first.participant_id
+        );
+        assert_eq!(
+            store
+                .binding_for_session("session-codex-2")
+                .unwrap()
+                .participant_id,
+            second.participant_id
+        );
+
+        let targets = store
+            .target_agent_participants(
+                &thread.thread_id,
+                Some(&[first.participant_id.clone(), second.participant_id.clone()]),
+            )
+            .unwrap();
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].participant_id, first.participant_id);
+        assert_eq!(targets[1].participant_id, second.participant_id);
+    }
 }

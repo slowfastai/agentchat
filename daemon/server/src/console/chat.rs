@@ -1094,12 +1094,17 @@ function settingMarkup(participant, settingId, label, key) {
   return `<div class="setting"><label>${escapeHtml(label)}</label><select data-setting="${escapeHtml(settingId)}" data-participant="${escapeHtml(participant.participant_id)}">${options}</select></div>`;
 }
 
-function renderAgentPicker(participants) {
-  const selectedAgentIds = new Set((participants || [])
-    .filter((participant) => participant.kind === "agent")
-    .map((participant) => participant.agent_id));
-  const availableAgents = state.agents
-    .filter((agent) => agent.status === "online" && !selectedAgentIds.has(agent.agent_id));
+function participantDisplayName(participant, participants) {
+  if (participant.kind !== "agent" || !participant.agent_id) return participant.display_name;
+  const sameAgents = (participants || []).filter((item) => item.kind === "agent" && item.agent_id === participant.agent_id);
+  if (sameAgents.length < 2) return participant.display_name;
+  const instance = sameAgents.findIndex((item) => item.participant_id === participant.participant_id) + 1;
+  return `${participant.display_name} #${instance}`;
+}
+
+function renderAgentPicker() {
+  // Every attach creates a fresh participant/session, so an agent remains selectable.
+  const availableAgents = state.agents.filter((agent) => agent.status === "online");
   $("agentPicker").innerHTML = '<option value="">Choose an agent</option>' + availableAgents
     .map((agent) => `<option value="${escapeHtml(agent.agent_id)}">${escapeHtml(agent.name)}</option>`).join("");
   $("addAgentButton").disabled = !state.currentThreadId || !availableAgents.length;
@@ -1111,12 +1116,13 @@ function renderParticipants() {
   $("participantCount").textContent = `${participants.filter((p) => p.kind === "agent").length} connected`;
   if (!snapshot) {
     $("participants").innerHTML = '<div class="inspector-note">Select a thread to manage its agents.</div>';
-    renderAgentPicker([]);
+    renderAgentPicker();
     return;
   }
   $("participants").innerHTML = participants.map((participant) => {
     const isHuman = participant.kind === "human";
     const status = participantStatus(participant);
+    const displayName = participantDisplayName(participant, participants);
     const label = participant.agent_id ? `@${participant.mention_handle || participant.agent_id}` : "thread owner";
     const controls = isHuman ? "" : `
       ${settingMarkup(participant, "model", "Model", "model")}
@@ -1125,11 +1131,11 @@ function renderParticipants() {
       <div class="participant-head">
         <div class="participant-identity">
           <span class="participant-avatar">${isHuman ? "YOU" : "AI"}</span>
-          <div><div class="participant-name">${escapeHtml(participant.display_name)}</div><div class="participant-sub">${escapeHtml(label)}</div></div>
+          <div><div class="participant-name">${escapeHtml(displayName)}</div><div class="participant-sub">${escapeHtml(label)}</div></div>
         </div>
         <div class="participant-state"><span class="state-dot ${escapeHtml(status)}"></span>${escapeHtml(status)}</div>
       </div>
-      ${isHuman ? "" : `<button class="remove-participant" data-remove-participant="${escapeHtml(participant.participant_id)}" type="button" title="Remove participant" aria-label="Remove ${escapeHtml(participant.display_name)}">x remove</button>${controls}`}
+      ${isHuman ? "" : `<button class="remove-participant" data-remove-participant="${escapeHtml(participant.participant_id)}" type="button" title="Remove participant" aria-label="Remove ${escapeHtml(displayName)}">x remove</button>${controls}`}
     </div>`;
   }).join("") || '<div class="inspector-note">No participants yet.</div>';
 
@@ -1143,7 +1149,7 @@ function renderParticipants() {
       }
     });
   });
-  renderAgentPicker(participants);
+  renderAgentPicker();
 }
 
 function renderRecipients() {
@@ -1156,7 +1162,7 @@ function renderRecipients() {
   const agents = snapshot.participants.filter((participant) => participant.kind === "agent");
   const targets = ensureTargets(snapshot.thread_id);
   $("recipientBar").innerHTML = `<span class="recipient-label">Route to</span>` + (agents.length ? agents.map((participant) => `
-    <label class="recipient ${participant.state === "offline" ? "offline" : ""}"><input type="checkbox" data-recipient="${escapeHtml(participant.participant_id)}" ${targets.has(participant.participant_id) ? "checked" : ""}><span>${escapeHtml(participant.display_name)}</span></label>`).join("") : '<span class="empty-copy">Attach an agent to start.</span>');
+    <label class="recipient ${participant.state === "offline" ? "offline" : ""}"><input type="checkbox" data-recipient="${escapeHtml(participant.participant_id)}" ${targets.has(participant.participant_id) ? "checked" : ""}><span>${escapeHtml(participantDisplayName(participant, agents))}</span></label>`).join("") : '<span class="empty-copy">Attach an agent to start.</span>');
   document.querySelectorAll("[data-recipient]").forEach((element) => {
     element.addEventListener("change", () => {
       if (element.checked) targets.add(element.dataset.recipient);
@@ -1209,8 +1215,9 @@ function assistantMessage(event) {
   const key = `${event.participant_id}:${event.turn_id}`;
   let message = messages.find((item) => item.kind === "assistant" && item.key === key);
   if (!message) {
-    const participant = ensureSnapshot(event.thread_id).participants.find((item) => item.participant_id === event.participant_id);
-    message = { kind: "assistant", key, participant_id: event.participant_id, agent_id: event.agent_id, display_name: participant ? participant.display_name : event.agent_id, thinking: "", response: "", tools: [], state: "streaming", created_at: Date.now() };
+    const participants = ensureSnapshot(event.thread_id).participants;
+    const participant = participants.find((item) => item.participant_id === event.participant_id);
+    message = { kind: "assistant", key, participant_id: event.participant_id, agent_id: event.agent_id, display_name: participant ? participantDisplayName(participant, participants) : event.agent_id, thinking: "", response: "", tools: [], state: "streaming", created_at: Date.now() };
     messages.push(message);
   }
   return message;
