@@ -80,6 +80,7 @@ struct LocalDaemonEnvironment {
             existingPath: base["PATH"],
             homeDirectoryPath: homeDirectoryPath
         )
+        values["HOME"] = nonEmptyValue(values["HOME"]) ?? homeDirectoryPath
         values["AGENTCHAT_HOME"] = nonEmptyValue(values["AGENTCHAT_HOME"]) ?? resolvedInstallLayout.agentChatHomeURL.path
         values["AGENTCHAT_AGENTS_FILE"] = nonEmptyValue(values["AGENTCHAT_AGENTS_FILE"]) ?? resolvedInstallLayout.agentsFileURL.path
         return LocalDaemonEnvironment(values: values)
@@ -274,8 +275,26 @@ nonisolated func makeLaunchAgentPlist(
     daemonArguments: [String] = []
 ) -> String {
     let path = xmlEscaped(environment["PATH"] ?? "")
+    let home = xmlEscaped(environment["HOME"] ?? layout.homeDirectoryURL.path)
     let agentChatHome = xmlEscaped(environment["AGENTCHAT_HOME"] ?? layout.agentChatHomeURL.path)
     let agentsFile = xmlEscaped(environment["AGENTCHAT_AGENTS_FILE"] ?? layout.agentsFileURL.path)
+    let codexHome: String?
+    if let configuredCodexHome = environment["CODEX_HOME"]?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+       !configuredCodexHome.isEmpty {
+        codexHome = xmlEscaped(configuredCodexHome)
+    } else {
+        codexHome = nil
+    }
+    let codexHomeEntry: String
+    if let codexHome {
+        codexHomeEntry = """
+            <key>CODEX_HOME</key>
+            <string>\(codexHome)</string>
+        """
+    } else {
+        codexHomeEntry = ""
+    }
     let workingDirectory = xmlEscaped(layout.workingDirectoryURL.path)
     let stdoutPath = xmlEscaped(layout.stdoutLogURL.path)
     let stderrPath = xmlEscaped(layout.stderrLogURL.path)
@@ -304,6 +323,9 @@ nonisolated func makeLaunchAgentPlist(
       <dict>
         <key>PATH</key>
         <string>\(path)</string>
+        <key>HOME</key>
+        <string>\(home)</string>
+    \(codexHomeEntry)
         <key>AGENTCHAT_HOME</key>
         <string>\(agentChatHome)</string>
         <key>AGENTCHAT_AGENTS_FILE</key>
@@ -332,6 +354,7 @@ final class LocalDaemonController {
     private let logger = Logger(subsystem: "dev.slowfast.AgentChatDesktop", category: "LocalDaemon")
     private var daemonProcess: Process?
     private var isStarting = false
+    private var preparedDaemonArguments: [String]?
 
     private init() {}
 
@@ -340,23 +363,20 @@ final class LocalDaemonController {
             return
         }
 
-        if let daemonProcess, daemonProcess.isRunning {
-            return
+        let daemonArguments: [String] = []
+        if preparedDaemonArguments == daemonArguments {
+            if let daemonProcess, daemonProcess.isRunning {
+                return
+            }
+
+            if await Self.canConnectToLocalDaemon() {
+                return
+            }
+
+            preparedDaemonArguments = nil
         }
 
         if isStarting {
-            return
-        }
-
-        if await Self.canConnectToLocalDaemon() {
-            return
-        }
-
-        guard !isStarting else {
-            return
-        }
-
-        if let daemonProcess, daemonProcess.isRunning {
             return
         }
 
@@ -364,10 +384,18 @@ final class LocalDaemonController {
         defer { isStarting = false }
 
         do {
-            if try await installAndStartLaunchAgentIfPossible() {
+            if try await installAndStartLaunchAgentIfPossible(daemonArguments: daemonArguments) {
+                preparedDaemonArguments = daemonArguments
                 logger.info("Started local daemon via launchd LaunchAgent")
+            } else if let daemonProcess, daemonProcess.isRunning {
+                preparedDaemonArguments = daemonArguments
+                return
+            } else if await Self.canConnectToLocalDaemon() {
+                preparedDaemonArguments = daemonArguments
+                return
             } else {
-                try await launchDevelopmentChildProcess()
+                try await launchDevelopmentChildProcess(daemonArguments: daemonArguments)
+                preparedDaemonArguments = daemonArguments
             }
 
             guard await Self.waitUntilDaemonIsReachable() else {
@@ -388,12 +416,17 @@ final class LocalDaemonController {
             return false
         }
 
-        if await Self.canLoadWebConsole() {
-            return true
-        }
+        let daemonArguments = Self.webDaemonArguments
+        if preparedDaemonArguments == daemonArguments {
+            if await Self.canLoadWebConsole() {
+                return true
+            }
 
-        if let daemonProcess, daemonProcess.isRunning {
-            return await Self.waitUntilWebConsoleIsReachable()
+            if let daemonProcess, daemonProcess.isRunning {
+                return await Self.waitUntilWebConsoleIsReachable()
+            }
+
+            preparedDaemonArguments = nil
         }
 
         if isStarting {
@@ -404,10 +437,18 @@ final class LocalDaemonController {
         defer { isStarting = false }
 
         do {
-            if try await installAndStartLaunchAgentIfPossible(daemonArguments: Self.webDaemonArguments) {
+            if try await installAndStartLaunchAgentIfPossible(daemonArguments: daemonArguments) {
+                preparedDaemonArguments = daemonArguments
                 logger.info("Started local web daemon via launchd LaunchAgent")
+            } else if await Self.canLoadWebConsole() {
+                preparedDaemonArguments = daemonArguments
+                return true
+            } else if let daemonProcess, daemonProcess.isRunning {
+                preparedDaemonArguments = daemonArguments
+                return await Self.waitUntilWebConsoleIsReachable()
             } else {
-                try await launchDevelopmentChildProcess(daemonArguments: Self.webDaemonArguments)
+                try await launchDevelopmentChildProcess(daemonArguments: daemonArguments)
+                preparedDaemonArguments = daemonArguments
             }
 
             let reachable = await Self.waitUntilWebConsoleIsReachable()
@@ -775,6 +816,17 @@ final class LocalDaemonController {
     private nonisolated static func bootstrapManagedDaemon(layout: LocalDaemonInstallLayout) throws {
         do {
             try runLaunchctl(arguments: [
+                "bootout",
+                layout.launchServiceTarget,
+            ])
+        } catch let error as LocalDaemonLaunchAgentError {
+            guard isLaunchAgentNotLoaded(error) else {
+                throw error
+            }
+        }
+
+        do {
+            try runLaunchctl(arguments: [
                 "bootstrap",
                 layout.launchDomain,
                 layout.launchAgentPlistURL.path,
@@ -793,6 +845,14 @@ final class LocalDaemonController {
             "-k",
             layout.launchServiceTarget,
         ])
+    }
+
+    private nonisolated static func isLaunchAgentNotLoaded(_ error: LocalDaemonLaunchAgentError) -> Bool {
+        let description = error.localizedDescription.lowercased()
+        return description.contains("could not find service")
+            || description.contains("could not find specified service")
+            || description.contains("no such process")
+            || description.contains("not found")
     }
 
     private nonisolated static func runLaunchctl(arguments: [String]) throws {

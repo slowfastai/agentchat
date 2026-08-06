@@ -23,6 +23,7 @@ struct LocalDaemonControllerTests {
             "/Library/Apple/usr/bin",
             "/custom/bin",
         ].joined(separator: ":"))
+        #expect(environment.values["HOME"] == "/Users/tester")
         #expect(environment.values["AGENTCHAT_HOME"] == "/Users/tester/Library/Application Support/AgentChat")
         #expect(environment.values["AGENTCHAT_AGENTS_FILE"] == "/Users/tester/Library/Application Support/AgentChat/config/agents.json")
     }
@@ -41,6 +42,19 @@ struct LocalDaemonControllerTests {
         #expect(environment.values["AGENTCHAT_AGENT_COMMAND"] == "opencode")
         #expect(environment.values["AGENTCHAT_HOME"] == "/tmp/custom-agentchat")
         #expect(environment.values["AGENTCHAT_AGENTS_FILE"] == "/tmp/custom-agentchat/agents.json")
+    }
+
+    @Test func localDaemonEnvironmentPreservesExplicitCodexHome() {
+        let environment = LocalDaemonEnvironment.make(
+            from: [
+                "PATH": "/usr/bin",
+                "CODEX_HOME": "/Users/tester/.codex-work",
+            ],
+            homeDirectoryPath: "/Users/tester"
+        )
+
+        #expect(environment.values["CODEX_HOME"] == "/Users/tester/.codex-work")
+        #expect(environment.values["HOME"] == "/Users/tester")
     }
 
     @Test func defaultManagedAgentsJSONIncludesMultipleBuiltInAgents() {
@@ -238,7 +252,29 @@ struct LocalDaemonControllerTests {
         #expect(plist.contains("/Users/tester/Library/Application Support/AgentChat/bin/agentchat-daemon"))
         #expect(plist.contains("/Users/tester/Library/Application Support/AgentChat/config/agents.json"))
         #expect(plist.contains("/Users/tester/Library/Application Support/AgentChat/logs/daemon.stdout.log"))
+        #expect(plist.contains("<key>HOME</key>"))
         #expect(plist.contains("<key>KeepAlive</key>"))
+    }
+
+    @Test func launchAgentPlistCarriesCodexHomeButNotSecretEnvironmentValues() {
+        let layout = LocalDaemonInstallLayout.make(
+            homeDirectoryURL: URL(fileURLWithPath: "/Users/tester", isDirectory: true)
+        )
+        let environment = LocalDaemonEnvironment.make(
+            from: [
+                "PATH": "/usr/bin",
+                "CODEX_HOME": "/Users/tester/.codex-work",
+                "OPENAI_API_KEY": "should-not-be-written",
+            ],
+            homeDirectoryPath: "/Users/tester",
+            installLayout: layout
+        ).values
+        let plist = makeLaunchAgentPlist(layout: layout, environment: environment)
+
+        #expect(plist.contains("<key>CODEX_HOME</key>"))
+        #expect(plist.contains("/Users/tester/.codex-work"))
+        #expect(!plist.contains("OPENAI_API_KEY"))
+        #expect(!plist.contains("should-not-be-written"))
     }
 
     @Test func webLaunchAgentPlistStartsTheWebConsole() {
