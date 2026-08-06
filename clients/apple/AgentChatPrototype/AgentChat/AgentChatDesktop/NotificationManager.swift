@@ -4,8 +4,14 @@ import AppKit
 
 enum NotificationHelper {
     static var isAuthorized = false
+    private static var deliveredEventIDs = Set<String>()
+
+    static func configure() {
+        UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
+    }
 
     static func requestAuthorization() async {
+        configure()
         let center = UNUserNotificationCenter.current()
         do {
             let granted = try await center.requestAuthorization(options: [.alert, .sound, .badge])
@@ -27,8 +33,16 @@ enum NotificationHelper {
         }
     }
 
-    static func sendNotification(title: String, body: String, threadID: String? = nil) {
+    static func sendNotification(
+        title: String,
+        body: String,
+        threadID: String? = nil,
+        eventID: String? = nil
+    ) {
         guard isAuthorized else { return }
+        if let eventID {
+            guard deliveredEventIDs.insert(eventID).inserted else { return }
+        }
 
         DispatchQueue.main.async {
             let content = UNMutableNotificationContent()
@@ -42,7 +56,7 @@ enum NotificationHelper {
             }
 
             let request = UNNotificationRequest(
-                identifier: UUID().uuidString,
+                identifier: eventID.map { "agent-response-\($0)" } ?? UUID().uuidString,
                 content: content,
                 trigger: nil
             )
@@ -55,14 +69,31 @@ enum NotificationHelper {
         }
     }
 
-    static func sendAgentResponseNotification(agentName: String, message: String, threadID: String) {
-        let title = agentName
-        let body = message.prefix(100).trimmingCharacters(in: .whitespacesAndNewlines)
-        sendNotification(title: title, body: String(body), threadID: threadID)
+    static func sendAgentResponseNotification(
+        agentName: String,
+        message: String,
+        threadID: String,
+        eventID: String? = nil
+    ) {
+        let title = agentName.isEmpty ? "AgentChat" : agentName
+        let preview = message.prefix(100).trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = preview.isEmpty ? "Response finished." : String(preview)
+        sendNotification(title: title, body: body, threadID: threadID, eventID: eventID)
     }
 
     static func clearNotifications() {
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
         UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
+    }
+}
+
+private final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
+    static let shared = NotificationDelegate()
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
     }
 }

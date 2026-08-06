@@ -66,11 +66,17 @@ struct WebChatWindowView: View {
 }
 
 struct WebChatWebView: NSViewRepresentable {
+    private static let notificationHandlerName = "agentchatSystemNotification"
+
     let url: URL
 
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
+        configuration.userContentController.add(
+            context.coordinator,
+            name: Self.notificationHandlerName
+        )
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.allowsMagnification = true
@@ -87,7 +93,23 @@ struct WebChatWebView: NSViewRepresentable {
         NavigationCoordinator()
     }
 
-    final class NavigationCoordinator: NSObject, WKNavigationDelegate {
+    final class NavigationCoordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard message.name == WebChatWebView.notificationHandlerName,
+                  let payload = message.body as? [String: Any],
+                  let threadID = payload["thread_id"] as? String,
+                  let agentName = payload["agent_name"] as? String else {
+                return
+            }
+
+            NotificationHelper.sendAgentResponseNotification(
+                agentName: agentName,
+                message: payload["response"] as? String ?? "",
+                threadID: threadID,
+                eventID: payload["event_id"] as? String
+            )
+        }
+
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             NSLog("AgentChat Web navigation failed: %@", error.localizedDescription)
         }

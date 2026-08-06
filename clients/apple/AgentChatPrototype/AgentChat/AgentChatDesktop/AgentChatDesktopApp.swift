@@ -16,6 +16,10 @@ final class AgentChatDesktopAppDelegate: NSObject, NSApplicationDelegate {
     private let toggleSidebarMenuItemTag = 4_207
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NotificationHelper.configure()
+        Task {
+            await NotificationHelper.requestAuthorization()
+        }
         DispatchQueue.main.async { [weak self] in
             self?.installToggleSidebarMenuItemIfNeeded()
         }

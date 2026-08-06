@@ -47,16 +47,61 @@ pub const PAGE: &str = r##"<!doctype html>
     outline-offset: 2px;
   }
   .app-shell {
+    --sidebar-width: 258px;
+    --inspector-width: 306px;
     display: grid;
-    grid-template-columns: 258px minmax(0, 1fr) 306px;
+    position: relative;
+    grid-template-columns: minmax(0, var(--sidebar-width)) minmax(0, 1fr) minmax(0, var(--inspector-width));
     height: 100%;
+    transition: grid-template-columns .2s ease;
   }
-  .sidebar, .inspector { background: var(--surface); }
+  .app-shell.sidebar-collapsed {
+    grid-template-columns: 0 minmax(0, 1fr) minmax(0, var(--inspector-width));
+  }
+  .app-shell.inspector-collapsed {
+    grid-template-columns: minmax(0, var(--sidebar-width)) minmax(0, 1fr) 0;
+  }
+  .app-shell.sidebar-collapsed.inspector-collapsed {
+    grid-template-columns: 0 minmax(0, 1fr) 0;
+  }
+  .sidebar, .inspector {
+    position: relative;
+    background: var(--surface);
+  }
   .sidebar {
     display: flex;
     min-width: 0;
     flex-direction: column;
     border-right: 1px solid var(--line);
+  }
+  .sidebar-collapsed .sidebar,
+  .inspector-collapsed .inspector {
+    overflow: visible;
+    border-color: transparent;
+  }
+  .sidebar-collapsed .sidebar > :not(.panel-toggle),
+  .inspector-collapsed .inspector > :not(.panel-toggle) {
+    visibility: hidden;
+    pointer-events: none;
+  }
+  .panel-toggle {
+    position: absolute;
+    z-index: 6;
+    top: 18px;
+  }
+  .sidebar .panel-toggle {
+    right: 10px;
+  }
+  .inspector .panel-toggle {
+    left: 10px;
+  }
+  .sidebar-collapsed .sidebar .panel-toggle {
+    right: auto;
+    left: 8px;
+  }
+  .inspector-collapsed .inspector .panel-toggle {
+    right: 8px;
+    left: auto;
   }
   .brand {
     display: flex;
@@ -373,15 +418,16 @@ pub const PAGE: &str = r##"<!doctype html>
   .message.assistant { padding-left: 15px; border-left: 2px solid var(--cyan); }
   .message.assistant.streaming { border-left-color: var(--accent); }
   .message.assistant.failed { border-left-color: var(--danger); }
-  .assistant-thinking, .assistant-tools, .assistant-plan {
+  .assistant-thinking, .assistant-tools, .assistant-plan, .assistant-response {
     margin-bottom: 10px;
     border: 1px solid var(--line-soft);
     background: var(--surface);
     color: var(--muted);
     font-size: 12px;
   }
-  .assistant-thinking summary, .assistant-plan summary { padding: 7px 9px; cursor: pointer; color: var(--faint); }
+  .assistant-thinking summary, .assistant-plan summary, .assistant-response summary { padding: 7px 9px; cursor: pointer; color: var(--faint); }
   .assistant-thinking .detail, .assistant-plan .detail { padding: 0 9px 9px; white-space: pre-wrap; }
+  .assistant-response .message-body { padding: 0 9px 9px; }
   .assistant-tools { padding: 7px 9px; }
   .tool-row { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; }
   .tool-status { color: var(--accent); font: 10px var(--mono); }
@@ -459,6 +505,7 @@ pub const PAGE: &str = r##"<!doctype html>
   }
   .inspector-heading {
     padding: 20px 16px 15px;
+    padding-left: 54px;
     border-bottom: 1px solid var(--line);
   }
   .inspector-heading h2 { margin: 0; font-size: 13px; font-weight: 700; }
@@ -577,14 +624,29 @@ pub const PAGE: &str = r##"<!doctype html>
   .toast.visible { opacity: 1; transform: translateY(0); }
   .hidden { display: none !important; }
   @media (max-width: 1100px) {
-    .app-shell { grid-template-columns: 220px minmax(0, 1fr); }
+    .app-shell {
+      --sidebar-width: 220px;
+      grid-template-columns: minmax(0, var(--sidebar-width)) minmax(0, 1fr);
+    }
+    .app-shell.sidebar-collapsed { grid-template-columns: 0 minmax(0, 1fr); }
     .inspector { grid-column: 1 / -1; display: none; }
+    .inspector .panel-toggle { display: none; }
     .workspace { min-height: 0; }
   }
   @media (max-width: 720px) {
     body { overflow: auto; }
     .app-shell { display: block; height: auto; min-height: 100%; }
     .sidebar { min-height: 0; border-right: 0; border-bottom: 1px solid var(--line); }
+    .sidebar-collapsed .sidebar {
+      display: block;
+      height: 0;
+      min-height: 0;
+      border-bottom: 0;
+    }
+    .sidebar-collapsed .sidebar .panel-toggle {
+      top: 8px;
+      left: 14px;
+    }
     .brand { padding: 13px 14px; }
     .side-heading { padding-top: 11px; }
     .thread-list { max-height: 145px; }
@@ -598,8 +660,9 @@ pub const PAGE: &str = r##"<!doctype html>
 </style>
 </head>
 <body>
-<div class="app-shell">
-  <aside class="sidebar">
+<div class="app-shell" id="appShell">
+  <aside class="sidebar" id="threadSidebar">
+    <button class="icon-button panel-toggle" id="sidebarToggleButton" type="button" title="Collapse threads sidebar" aria-label="Collapse threads sidebar" aria-controls="threadSidebar" aria-expanded="true"><span aria-hidden="true" data-panel-toggle-icon>&#x2039;</span></button>
     <div class="brand">
       <span class="brand-mark">AC</span>
       <div>AgentChat<small>Web workspace</small></div>
@@ -653,7 +716,8 @@ pub const PAGE: &str = r##"<!doctype html>
     </div>
   </main>
 
-  <aside class="inspector">
+  <aside class="inspector" id="participantInspector">
+    <button class="icon-button panel-toggle" id="inspectorToggleButton" type="button" title="Collapse participants sidebar" aria-label="Collapse participants sidebar" aria-controls="participantInspector" aria-expanded="true"><span aria-hidden="true" data-panel-toggle-icon>&#x203A;</span></button>
     <div class="inspector-heading">
       <div><h2>Participants</h2><span id="participantCount">0 connected</span></div>
     </div>
@@ -960,6 +1024,17 @@ function renderMarkdown(value) {
   return html;
 }
 
+const sidebarCollapsedKey = "agentchat_chat_sidebar_collapsed";
+const inspectorCollapsedKey = "agentchat_chat_inspector_collapsed";
+
+function readPanelPreference(key) {
+  try {
+    return localStorage.getItem(key) === "true";
+  } catch (_) {
+    return false;
+  }
+}
+
 const state = {
   socket: null,
   reconnectTimer: null,
@@ -971,10 +1046,13 @@ const state = {
   messages: new Map(),
   currentThreadId: null,
   attached: new Set(),
+  notificationReplayCutoffs: new Map(),
   configuringParticipantId: null,
   mentionCandidates: [],
   mentionIndex: 0,
   mentionRange: null,
+  sidebarCollapsed: readPanelPreference(sidebarCollapsedKey),
+  inspectorCollapsed: readPanelPreference(inspectorCollapsedKey),
 };
 
 let toastTimer = null;
@@ -991,6 +1069,38 @@ function showToast(message) {
   $("toast").classList.add("visible");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => $("toast").classList.remove("visible"), 4800);
+}
+
+function updatePanelToggle(buttonId, collapsed, label, collapseIcon, expandIcon) {
+  const button = $(buttonId);
+  const action = collapsed ? "Expand" : "Collapse";
+  const description = `${action} ${label} sidebar`;
+  button.title = description;
+  button.setAttribute("aria-label", description);
+  button.setAttribute("aria-expanded", String(!collapsed));
+  button.querySelector("[data-panel-toggle-icon]").textContent = collapsed ? expandIcon : collapseIcon;
+}
+
+function applyPanelLayout() {
+  $("appShell").classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
+  $("appShell").classList.toggle("inspector-collapsed", state.inspectorCollapsed);
+  updatePanelToggle("sidebarToggleButton", state.sidebarCollapsed, "threads", "\u2039", "\u203A");
+  updatePanelToggle("inspectorToggleButton", state.inspectorCollapsed, "participants", "\u203A", "\u2039");
+}
+
+function setPanelCollapsed(panel, collapsed) {
+  if (panel === "sidebar") {
+    state.sidebarCollapsed = collapsed;
+    try {
+      localStorage.setItem(sidebarCollapsedKey, String(collapsed));
+    } catch (_) {}
+  } else {
+    state.inspectorCollapsed = collapsed;
+    try {
+      localStorage.setItem(inspectorCollapsedKey, String(collapsed));
+    } catch (_) {}
+  }
+  applyPanelLayout();
 }
 
 async function chooseWorkingDirectory() {
@@ -1480,12 +1590,26 @@ function renderTimeline() {
   const shouldFollow = state.timelineFollowing || timelineIsNearBottom();
   state.timelineFollowing = shouldFollow;
   const messages = ensureMessages(threadId);
+  timeline.querySelectorAll("details[data-response-key]").forEach((details) => {
+    const message = messages.find((item) => item.key === details.dataset.responseKey);
+    if (message) message.responseExpanded = details.open;
+  });
   if (!messages.length) {
     timeline.innerHTML = '<div class="timeline-empty">No messages yet. Attach an agent and send the first message.</div>';
   } else {
     timeline.innerHTML = messages.map(renderMessage).join("");
+    bindResponseExpansionTracking(timeline, messages);
   }
   if (shouldFollow || messages.length < 2) scheduleTimelineScroll();
+}
+
+function bindResponseExpansionTracking(timeline, messages) {
+  timeline.querySelectorAll("details[data-response-key]").forEach((details) => {
+    details.addEventListener("toggle", () => {
+      const message = messages.find((item) => item.key === details.dataset.responseKey);
+      if (message) message.responseExpanded = details.open;
+    });
+  });
 }
 
 function renderMessage(message) {
@@ -1496,7 +1620,9 @@ function renderMessage(message) {
   const thinking = message.thinking ? `<details class="assistant-thinking"><summary>Reasoning</summary><div class="detail">${escapeHtml(message.thinking)}</div></details>` : "";
   const tools = message.tools && message.tools.length ? `<div class="assistant-tools">${message.tools.map((tool) => `<div class="tool-row"><span class="tool-status ${tool.status === "failed" ? "failed" : ""}">${escapeHtml(tool.status || "working")}</span><span>${escapeHtml(tool.title)}</span></div>`).join("")}</div>` : "";
   const plan = message.plan ? `<details class="assistant-plan"><summary>Plan update</summary><div class="detail">${escapeHtml(JSON.stringify(message.plan, null, 2))}</div></details>` : "";
-  const body = message.response ? `<div class="message-body markdown">${renderMarkdown(message.response)}</div>` : (status === "streaming" ? '<div class="message-body">Working...</div>' : "");
+  const body = message.response
+    ? `<details class="assistant-response" data-response-key="${escapeHtml(message.key)}"${message.responseExpanded === false ? "" : " open"}><summary>Response</summary><div class="message-body markdown">${renderMarkdown(message.response)}</div></details>`
+    : (status === "streaming" ? '<div class="message-body">Working...</div>' : "");
   const footer = status === "streaming" ? "streaming" : (message.stop_reason || status);
   const avatar = message.avatar ? `<span class="message-avatar">${escapeHtml(message.avatar)}</span>` : "";
   return `<article class="message assistant ${escapeHtml(status)}"><div class="message-head">${avatar}<span class="message-name">${escapeHtml(message.display_name || message.agent_id || "Agent")}</span><span class="message-tag">agent</span><span>${escapeHtml(formatTime(message.created_at || Date.now()))}</span></div>${thinking}${tools}${plan}${body}<div class="assistant-footer">${escapeHtml(footer)}</div></article>`;
@@ -1513,6 +1639,21 @@ function assistantMessage(event) {
     messages.push(message);
   }
   return message;
+}
+
+function notifyNativeAgentResponse(event, message) {
+  const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.agentchatSystemNotification;
+  if (!handler || typeof handler.postMessage !== "function") return;
+  handler.postMessage({
+    event: "thread_agent_turn_end",
+    event_id: `${event.thread_id}:${event.thread_seq}`,
+    thread_id: event.thread_id,
+    thread_seq: event.thread_seq,
+    agent_id: event.agent_id,
+    agent_name: message.display_name || event.agent_id || "Agent",
+    response: message.response || "",
+    stop_reason: event.stop_reason || "EndTurn",
+  });
 }
 
 function updateSetting(participantId, settingId, value) {
@@ -1537,6 +1678,7 @@ function selectThread(threadId) {
   state.currentThreadId = threadId;
   state.timelineFollowing = true;
   state.attached.delete(threadId);
+  state.notificationReplayCutoffs.delete(threadId);
   state.messages.set(threadId, []);
   renderAll();
   send({ type: "attach_thread", thread_id: threadId, after_seq: 0 });
@@ -1563,6 +1705,7 @@ function handleEvent(event) {
       break;
     case "thread_snapshot":
       state.snapshots.set(event.snapshot.thread_id, event.snapshot);
+      state.notificationReplayCutoffs.set(event.snapshot.thread_id, event.snapshot.last_thread_seq);
       updateThreadSummary(event.snapshot.thread_id, {
         title: event.snapshot.title,
         working_dir: event.snapshot.working_dir,
@@ -1646,6 +1789,8 @@ function handleEvent(event) {
         const message = assistantMessage(event);
         message.state = "completed";
         message.stop_reason = event.stop_reason;
+        const replayCutoff = state.notificationReplayCutoffs.get(event.thread_id);
+        if (replayCutoff === undefined || event.thread_seq > replayCutoff) notifyNativeAgentResponse(event, message);
         updateThreadSummary(event.thread_id, { last_thread_seq: event.thread_seq, state: "idle" });
         if (state.currentThreadId === event.thread_id) renderAll();
       }
@@ -1821,6 +1966,14 @@ $("timeline").addEventListener("scroll", () => {
   state.timelineFollowing = timelineIsNearBottom();
 });
 
+$("sidebarToggleButton").addEventListener("click", () => {
+  setPanelCollapsed("sidebar", !state.sidebarCollapsed);
+});
+$("inspectorToggleButton").addEventListener("click", () => {
+  setPanelCollapsed("inspector", !state.inspectorCollapsed);
+});
+
+applyPanelLayout();
 renderAll();
 connect();
 </script>
@@ -1832,9 +1985,25 @@ mod tests {
     use super::PAGE;
 
     #[test]
-    fn chat_page_filters_dependent_settings_by_model() {
+    fn chat_page_exposes_expected_controls() {
         assert!(PAGE.contains("descriptor.values_by_model"));
         assert!(PAGE.contains("renderConfigSettings(agentId, { model: modelSelect.value || null, reasoning_effort: null })"));
         assert!(PAGE.contains("participant.settings = settings;"));
+        for marker in [
+            r#"<div class="app-shell" id="appShell">"#,
+            r#"id="sidebarToggleButton""#,
+            r#"id="inspectorToggleButton""#,
+            "sidebar-collapsed",
+            "inspector-collapsed",
+            "setPanelCollapsed",
+            "notifyNativeAgentResponse",
+            "notificationReplayCutoffs",
+            "assistant-response",
+            "responseExpanded",
+            "data-response-key",
+            "bindResponseExpansionTracking",
+        ] {
+            assert!(PAGE.contains(marker), "chat page is missing {marker}");
+        }
     }
 }

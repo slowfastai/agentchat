@@ -31,7 +31,6 @@ final class DesktopEnvironment: ObservableObject {
             await LocalDaemonController.shared.ensureWebRunning(for: workspace.daemonURL)
             daemon.start()
             await workspace.refreshAgentsFromDaemon()
-            await NotificationHelper.requestAuthorization()
         }
     }
 
