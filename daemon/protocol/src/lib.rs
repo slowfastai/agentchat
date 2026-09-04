@@ -706,6 +706,13 @@ pub enum ClientMessage {
     },
     /// List configured agents known to the daemon.
     ListAgents,
+    /// Discover settings for an agent, optionally for a selected model.
+    DiscoverAgentSettings {
+        agent_id: String,
+        working_dir: String,
+        #[serde(default)]
+        settings: AgentSessionSettings,
+    },
     /// Create a new thread.
     CreateThread {
         #[serde(default)]
@@ -802,6 +809,14 @@ mod tests {
                 working_dir: "/tmp/project".into(),
             },
             ClientMessage::ListAgents,
+            ClientMessage::DiscoverAgentSettings {
+                agent_id: "opencode".into(),
+                working_dir: "/tmp/project".into(),
+                settings: AgentSessionSettings {
+                    model: Some("openrouter/openai/gpt-5.6-luna".into()),
+                    reasoning_effort: None,
+                },
+            },
             ClientMessage::CreateThread {
                 title: Some("Review".into()),
                 working_dir: "/tmp/project".into(),

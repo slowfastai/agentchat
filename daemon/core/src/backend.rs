@@ -76,6 +76,18 @@ pub trait AgentBackend {
     async fn initialize(&self) -> Result<(), String>;
     async fn new_session(&self, cwd: PathBuf) -> Result<String, String>;
 
+    /// Discovers settings that depend on a session or on a selected model.
+    ///
+    /// Static backends can leave this as a no-op. ACP agents use it to expose
+    /// selectors before the client creates its first user-facing session.
+    async fn discover_settings(
+        &self,
+        _cwd: PathBuf,
+        _settings: AgentSessionSettings,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Creates a session and applies settings before the first prompt.
     async fn new_session_with_settings(
         &self,
