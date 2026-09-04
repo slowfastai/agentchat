@@ -183,7 +183,19 @@ Success response:
       "kind": "opencode",
       "status": "online",
       "default_working_dir": null,
-      "capabilities": ["session", "prompt", "cancel", "distill"]
+      "capabilities": ["session", "prompt", "cancel", "distill"],
+      "settings": [
+        {
+          "id": "model",
+          "name": "Model",
+          "category": "model",
+          "values": [
+            {"id": "opencode/big-pickle", "label": "Big Pickle"}
+          ],
+          "current_value": "opencode/big-pickle",
+          "apply_scope": "session"
+        }
+      ]
     }
   ]
 }
@@ -192,6 +204,27 @@ Success response:
 Notes:
 - Clients should usually call `list_agents` before `create_session`.
 - `status` is currently coarse and mainly indicates whether the daemon still sees the agent process as alive.
+- `settings` is backend-provided and may include `model` and
+  `reasoning_effort` selectors. `values_by_model` can describe dependent
+  reasoning values when the backend supports them.
+- Some ACP agents, including OpenCode, expose dependent settings only after a
+  model is selected. Clients can request discovery without blocking the
+  message loop:
+
+  ```json
+  {
+    "type": "discover_agent_settings",
+    "agent_id": "opencode",
+    "working_dir": ".",
+    "settings": {
+      "model": "openrouter/openai/gpt-5.6-luna"
+    }
+  }
+  ```
+
+  The daemon sends a refreshed `agent_list` after the discovery changes the
+  advertised settings. OpenCode then exposes that model's available
+  `reasoning_effort` values.
 
 ## `create_session`
 

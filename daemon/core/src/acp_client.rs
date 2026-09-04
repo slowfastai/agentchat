@@ -3,7 +3,7 @@
 //! This module handles the full ACP lifecycle: subprocess management, initialize handshake,
 //! session creation, prompt/response streaming, and cancellation.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -32,6 +32,8 @@ pub struct AcpAgent {
     update_rx: RefCell<Option<mpsc::UnboundedReceiver<AgentNotification>>>,
     session_config_options: RefCell<HashMap<String, Vec<SessionConfigOption>>>,
     latest_session_id: RefCell<Option<String>>,
+    session_close_supported: Cell<bool>,
+    discovered_setting_models: RefCell<std::collections::HashSet<String>>,
     /// Broadcasts whether the child process is still alive.
     health_tx: watch::Sender<bool>,
     /// Signals the child-process monitor task to terminate the subprocess.
@@ -153,6 +155,8 @@ impl AcpAgent {
             update_rx: RefCell::new(Some(update_rx)),
             session_config_options: RefCell::new(HashMap::new()),
             latest_session_id: RefCell::new(None),
+            session_close_supported: Cell::new(false),
+            discovered_setting_models: RefCell::new(std::collections::HashSet::new()),
             health_tx,
             kill_tx,
         })
@@ -195,10 +199,15 @@ impl AcpAgent {
 #[async_trait::async_trait(?Send)]
 impl AgentBackend for AcpAgent {
     async fn initialize(&self) -> Result<(), String> {
-        self.initialize_acp()
-            .await
-            .map(|_| ())
-            .map_err(|err| err.to_string())
+        let response = self.initialize_acp().await.map_err(|err| err.to_string())?;
+        self.session_close_supported.set(
+            response
+                .agent_capabilities
+                .session_capabilities
+                .close
+                .is_some(),
+        );
+        Ok(())
     }
 
     async fn new_session(&self, cwd: PathBuf) -> Result<String, String> {
@@ -215,6 +224,41 @@ impl AgentBackend for AcpAgent {
         );
         info!("ACP session created: {}", response.session_id);
         Ok(session_id)
+    }
+
+    async fn discover_settings(
+        &self,
+        cwd: PathBuf,
+        settings: AgentSessionSettings,
+    ) -> Result<(), String> {
+        let model_key = settings.model.clone().unwrap_or_default();
+        if self.discovered_setting_models.borrow().contains(&model_key) {
+            return Ok(());
+        }
+
+        let session_id = self.new_session(cwd).await?;
+        let result = self
+            .set_session_settings(session_id.clone(), settings)
+            .await;
+
+        if self.session_close_supported.get() {
+            if let Err(err) = self
+                .conn
+                .close_session(CloseSessionRequest::new(session_id.clone()))
+                .await
+            {
+                warn!(
+                    "failed to close temporary ACP settings session {}: {}",
+                    session_id, err
+                );
+            }
+        }
+
+        result?;
+        self.discovered_setting_models
+            .borrow_mut()
+            .insert(model_key);
+        Ok(())
     }
 
     async fn set_session_settings(

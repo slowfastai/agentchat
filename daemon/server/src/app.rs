@@ -507,6 +507,20 @@ fn normalize_thread_participant_config(
     }
 }
 
+fn resolve_working_dir(working_dir: &str) -> PathBuf {
+    let path = PathBuf::from(working_dir);
+    if path.as_os_str().is_empty() {
+        return std::env::current_dir().unwrap_or(path);
+    }
+    if path.is_relative() {
+        std::env::current_dir()
+            .map(|directory| directory.join(&path))
+            .unwrap_or(path)
+    } else {
+        path
+    }
+}
+
 impl AppProtocolSession {
     #[allow(clippy::result_large_err)]
     pub fn new(
@@ -711,6 +725,14 @@ impl AppProtocolSession {
             }
             ClientMessage::ListAgents => {
                 self.handle_list_agents().await;
+            }
+            ClientMessage::DiscoverAgentSettings {
+                agent_id,
+                working_dir,
+                settings,
+            } => {
+                self.handle_discover_agent_settings(agent_id, working_dir, settings)
+                    .await;
             }
             ClientMessage::CreateThread { title, working_dir } => {
                 self.handle_create_thread(title, working_dir).await;
@@ -991,8 +1013,83 @@ impl AppProtocolSession {
     }
 
     async fn handle_list_agents(&self) {
+        // Return the static/configured agent list immediately. ACP settings can
+        // require a session round trip (OpenCode exposes effort levels only
+        // after a model is selected), so discovery must not block the client
+        // message loop.
+        self.broadcast_agent_list();
+
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let agent_ids = self.manager.borrow().agent_ids();
+        for agent_id in agent_ids {
+            self.spawn_agent_settings_discovery(
+                agent_id,
+                cwd.clone(),
+                AgentSessionSettings::default(),
+                false,
+            );
+        }
+    }
+
+    async fn handle_discover_agent_settings(
+        &self,
+        agent_id: String,
+        working_dir: String,
+        settings: AgentSessionSettings,
+    ) {
+        let cwd = resolve_working_dir(&working_dir);
+        self.spawn_agent_settings_discovery(agent_id, cwd, settings, true);
+    }
+
+    fn spawn_agent_settings_discovery(
+        &self,
+        agent_id: String,
+        cwd: PathBuf,
+        settings: AgentSessionSettings,
+        report_error: bool,
+    ) {
+        let manager = Rc::clone(&self.manager);
+        let response_tx = self.response_tx.clone();
+        tokio::task::spawn_local(async move {
+            let previous_agents = manager.borrow().list_agents();
+            let result = {
+                let agent = manager.borrow().get_agent(&agent_id);
+                match agent {
+                    Some(agent) => agent.discover_settings(cwd, settings).await,
+                    None => Err("no agent with this id".to_string()),
+                }
+            };
+
+            if let Err(message) = result {
+                if report_error {
+                    let _ = response_tx.send(ResponseEvent::Error {
+                        session_id: None,
+                        event_seq: None,
+                        code: "agent_settings_discovery_failed".into(),
+                        message,
+                    });
+                } else {
+                    warn!("agent settings discovery failed for {agent_id}: {message}");
+                }
+            }
+
+            let agents: Vec<AgentSummary> = manager.borrow().list_agents();
+            if agents != previous_agents {
+                let _ = response_tx.send(ResponseEvent::AgentList { agents });
+            }
+        });
+    }
+
+    fn broadcast_agent_list(&self) {
         let agents: Vec<AgentSummary> = self.manager.borrow().list_agents();
         let _ = self.response_tx.send(ResponseEvent::AgentList { agents });
+    }
+
+    fn broadcast_agent_list_if_changed(&self, previous: &[AgentSummary]) {
+        let agents: Vec<AgentSummary> = self.manager.borrow().list_agents();
+        if agents != previous {
+            let _ = self.response_tx.send(ResponseEvent::AgentList { agents });
+        }
     }
 
     async fn handle_list_threads(&self) {
@@ -1112,6 +1209,7 @@ impl AppProtocolSession {
             }
         };
 
+        let previous_agents = self.manager.borrow().list_agents();
         let default_config = self.default_thread_participant_config(&agent_id);
         let uses_custom_config = requested_config.is_some();
         let config = normalize_thread_participant_config(
@@ -1169,6 +1267,10 @@ impl AppProtocolSession {
         };
 
         let participant = self.build_thread_participant(&participant);
+        // ACP may return a new dependent setting (for example OpenCode's
+        // effort selector) after the model changes. Refresh descriptors so
+        // clients can render the newly available options immediately.
+        self.broadcast_agent_list_if_changed(&previous_agents);
         let thread_seq = self.thread_event_log.borrow_mut().next_seq(&thread_id);
         journal_and_broadcast_thread_event(
             &self.thread_event_log,
@@ -1288,6 +1390,7 @@ impl AppProtocolSession {
             ),
         };
 
+        let previous_agents = self.manager.borrow().list_agents();
         let agent = self.manager.borrow().get_agent(&agent_id);
         let Some(agent) = agent else {
             let _ = self.response_tx.send(ResponseEvent::Error {
@@ -1341,6 +1444,10 @@ impl AppProtocolSession {
         };
 
         let participant = self.build_thread_participant(&participant);
+        // ACP may return a new dependent setting (for example OpenCode's
+        // effort selector) after the model changes. Refresh descriptors so
+        // clients can render the newly available options immediately.
+        self.broadcast_agent_list_if_changed(&previous_agents);
         let thread_seq = self.thread_event_log.borrow_mut().next_seq(&thread_id);
         journal_and_broadcast_thread_event(
             &self.thread_event_log,
