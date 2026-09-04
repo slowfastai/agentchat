@@ -94,6 +94,7 @@ fn settings_for_config(config: &AgentConfig) -> Vec<AgentSettingOption> {
             name: "Model".into(),
             category: "model".into(),
             values: model_values,
+            values_by_model: None,
             current_value: default_model,
             apply_scope: "session".into(),
         });
@@ -104,6 +105,7 @@ fn settings_for_config(config: &AgentConfig) -> Vec<AgentSettingOption> {
             name: "Reasoning effort".into(),
             category: "thought_level".into(),
             values: reasoning_values,
+            values_by_model: None,
             current_value: default_reasoning,
             apply_scope: "session".into(),
         });
@@ -117,7 +119,13 @@ fn merge_setting_options(
 ) {
     for setting in discovered {
         if let Some(existing) = configured.iter_mut().find(|item| item.id == setting.id) {
+            let configured_current_value = existing.current_value.clone();
             *existing = setting;
+            // A user-supplied default is authoritative over the backend's
+            // advertised default, while discovered values/options stay fresh.
+            if configured_current_value.is_some() {
+                existing.current_value = configured_current_value;
+            }
         } else {
             configured.push(setting);
         }

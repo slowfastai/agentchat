@@ -1253,44 +1253,67 @@ impl AgentBackend for CodexAppServerAgent {
         )
         .await?;
 
-        let result = match self
-            .send_request("model/list", json!({ "includeHidden": false }))
-            .await
-        {
-            Ok(result) => result,
-            Err(error) => {
-                warn!("codex model/list discovery unavailable: {error}");
-                return Ok(());
+        let mut models = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut params = json!({ "includeHidden": false, "limit": 100 });
+            if let Some(cursor) = cursor.as_ref() {
+                params["cursor"] = Value::String(cursor.clone());
             }
-        };
-        let Some(models) = result.get("data").and_then(Value::as_array) else {
-            warn!("codex model/list response missing data");
-            return Ok(());
-        };
+            let result = match self.send_request("model/list", params).await {
+                Ok(result) => result,
+                Err(error) => {
+                    warn!("codex model/list discovery unavailable: {error}");
+                    return Ok(());
+                }
+            };
+            let Some(page) = result.get("data").and_then(Value::as_array) else {
+                warn!("codex model/list response missing data");
+                return Ok(());
+            };
+            models.extend(page.iter().cloned());
+            let next_cursor = result
+                .get("nextCursor")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            if next_cursor == cursor {
+                warn!("codex model/list returned a repeated cursor");
+                break;
+            }
+            let Some(next_cursor) = next_cursor else {
+                break;
+            };
+            cursor = Some(next_cursor);
+        }
 
-        let mut model_values = Vec::new();
-        let mut reasoning_values = Vec::new();
+        let mut model_values: Vec<AgentSettingValue> = Vec::new();
+        let mut reasoning_values_by_model = HashMap::new();
         let mut default_model = None;
-        let mut default_reasoning = None;
-        for model in models {
-            let Some(id) = model.get("id").and_then(Value::as_str) else {
+        for model in &models {
+            let Some(model_id) = model
+                .get("model")
+                .or_else(|| model.get("id"))
+                .and_then(Value::as_str)
+            else {
                 continue;
             };
             let label = model
                 .get("displayName")
                 .and_then(Value::as_str)
                 .filter(|value| !value.trim().is_empty())
-                .unwrap_or(id);
+                .unwrap_or(model_id);
+            if model_values.iter().any(|value| value.id == model_id) {
+                continue;
+            }
             model_values.push(AgentSettingValue {
-                id: id.into(),
+                id: model_id.into(),
                 label: label.into(),
             });
             if model.get("isDefault").and_then(Value::as_bool) == Some(true) {
-                default_model = Some(id.to_string());
+                default_model = Some(model_id.to_string());
             }
-            if let Some(effort) = model.get("defaultReasoningEffort").and_then(Value::as_str) {
-                default_reasoning.get_or_insert_with(|| effort.to_string());
-            }
+            let mut reasoning_values: Vec<AgentSettingValue> = Vec::new();
             if let Some(options) = model
                 .get("supportedReasoningEfforts")
                 .and_then(Value::as_array)
@@ -1299,10 +1322,7 @@ impl AgentBackend for CodexAppServerAgent {
                     let Some(effort) = option.get("reasoningEffort").and_then(Value::as_str) else {
                         continue;
                     };
-                    if !reasoning_values
-                        .iter()
-                        .any(|value: &AgentSettingValue| value.id == effort)
-                    {
+                    if !reasoning_values.iter().any(|value| value.id == effort) {
                         reasoning_values.push(AgentSettingValue {
                             id: effort.into(),
                             label: effort.into(),
@@ -1310,26 +1330,54 @@ impl AgentBackend for CodexAppServerAgent {
                     }
                 }
             }
+            reasoning_values_by_model.insert(model_id.to_string(), reasoning_values);
         }
         if model_values.is_empty() {
             warn!("codex model/list returned no visible models");
             return Ok(());
         }
 
+        let selected_model = self
+            .options
+            .default_settings
+            .model
+            .as_ref()
+            .filter(|model| model_values.iter().any(|value| &value.id == *model))
+            .map(|model| model.clone())
+            .or_else(|| default_model.clone())
+            .or_else(|| model_values.first().map(|value| value.id.clone()));
+        let default_reasoning = selected_model.as_ref().and_then(|model| {
+            models.iter().find_map(|entry| {
+                let entry_model = entry
+                    .get("model")
+                    .or_else(|| entry.get("id"))
+                    .and_then(Value::as_str);
+                (entry_model == Some(model.as_str()))
+                    .then(|| entry.get("defaultReasoningEffort").and_then(Value::as_str))
+                    .flatten()
+                    .map(str::to_string)
+            })
+        });
+        let default_reasoning_values = selected_model
+            .as_ref()
+            .and_then(|model| reasoning_values_by_model.get(model).cloned())
+            .unwrap_or_default();
         let mut settings = vec![AgentSettingOption {
             id: "model".into(),
             name: "Model".into(),
             category: "model".into(),
             values: model_values,
+            values_by_model: None,
             current_value: default_model,
             apply_scope: "session".into(),
         }];
-        if !reasoning_values.is_empty() {
+        if !reasoning_values_by_model.is_empty() {
             settings.push(AgentSettingOption {
                 id: "reasoning_effort".into(),
                 name: "Reasoning effort".into(),
                 category: "thought_level".into(),
-                values: reasoning_values,
+                values: default_reasoning_values,
+                values_by_model: Some(reasoning_values_by_model),
                 current_value: default_reasoning,
                 apply_scope: "session".into(),
             });
