@@ -65,24 +65,12 @@ fn setting_values(value: Option<&Value>) -> Vec<AgentSettingValue> {
 }
 
 fn settings_for_config(config: &AgentConfig) -> Vec<AgentSettingOption> {
-    let is_codex = config.backend.to_ascii_lowercase().contains("codex")
-        || config.id.to_ascii_lowercase().contains("codex")
-        || config.name.to_ascii_lowercase().contains("codex");
-    let mut model_values = setting_values(
+    let model_values = setting_values(
         config
             .extra
             .get("model_options")
             .or_else(|| config.extra.get("models")),
     );
-    if model_values.is_empty() && is_codex {
-        model_values = ["gpt-5.6-luna", "gpt-5.6-sol"]
-            .into_iter()
-            .map(|id| AgentSettingValue {
-                id: id.into(),
-                label: id.into(),
-            })
-            .collect();
-    }
     let reasoning_values = {
         let configured = setting_values(
             config
@@ -90,17 +78,7 @@ fn settings_for_config(config: &AgentConfig) -> Vec<AgentSettingOption> {
                 .get("reasoning_efforts")
                 .or_else(|| config.extra.get("reasoning_options")),
         );
-        if configured.is_empty() && is_codex {
-            ["low", "medium", "high", "max"]
-                .into_iter()
-                .map(|id| AgentSettingValue {
-                    id: id.into(),
-                    label: id.into(),
-                })
-                .collect()
-        } else {
-            configured
-        }
+        configured
     };
 
     let default_model = extra_string(&config.extra, &["model", "default_model"]);
@@ -110,7 +88,7 @@ fn settings_for_config(config: &AgentConfig) -> Vec<AgentSettingOption> {
     );
 
     let mut settings = Vec::new();
-    if is_codex || !model_values.is_empty() || default_model.is_some() {
+    if !model_values.is_empty() || default_model.is_some() {
         settings.push(AgentSettingOption {
             id: "model".into(),
             name: "Model".into(),
@@ -120,7 +98,7 @@ fn settings_for_config(config: &AgentConfig) -> Vec<AgentSettingOption> {
             apply_scope: "session".into(),
         });
     }
-    if is_codex || !reasoning_values.is_empty() || default_reasoning.is_some() {
+    if !reasoning_values.is_empty() || default_reasoning.is_some() {
         settings.push(AgentSettingOption {
             id: "reasoning_effort".into(),
             name: "Reasoning effort".into(),
@@ -425,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_settings_include_max_reasoning_effort() {
+    fn codex_settings_do_not_use_static_fallbacks() {
         let config = AgentConfig {
             id: "codex".into(),
             name: "Codex".into(),
@@ -437,16 +415,6 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        let reasoning = settings_for_config(&config)
-            .into_iter()
-            .find(|setting| setting.id == "reasoning_effort")
-            .expect("Codex should expose reasoning effort settings");
-        let values = reasoning
-            .values
-            .iter()
-            .map(|value| value.id.as_str())
-            .collect::<Vec<_>>();
-
-        assert_eq!(values, vec!["low", "medium", "high", "max"]);
+        assert!(settings_for_config(&config).is_empty());
     }
 }

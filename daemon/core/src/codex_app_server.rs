@@ -10,7 +10,9 @@ use tokio::process::{ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, watch, Mutex};
 use tracing::{debug, error, info, warn};
 
-use agentchat_protocol::{AgentConfig, AgentSessionSettings};
+use agentchat_protocol::{
+    AgentConfig, AgentSessionSettings, AgentSettingOption, AgentSettingValue,
+};
 
 use crate::backend::{AgentBackend, AgentNotification, AgentPromptResult, AgentUpdate};
 
@@ -262,6 +264,7 @@ pub struct CodexAppServerAgent {
     kill_tx: watch::Sender<bool>,
     project_root: PathBuf,
     options: CodexOptions,
+    discovered_settings: Rc<RefCell<Vec<AgentSettingOption>>>,
     session_settings: Rc<RefCell<HashMap<String, AgentSessionSettings>>>,
 }
 
@@ -1087,6 +1090,7 @@ impl CodexAppServerAgent {
         let turn_waiters: TurnWaiters = Rc::new(RefCell::new(HashMap::new()));
         let completed_turns: CompletedTurns = Rc::new(RefCell::new(HashMap::new()));
         let session_settings = Rc::new(RefCell::new(HashMap::new()));
+        let discovered_settings = Rc::new(RefCell::new(Vec::new()));
         let (health_tx, _) = watch::channel(true);
         let (kill_tx, kill_rx) = watch::channel(false);
 
@@ -1197,6 +1201,7 @@ impl CodexAppServerAgent {
             kill_tx,
             project_root,
             options,
+            discovered_settings,
             session_settings,
         })
     }
@@ -1246,8 +1251,95 @@ impl AgentBackend for CodexAppServerAgent {
                 }
             }),
         )
-        .await
-        .map(|_| ())
+        .await?;
+
+        let result = match self
+            .send_request("model/list", json!({ "includeHidden": false }))
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                warn!("codex model/list discovery unavailable: {error}");
+                return Ok(());
+            }
+        };
+        let Some(models) = result.get("data").and_then(Value::as_array) else {
+            warn!("codex model/list response missing data");
+            return Ok(());
+        };
+
+        let mut model_values = Vec::new();
+        let mut reasoning_values = Vec::new();
+        let mut default_model = None;
+        let mut default_reasoning = None;
+        for model in models {
+            let Some(id) = model.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let label = model
+                .get("displayName")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(id);
+            model_values.push(AgentSettingValue {
+                id: id.into(),
+                label: label.into(),
+            });
+            if model.get("isDefault").and_then(Value::as_bool) == Some(true) {
+                default_model = Some(id.to_string());
+            }
+            if let Some(effort) = model.get("defaultReasoningEffort").and_then(Value::as_str) {
+                default_reasoning.get_or_insert_with(|| effort.to_string());
+            }
+            if let Some(options) = model
+                .get("supportedReasoningEfforts")
+                .and_then(Value::as_array)
+            {
+                for option in options {
+                    let Some(effort) = option.get("reasoningEffort").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    if !reasoning_values
+                        .iter()
+                        .any(|value: &AgentSettingValue| value.id == effort)
+                    {
+                        reasoning_values.push(AgentSettingValue {
+                            id: effort.into(),
+                            label: effort.into(),
+                        });
+                    }
+                }
+            }
+        }
+        if model_values.is_empty() {
+            warn!("codex model/list returned no visible models");
+            return Ok(());
+        }
+
+        let mut settings = vec![AgentSettingOption {
+            id: "model".into(),
+            name: "Model".into(),
+            category: "model".into(),
+            values: model_values,
+            current_value: default_model,
+            apply_scope: "session".into(),
+        }];
+        if !reasoning_values.is_empty() {
+            settings.push(AgentSettingOption {
+                id: "reasoning_effort".into(),
+                name: "Reasoning effort".into(),
+                category: "thought_level".into(),
+                values: reasoning_values,
+                current_value: default_reasoning,
+                apply_scope: "session".into(),
+            });
+        }
+        *self.discovered_settings.borrow_mut() = settings;
+        Ok(())
+    }
+
+    fn setting_options(&self) -> Vec<AgentSettingOption> {
+        self.discovered_settings.borrow().clone()
     }
 
     async fn new_session(&self, cwd: PathBuf) -> Result<String, String> {
