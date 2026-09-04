@@ -33,7 +33,7 @@ pub struct AcpAgent {
     session_config_options: RefCell<HashMap<String, Vec<SessionConfigOption>>>,
     latest_session_id: RefCell<Option<String>>,
     session_close_supported: Cell<bool>,
-    discovered_setting_models: RefCell<std::collections::HashSet<String>>,
+    discovered_setting_sessions: RefCell<HashMap<String, String>>,
     /// Broadcasts whether the child process is still alive.
     health_tx: watch::Sender<bool>,
     /// Signals the child-process monitor task to terminate the subprocess.
@@ -156,7 +156,7 @@ impl AcpAgent {
             session_config_options: RefCell::new(HashMap::new()),
             latest_session_id: RefCell::new(None),
             session_close_supported: Cell::new(false),
-            discovered_setting_models: RefCell::new(std::collections::HashSet::new()),
+            discovered_setting_sessions: RefCell::new(HashMap::new()),
             health_tx,
             kill_tx,
         })
@@ -193,6 +193,12 @@ impl AcpAgent {
             .borrow_mut()
             .insert(session_id.clone(), options);
         *self.latest_session_id.borrow_mut() = Some(session_id);
+    }
+
+    fn restore_discovered_setting_session(&self, model_key: &str) -> bool {
+        let discovered_sessions = self.discovered_setting_sessions.borrow();
+        let mut latest_session_id = self.latest_session_id.borrow_mut();
+        restore_cached_session(&discovered_sessions, &mut latest_session_id, model_key)
     }
 }
 
@@ -232,7 +238,7 @@ impl AgentBackend for AcpAgent {
         settings: AgentSessionSettings,
     ) -> Result<(), String> {
         let model_key = settings.model.clone().unwrap_or_default();
-        if self.discovered_setting_models.borrow().contains(&model_key) {
+        if self.restore_discovered_setting_session(&model_key) {
             return Ok(());
         }
 
@@ -255,9 +261,9 @@ impl AgentBackend for AcpAgent {
         }
 
         result?;
-        self.discovered_setting_models
+        self.discovered_setting_sessions
             .borrow_mut()
-            .insert(model_key);
+            .insert(model_key, session_id);
         Ok(())
     }
 
@@ -368,6 +374,19 @@ impl AgentBackend for AcpAgent {
             }
         }
     }
+}
+
+fn restore_cached_session(
+    sessions_by_model: &HashMap<String, String>,
+    latest_session_id: &mut Option<String>,
+    model_key: &str,
+) -> bool {
+    let Some(session_id) = sessions_by_model.get(model_key).cloned() else {
+        return false;
+    };
+
+    *latest_session_id = Some(session_id);
+    true
 }
 
 fn acp_option_matches(option: &SessionConfigOption, category: &str) -> bool {
@@ -502,5 +521,89 @@ mod tests {
         assert_eq!(settings[1].id, "reasoning_effort");
         assert_eq!(settings[1].current_value.as_deref(), Some("high"));
         assert_eq!(settings[1].values[0].id, "low");
+    }
+
+    #[test]
+    fn discovered_settings_cache_restores_previous_model_session() {
+        let options_a = vec![
+            SessionConfigOption::select(
+                "model",
+                "Model",
+                "model-a",
+                vec![SessionConfigSelectOption::new("model-a", "Model A")],
+            )
+            .category(SessionConfigOptionCategory::Model),
+            SessionConfigOption::select(
+                "effort",
+                "Reasoning effort",
+                "low",
+                vec![
+                    SessionConfigSelectOption::new("low", "Low"),
+                    SessionConfigSelectOption::new("high", "High"),
+                ],
+            )
+            .category(SessionConfigOptionCategory::ThoughtLevel),
+        ];
+        let options_b = vec![
+            SessionConfigOption::select(
+                "model",
+                "Model",
+                "model-b",
+                vec![SessionConfigSelectOption::new("model-b", "Model B")],
+            )
+            .category(SessionConfigOptionCategory::Model),
+            SessionConfigOption::select(
+                "effort",
+                "Reasoning effort",
+                "max",
+                vec![
+                    SessionConfigSelectOption::new("medium", "Medium"),
+                    SessionConfigSelectOption::new("max", "Max"),
+                ],
+            )
+            .category(SessionConfigOptionCategory::ThoughtLevel),
+        ];
+
+        let session_options = HashMap::from([
+            ("session-a".to_string(), options_a),
+            ("session-b".to_string(), options_b),
+        ]);
+        let mut discovered_sessions = HashMap::new();
+        let mut latest_session_id = Some("session-a".to_string());
+
+        let reasoning_values = |session_id: &str| {
+            acp_setting_options(session_options.get(session_id).unwrap())
+                .into_iter()
+                .find(|setting| setting.id == "reasoning_effort")
+                .unwrap()
+                .values
+                .into_iter()
+                .map(|value| value.id)
+                .collect::<Vec<_>>()
+        };
+
+        discovered_sessions.insert("model-a".to_string(), "session-a".to_string());
+        assert_eq!(
+            reasoning_values(latest_session_id.as_deref().unwrap()),
+            ["low", "high"]
+        );
+
+        discovered_sessions.insert("model-b".to_string(), "session-b".to_string());
+        latest_session_id = Some("session-b".to_string());
+        assert_eq!(
+            reasoning_values(latest_session_id.as_deref().unwrap()),
+            ["medium", "max"]
+        );
+
+        assert!(restore_cached_session(
+            &discovered_sessions,
+            &mut latest_session_id,
+            "model-a",
+        ));
+        assert_eq!(latest_session_id.as_deref(), Some("session-a"));
+        assert_eq!(
+            reasoning_values(latest_session_id.as_deref().unwrap()),
+            ["low", "high"]
+        );
     }
 }
