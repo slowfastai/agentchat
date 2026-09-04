@@ -65,24 +65,12 @@ fn setting_values(value: Option<&Value>) -> Vec<AgentSettingValue> {
 }
 
 fn settings_for_config(config: &AgentConfig) -> Vec<AgentSettingOption> {
-    let is_codex = config.backend.to_ascii_lowercase().contains("codex")
-        || config.id.to_ascii_lowercase().contains("codex")
-        || config.name.to_ascii_lowercase().contains("codex");
-    let mut model_values = setting_values(
+    let model_values = setting_values(
         config
             .extra
             .get("model_options")
             .or_else(|| config.extra.get("models")),
     );
-    if model_values.is_empty() && is_codex {
-        model_values = ["gpt-5.6-luna", "gpt-5.6-sol"]
-            .into_iter()
-            .map(|id| AgentSettingValue {
-                id: id.into(),
-                label: id.into(),
-            })
-            .collect();
-    }
     let reasoning_values = {
         let configured = setting_values(
             config
@@ -90,17 +78,7 @@ fn settings_for_config(config: &AgentConfig) -> Vec<AgentSettingOption> {
                 .get("reasoning_efforts")
                 .or_else(|| config.extra.get("reasoning_options")),
         );
-        if configured.is_empty() && is_codex {
-            ["low", "medium", "high", "max"]
-                .into_iter()
-                .map(|id| AgentSettingValue {
-                    id: id.into(),
-                    label: id.into(),
-                })
-                .collect()
-        } else {
-            configured
-        }
+        configured
     };
 
     let default_model = extra_string(&config.extra, &["model", "default_model"]);
@@ -110,22 +88,24 @@ fn settings_for_config(config: &AgentConfig) -> Vec<AgentSettingOption> {
     );
 
     let mut settings = Vec::new();
-    if is_codex || !model_values.is_empty() || default_model.is_some() {
+    if !model_values.is_empty() || default_model.is_some() {
         settings.push(AgentSettingOption {
             id: "model".into(),
             name: "Model".into(),
             category: "model".into(),
             values: model_values,
+            values_by_model: None,
             current_value: default_model,
             apply_scope: "session".into(),
         });
     }
-    if is_codex || !reasoning_values.is_empty() || default_reasoning.is_some() {
+    if !reasoning_values.is_empty() || default_reasoning.is_some() {
         settings.push(AgentSettingOption {
             id: "reasoning_effort".into(),
             name: "Reasoning effort".into(),
             category: "thought_level".into(),
             values: reasoning_values,
+            values_by_model: None,
             current_value: default_reasoning,
             apply_scope: "session".into(),
         });
@@ -139,7 +119,13 @@ fn merge_setting_options(
 ) {
     for setting in discovered {
         if let Some(existing) = configured.iter_mut().find(|item| item.id == setting.id) {
+            let configured_current_value = existing.current_value.clone();
             *existing = setting;
+            // A user-supplied default is authoritative over the backend's
+            // advertised default, while discovered values/options stay fresh.
+            if configured_current_value.is_some() {
+                existing.current_value = configured_current_value;
+            }
         } else {
             configured.push(setting);
         }
@@ -425,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_settings_include_max_reasoning_effort() {
+    fn codex_settings_do_not_use_static_fallbacks() {
         let config = AgentConfig {
             id: "codex".into(),
             name: "Codex".into(),
@@ -437,16 +423,6 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        let reasoning = settings_for_config(&config)
-            .into_iter()
-            .find(|setting| setting.id == "reasoning_effort")
-            .expect("Codex should expose reasoning effort settings");
-        let values = reasoning
-            .values
-            .iter()
-            .map(|value| value.id.as_str())
-            .collect::<Vec<_>>();
-
-        assert_eq!(values, vec!["low", "medium", "high", "max"]);
+        assert!(settings_for_config(&config).is_empty());
     }
 }

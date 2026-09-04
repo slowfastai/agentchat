@@ -1289,13 +1289,20 @@ function settingMarkup(participant, settingId, label, key) {
   const descriptor = settingDescriptor(participant, settingId);
   if (!descriptor) return "";
   const current = participant.settings && participant.settings[key] ? participant.settings[key] : (descriptor.current_value || "");
-  return `<div class="setting"><label>${escapeHtml(label)}</label><select data-setting="${escapeHtml(settingId)}" data-participant="${escapeHtml(participant.participant_id)}">${settingOptionsMarkup(descriptor, current)}</select></div>`;
+  const modelDescriptor = settingDescriptor(participant, "model");
+  const model = participant.settings && participant.settings.model ? participant.settings.model : (modelDescriptor && modelDescriptor.current_value);
+  return `<div class="setting"><label>${escapeHtml(label)}</label><select data-setting="${escapeHtml(settingId)}" data-participant="${escapeHtml(participant.participant_id)}">${settingOptionsMarkup(descriptor, current, model)}</select></div>`;
 }
 
-function settingOptionsMarkup(descriptor, current) {
-  const values = Array.isArray(descriptor.values) ? descriptor.values.slice() : [];
-  if (current && !values.some((value) => value.id === current)) values.unshift({ id: current, label: current });
-  return `<option value="">Default</option>${values.map((value) => `<option value="${escapeHtml(value.id)}" ${value.id === current ? "selected" : ""}>${escapeHtml(value.label)}</option>`).join("")}`;
+function settingValues(descriptor, model) {
+  const modelValues = descriptor && descriptor.values_by_model && model ? descriptor.values_by_model[model] : null;
+  return Array.isArray(modelValues) ? modelValues.slice() : (Array.isArray(descriptor.values) ? descriptor.values.slice() : []);
+}
+
+function settingOptionsMarkup(descriptor, current, model) {
+  const values = settingValues(descriptor, model);
+  const selected = values.some((value) => value.id === current) ? current : "";
+  return `<option value="">Default</option>${values.map((value) => `<option value="${escapeHtml(value.id)}" ${value.id === selected ? "selected" : ""}>${escapeHtml(value.label)}</option>`).join("")}`;
 }
 
 function participantDisplayName(participant, participants) {
@@ -1323,12 +1330,20 @@ function configSettingMarkup(agentId, settingId, label, key, settings) {
   const descriptor = summary && (summary.settings || []).find((setting) => setting.id === settingId);
   if (!descriptor) return "";
   const current = settings && settings[key] ? settings[key] : (descriptor.current_value || "");
-  return `<label for="participantConfig${key === "model" ? "Model" : "Reasoning"}">${escapeHtml(label)}</label><select id="participantConfig${key === "model" ? "Model" : "Reasoning"}">${settingOptionsMarkup(descriptor, current)}</select>`;
+  const modelDescriptor = summary && (summary.settings || []).find((setting) => setting.id === "model");
+  const model = settings && settings.model ? settings.model : (modelDescriptor && modelDescriptor.current_value);
+  return `<label for="participantConfig${key === "model" ? "Model" : "Reasoning"}">${escapeHtml(label)}</label><select id="participantConfig${key === "model" ? "Model" : "Reasoning"}">${settingOptionsMarkup(descriptor, current, model)}</select>`;
 }
 
 function renderConfigSettings(agentId, settings) {
   $("participantModelField").innerHTML = configSettingMarkup(agentId, "model", "Model", "model", settings);
   $("participantReasoningField").innerHTML = configSettingMarkup(agentId, "reasoning_effort", "Reasoning effort", "reasoning_effort", settings);
+  const modelSelect = $("participantConfigModel");
+  if (modelSelect) {
+    modelSelect.addEventListener("change", () => {
+      renderConfigSettings(agentId, { model: modelSelect.value || null, reasoning_effort: null });
+    });
+  }
 }
 
 function renderConfigAvatarPresets() {
@@ -1511,6 +1526,8 @@ function updateSetting(participantId, settingId, value) {
     reasoning_effort: settingId === "reasoning_effort" ? (value || null) : null,
   };
   if (send({ type: "set_thread_participant_settings", thread_id: snapshot.thread_id, participant_id: participantId, settings })) {
+    participant.settings = settings;
+    renderParticipants();
     $("composerStatus").textContent = "Saving participant settings...";
   }
 }
@@ -1809,3 +1826,15 @@ connect();
 </script>
 </body>
 </html>"##;
+
+#[cfg(test)]
+mod tests {
+    use super::PAGE;
+
+    #[test]
+    fn chat_page_filters_dependent_settings_by_model() {
+        assert!(PAGE.contains("descriptor.values_by_model"));
+        assert!(PAGE.contains("renderConfigSettings(agentId, { model: modelSelect.value || null, reasoning_effort: null })"));
+        assert!(PAGE.contains("participant.settings = settings;"));
+    }
+}

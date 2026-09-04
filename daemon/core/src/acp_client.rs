@@ -407,6 +407,7 @@ fn acp_setting_option(option: &SessionConfigOption) -> Option<AgentSettingOption
             "thought_level".into()
         },
         values,
+        values_by_model: None,
         current_value: Some(select.current_value.to_string()),
         apply_scope: "session".into(),
     })

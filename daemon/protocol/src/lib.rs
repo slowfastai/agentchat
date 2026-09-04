@@ -64,6 +64,9 @@ pub struct AgentSettingOption {
     pub category: String,
     #[serde(default)]
     pub values: Vec<AgentSettingValue>,
+    /// Optional values keyed by the selected model (used for dependent settings).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub values_by_model: Option<HashMap<String, Vec<AgentSettingValue>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_value: Option<String>,
     #[serde(default = "default_setting_apply_scope")]
