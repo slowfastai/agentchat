@@ -292,6 +292,19 @@ async fn main() {
                 )
                 .await;
             }
+            "thread/name/set" => {
+                let thread_id = params.get("threadId").and_then(Value::as_str).unwrap_or("");
+                let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+                server.record_event(&format!("thread_name:{thread_id}:{name}"));
+                write_json(
+                    &mut writer,
+                    &json!({
+                        "id": id,
+                        "result": {}
+                    }),
+                )
+                .await;
+            }
             "turn/start" => {
                 let thread_id = params
                     .get("threadId")

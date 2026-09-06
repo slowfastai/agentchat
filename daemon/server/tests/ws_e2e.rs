@@ -843,6 +843,53 @@ async fn websocket_thread_allows_duplicate_agent_sessions_with_independent_setti
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn websocket_thread_forwards_title_to_codex_backend() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_codex_harness(FakeAgentMode::Normal).await;
+            let mut ws = connect_ws(harness.port).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateThread {
+                    title: Some("Paper discussion".into()),
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+            let thread_id = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadCreated { thread_id, .. } => thread_id,
+                event => panic!("unexpected event while creating thread: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AddThreadParticipant {
+                    thread_id,
+                    agent_id: "fake".into(),
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::ThreadParticipantAdded { .. } => {}
+                event => panic!("unexpected event while adding participant: {event:?}"),
+            }
+
+            wait_for_file_contains(&harness.events_path, "thread_name:").await;
+            assert!(file_contains(
+                &harness.events_path,
+                "thread_name:fake-thread-1:Paper discussion"
+            ));
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn websocket_thread_message_mentions_route_only_selected_agents() {
     let local = tokio::task::LocalSet::new();
     local

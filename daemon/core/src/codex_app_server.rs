@@ -1431,6 +1431,23 @@ impl AgentBackend for CodexAppServerAgent {
         Ok(session_id)
     }
 
+    async fn set_session_name(&self, session_id: String, name: String) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(());
+        }
+
+        self.send_request(
+            "thread/name/set",
+            json!({
+                "threadId": session_id,
+                "name": name,
+            }),
+        )
+        .await
+        .map(|_| ())
+    }
+
     async fn set_session_settings(
         &self,
         session_id: String,

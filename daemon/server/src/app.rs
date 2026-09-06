@@ -888,6 +888,22 @@ impl AppProtocolSession {
         working_dir: String,
         settings: AgentSessionSettings,
     ) -> Result<(String, String), ResponseEvent> {
+        self.create_session_for_agent_with_settings_and_name(
+            requested_agent_id,
+            working_dir,
+            settings,
+            None,
+        )
+        .await
+    }
+
+    async fn create_session_for_agent_with_settings_and_name(
+        &mut self,
+        requested_agent_id: Option<String>,
+        working_dir: String,
+        settings: AgentSessionSettings,
+        session_name: Option<String>,
+    ) -> Result<(String, String), ResponseEvent> {
         let cwd = {
             let p = PathBuf::from(&working_dir);
             if p.is_relative() {
@@ -934,6 +950,27 @@ impl AppProtocolSession {
                     };
                 match session_result {
                     Ok(upstream_session_id) => {
+                        if let Some(session_name) = session_name
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|name| !name.is_empty())
+                        {
+                            if let Err(error) = agent
+                                .set_session_name(
+                                    upstream_session_id.clone(),
+                                    session_name.to_string(),
+                                )
+                                .await
+                            {
+                                // Naming is a presentation enhancement. A
+                                // backend that predates native naming should
+                                // still be able to create and use the session.
+                                warn!(
+                                    "failed to set {agent_id} session name to {session_name:?}: {error}"
+                                );
+                            }
+                        }
+
                         let public_session_id = format!("session-{}", Uuid::new_v4().simple());
                         self.manager.borrow_mut().register_session(
                             public_session_id.clone(),
@@ -1196,8 +1233,8 @@ impl AppProtocolSession {
         agent_id: String,
         requested_config: Option<ThreadParticipantConfig>,
     ) {
-        let working_dir = match self.thread_store.borrow().get_thread(&thread_id) {
-            Some(thread) => thread.working_dir.clone(),
+        let (working_dir, thread_title) = match self.thread_store.borrow().get_thread(&thread_id) {
+            Some(thread) => (thread.working_dir.clone(), thread.title.clone()),
             None => {
                 let _ = self.response_tx.send(ResponseEvent::Error {
                     session_id: None,
@@ -1218,10 +1255,11 @@ impl AppProtocolSession {
         );
 
         let session_id = match self
-            .create_session_for_agent_with_settings(
+            .create_session_for_agent_with_settings_and_name(
                 Some(agent_id.clone()),
                 working_dir,
                 config.settings.clone(),
+                thread_title,
             )
             .await
         {
