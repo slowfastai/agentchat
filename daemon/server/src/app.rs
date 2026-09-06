@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, warn};
@@ -24,6 +25,8 @@ use agentchat_protocol::{
     SessionSnapshot, SessionState, SessionSummary, SessionTranscript, SkillInfo, ThreadParticipant,
     ThreadParticipantConfig, ThreadSender, ThreadSnapshot, ThreadState,
 };
+
+const BEST_EFFORT_SESSION_NAME_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub struct AppProtocolSession {
     manager: Rc<RefCell<AgentManager>>,
@@ -955,19 +958,32 @@ impl AppProtocolSession {
                             .map(str::trim)
                             .filter(|name| !name.is_empty())
                         {
-                            if let Err(error) = agent
-                                .set_session_name(
+                            match tokio::time::timeout(
+                                BEST_EFFORT_SESSION_NAME_TIMEOUT,
+                                agent.set_session_name(
                                     upstream_session_id.clone(),
                                     session_name.to_string(),
-                                )
-                                .await
+                                ),
+                            )
+                            .await
                             {
-                                // Naming is a presentation enhancement. A
-                                // backend that predates native naming should
-                                // still be able to create and use the session.
-                                warn!(
-                                    "failed to set {agent_id} session name to {session_name:?}: {error}"
-                                );
+                                Ok(Ok(())) => {}
+                                Ok(Err(error)) => {
+                                    // Naming is a presentation enhancement. A
+                                    // backend that predates native naming, or
+                                    // one that rejects the request, should
+                                    // still be able to create and use the
+                                    // session.
+                                    warn!(
+                                        "failed to set {agent_id} session name to {session_name:?}: {error}"
+                                    );
+                                }
+                                Err(_) => {
+                                    warn!(
+                                        "timed out after {:?} setting {agent_id} session name to {session_name:?}",
+                                        BEST_EFFORT_SESSION_NAME_TIMEOUT
+                                    );
+                                }
                             }
                         }
 
