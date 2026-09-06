@@ -516,6 +516,39 @@ fn parse_web_port(args: &[String]) -> Result<u16, String> {
     Ok(port)
 }
 
+fn configured_websocket_port() -> Result<u16, String> {
+    let Some(raw_port) = env::var_os("AGENTCHAT_WS_PORT") else {
+        return Ok(DEFAULT_PORT);
+    };
+
+    let raw_port = raw_port
+        .to_str()
+        .ok_or_else(|| "AGENTCHAT_WS_PORT must be valid UTF-8".to_string())?;
+    let port = raw_port
+        .parse::<u16>()
+        .map_err(|_| "AGENTCHAT_WS_PORT must be a number between 0 and 65535".to_string())?;
+    if port == 0 && configured_ready_file().is_none() {
+        return Err("AGENTCHAT_WS_PORT must be a number between 1 and 65535".to_string());
+    }
+    Ok(port)
+}
+
+fn configured_ready_file() -> Option<PathBuf> {
+    let path = env::var_os("AGENTCHAT_READY_FILE")?;
+    if path.to_string_lossy().trim().is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(path))
+}
+
+fn configured_websocket_server(port: u16) -> WebSocketServer {
+    let server = WebSocketServer::new(port);
+    match configured_ready_file() {
+        Some(path) => server.loopback_only().with_ready_file(path),
+        None => server,
+    }
+}
+
 fn split_ids(value: &str) -> Vec<String> {
     value
         .split(',')
@@ -685,6 +718,7 @@ async fn execute_web(
     project_root: PathBuf,
     daemon_paths: &DaemonPaths,
     port: u16,
+    websocket_port: u16,
 ) -> Result<(), String> {
     let manager = Rc::new(RefCell::new(
         start_agents(&project_root, daemon_paths).await?,
@@ -728,7 +762,7 @@ async fn execute_web(
     let websocket_distiller = distiller.clone();
     let websocket_shutdown_rx = shutdown_rx.clone();
     let mut websocket_task = tokio::task::spawn_local(async move {
-        WebSocketServer::new(DEFAULT_PORT)
+        configured_websocket_server(websocket_port)
             .run(
                 websocket_manager,
                 websocket_shutdown_rx,
@@ -742,7 +776,11 @@ async fn execute_web(
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     println!("\nconsole:  http://{addr}");
     println!("chat:     http://{addr}/chat");
-    println!("socket:   ws://0.0.0.0:{DEFAULT_PORT}");
+    if configured_ready_file().is_some() {
+        println!("socket:   loopback (actual port published via ready file)");
+    } else {
+        println!("socket:   ws://0.0.0.0:{websocket_port}");
+    }
     println!("working:  {}", project_root.display());
     println!("\nOpen /chat to talk with agents, or / for the run console.\n");
 
@@ -897,6 +935,9 @@ fn parse_cli_options() -> Result<Option<CliOptions>, String> {
 fn print_usage() {
     println!(
         "agentchat-daemon\n\nUsage:\n  agentchat-daemon [--mobile]        Start the daemon for the app to connect to\n  agentchat-daemon web               Run console in your browser (recommended).\n                                     See `agentchat-daemon web --help`.\n  agentchat-daemon run --brief <file>\n                                     Same pipeline from the terminal.\n                                     See `agentchat-daemon run --help`.\n\nOptions:\n  --mobile            Print a terminal QR code for the current direct or relay connection so the iOS app can scan it\n  -h, --help          Show this help text\n\nEnvironment:\n  AGENTCHAT_HOME            Managed daemon home, for example ~/Library/Application Support/AgentChat\n  AGENTCHAT_AGENTS_FILE     Override the daemon-owned agents.json path\n  AGENTCHAT_MOBILE_WS_URL   Override the websocket endpoint embedded in the QR payload (must be ws://... or wss://...)\n  AGENTCHAT_AGENT_BACKEND   Select the agent backend adapter for single-agent mode\n\nAgent config precedence:\n  1. AGENTCHAT_AGENTS_JSON\n  2. AGENTCHAT_AGENTS_FILE or $AGENTCHAT_HOME/config/agents.json\n  3. .agentchat/agents.json\n  4. Single-agent AGENTCHAT_AGENT_* env vars\n  5. Built-in defaults (Codex only)\n\nExamples:\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon\n    Starts the default Codex agent\n\n  AGENTCHAT_HOME=\"$HOME/Library/Application Support/AgentChat\" \\\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon\n\n  AGENTCHAT_AGENT_ID=opencode \\\n  AGENTCHAT_AGENT_NAME=\"OpenCode (ACP)\" \\\n  AGENTCHAT_AGENT_BACKEND=acp \\\n  AGENTCHAT_AGENT_COMMAND=opencode \\\n  AGENTCHAT_AGENT_ARGS=\"acp\" \\\n  cargo run --manifest-path daemon/Cargo.toml -p agentchat-daemon --bin agentchat-daemon -- --mobile"
+    );
+    println!(
+        "\nApp-managed daemon environment:\n  AGENTCHAT_WS_PORT=0 with AGENTCHAT_READY_FILE publishes an OS-assigned loopback WebSocket endpoint atomically."
     );
 }
 
@@ -1330,6 +1371,20 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_websocket_port_requires_a_ready_file() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        clear_agent_config_env();
+
+        env::set_var("AGENTCHAT_WS_PORT", "0");
+        assert!(configured_websocket_port().is_err());
+
+        env::set_var("AGENTCHAT_READY_FILE", "/tmp/agentchat-ready.json");
+        assert_eq!(configured_websocket_port().unwrap(), 0);
+
+        clear_agent_config_env();
+    }
+
+    #[test]
     fn mobile_qr_payload_encodes_selected_agents_into_custom_scheme() {
         let payload = mobile_qr_payload_for_ws_url(
             "ws://192.168.1.10:9390",
@@ -1459,6 +1514,8 @@ mod tests {
             "AGENTCHAT_AGENT_EXPERIMENTAL_RAW_EVENTS",
             "AGENTCHAT_AGENT_PERSIST_EXTENDED_HISTORY",
             "AGENTCHAT_LOG_PATH",
+            "AGENTCHAT_WS_PORT",
+            "AGENTCHAT_READY_FILE",
         ] {
             env::remove_var(key);
         }
@@ -2088,6 +2145,13 @@ async fn main() {
                 std::process::exit(1);
             }
         };
+        let websocket_port = match configured_websocket_port() {
+            Ok(port) => port,
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        };
         if let Err(err) = init_tracing(&daemon_paths) {
             eprintln!("{err}");
             std::process::exit(1);
@@ -2096,7 +2160,12 @@ async fn main() {
         // Agents and run state are `!Send`, so the console shares their thread.
         let local = tokio::task::LocalSet::new();
         if let Err(err) = local
-            .run_until(execute_web(project_root, &daemon_paths, port))
+            .run_until(execute_web(
+                project_root,
+                &daemon_paths,
+                port,
+                websocket_port,
+            ))
             .await
         {
             error!("console failed: {err}");
@@ -2171,6 +2240,14 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    let websocket_port = match configured_websocket_port() {
+        Ok(port) => port,
+        Err(err) => {
+            error!("invalid websocket port configuration: {err}");
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    };
 
     let local = tokio::task::LocalSet::new();
 
@@ -2231,7 +2308,9 @@ async fn main() {
                             reply,
                         } => {
                             let result = match mobile_qr_availability_for_commands.require_ready() {
-                                Ok(()) => render_mobile_qr(DEFAULT_PORT, &selected_agent_ids).await,
+                                Ok(()) => {
+                                    render_mobile_qr(websocket_port, &selected_agent_ids).await
+                                }
                                 Err(err) => Err(err),
                             };
                             let _ = reply.send(result);
@@ -2269,7 +2348,7 @@ async fn main() {
                 mobile_qr_availability.set_relay_connected(true);
 
                 if cli_options.mobile_qr {
-                    match render_mobile_qr(DEFAULT_PORT, &[]).await {
+                    match render_mobile_qr(websocket_port, &[]).await {
                         Ok(output) => print_mobile_qr_output(&output),
                         Err(err) => {
                             error!("failed to prepare mobile QR output: {err}");
@@ -2293,7 +2372,7 @@ async fn main() {
                 result
             } else {
                 if cli_options.mobile_qr {
-                    match render_mobile_qr(DEFAULT_PORT, &[]).await {
+                    match render_mobile_qr(websocket_port, &[]).await {
                         Ok(output) => print_mobile_qr_output(&output),
                         Err(err) => {
                             error!("failed to prepare mobile QR output: {err}");
@@ -2304,7 +2383,7 @@ async fn main() {
                 }
 
                 info!("agent initialized, starting WebSocket server");
-                WebSocketServer::new(DEFAULT_PORT)
+                configured_websocket_server(websocket_port)
                     .run(
                         manager.clone(),
                         shutdown_rx,
