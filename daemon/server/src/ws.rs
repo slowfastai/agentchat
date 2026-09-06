@@ -4,9 +4,6 @@
 //! prompt/update flows.
 
 use std::cell::RefCell;
-use std::fs;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use futures::stream::StreamExt;
@@ -29,31 +26,11 @@ use crate::app::{serialize_event, AppProtocolSession};
 /// WebSocket server that bridges the iOS app and ACP agents.
 pub struct WebSocketServer {
     port: u16,
-    bind_host: IpAddr,
-    ready_file: Option<PathBuf>,
 }
 
 impl WebSocketServer {
     pub fn new(port: u16) -> Self {
-        Self {
-            port,
-            bind_host: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            ready_file: None,
-        }
-    }
-
-    /// Restrict this server to the local machine. The default remains
-    /// unchanged for the standalone/mobile daemon.
-    pub fn loopback_only(mut self) -> Self {
-        self.bind_host = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        self
-    }
-
-    /// Publish the actual bound address after the listener is ready. This is
-    /// used by app-managed daemons started with port 0.
-    pub fn with_ready_file(mut self, path: impl Into<PathBuf>) -> Self {
-        self.ready_file = Some(path.into());
-        self
+        Self { port }
     }
 
     /// Start listening for WebSocket connections.
@@ -65,24 +42,15 @@ impl WebSocketServer {
         skill_store: Rc<SkillStore>,
         distiller: Rc<Distiller>,
     ) -> Result<(), String> {
-        let requested_addr = SocketAddr::new(self.bind_host, self.port);
-        let listener = TcpListener::bind(requested_addr)
+        let addr = format!("0.0.0.0:{}", self.port);
+        let listener = TcpListener::bind(&addr)
             .await
-            .map_err(|e| format!("failed to bind {requested_addr}: {e}"))?;
-        let actual_addr = listener
-            .local_addr()
-            .map_err(|e| format!("failed to read bound WebSocket address: {e}"))?;
-        info!("WebSocket server listening on {}", actual_addr);
+            .map_err(|e| format!("failed to bind {addr}: {e}"))?;
+        info!("WebSocket server listening on {}", addr);
 
         let mut app_session =
             AppProtocolSession::new(manager, session_store, skill_store, distiller)
                 .map_err(|event| format!("failed to initialize app protocol session: {event:?}"))?;
-
-        let ready_file = self.ready_file.clone();
-        if let Some(path) = ready_file.as_deref() {
-            write_ready_file(path, actual_addr)?;
-        }
-
         let event_tx = app_session.event_sender();
         let (client_tx, mut client_rx) = mpsc::unbounded_channel::<ClientMessage>();
         let app_task = tokio::task::spawn_local(async move {
@@ -138,15 +106,9 @@ impl WebSocketServer {
         }
 
         drop(client_tx);
-        let app_result = app_task
+        app_task
             .await
-            .map_err(|err| format!("app protocol session task panicked: {err}"));
-
-        if let Some(path) = ready_file {
-            let _ = fs::remove_file(path);
-        }
-
-        app_result?;
+            .map_err(|err| format!("app protocol session task panicked: {err}"))?;
 
         Ok(())
     }
@@ -229,32 +191,6 @@ impl WebSocketServer {
     }
 }
 
-fn write_ready_file(path: &Path, addr: SocketAddr) -> Result<(), String> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent)
-        .map_err(|err| format!("failed to create ready file directory: {err}"))?;
-
-    let payload = serde_json::json!({
-        "pid": std::process::id(),
-        "websocket_url": format!("ws://127.0.0.1:{}", addr.port()),
-    });
-    let json = serde_json::to_vec(&payload)
-        .map_err(|err| format!("failed to serialize ready file: {err}"))?;
-    let file_name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("agentchat.ready.json");
-    let temporary_path = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
-
-    fs::write(&temporary_path, json)
-        .map_err(|err| format!("failed to write temporary ready file: {err}"))?;
-    if let Err(err) = fs::rename(&temporary_path, path) {
-        let _ = fs::remove_file(&temporary_path);
-        return Err(format!("failed to publish ready file: {err}"));
-    }
-    Ok(())
-}
-
 async fn send_shutdown_notice(
     ws_tx: &mut futures::stream::SplitSink<
         tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
@@ -273,26 +209,4 @@ async fn send_shutdown_notice(
     }
 
     let _ = ws_tx.send(Message::Close(None)).await;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ready_file_is_a_complete_atomic_json_payload() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let path = directory.path().join("daemon-ready.json");
-        let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 49321);
-
-        write_ready_file(&path, address).expect("ready file should be written");
-
-        let data = fs::read(&path).expect("ready file should exist");
-        let value: serde_json::Value = serde_json::from_slice(&data).expect("valid JSON");
-        assert_eq!(value["pid"].as_u64(), Some(u64::from(std::process::id())));
-        assert_eq!(
-            value["websocket_url"].as_str(),
-            Some("ws://127.0.0.1:49321")
-        );
-    }
 }
