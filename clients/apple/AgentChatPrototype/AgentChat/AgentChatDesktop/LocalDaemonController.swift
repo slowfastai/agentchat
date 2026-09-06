@@ -9,6 +9,13 @@ struct LocalDaemonLaunchCommand: Equatable {
     let currentDirectoryURL: URL?
 }
 
+struct LocalDaemonManagedConfiguration: Equatable {
+    let sourceBinaryURL: URL
+    let layout: LocalDaemonInstallLayout
+    let environment: [String: String]
+    let plist: String
+}
+
 struct LocalDaemonInstallLayout: Equatable {
     nonisolated static let launchAgentLabel = "dev.slowfast.agentchat.daemon"
 
@@ -354,7 +361,13 @@ final class LocalDaemonController {
     private let logger = Logger(subsystem: "dev.slowfast.AgentChatDesktop", category: "LocalDaemon")
     private var daemonProcess: Process?
     private var isStarting = false
-    private var preparedDaemonArguments: [String]?
+
+    private struct PreparedDaemonState: Equatable {
+        let daemonArguments: [String]
+        let launchAgentPlist: String?
+    }
+
+    private var preparedDaemonState: PreparedDaemonState?
 
     private init() {}
 
@@ -364,16 +377,29 @@ final class LocalDaemonController {
         }
 
         let daemonArguments: [String] = []
-        if preparedDaemonArguments == daemonArguments {
-            if let daemonProcess, daemonProcess.isRunning {
-                return
+        if let configuration = Self.managedDaemonConfiguration(daemonArguments: daemonArguments),
+           Self.isManagedDaemonInstallationCurrent(configuration: configuration),
+           await Self.canConnectToLocalDaemon() {
+            preparedDaemonState = PreparedDaemonState(
+                daemonArguments: daemonArguments,
+                launchAgentPlist: configuration.plist
+            )
+            return
+        }
+
+        if let preparedDaemonState,
+           preparedDaemonState.daemonArguments == daemonArguments {
+            if preparedDaemonState.launchAgentPlist == nil {
+                if let daemonProcess, daemonProcess.isRunning {
+                    return
+                }
+
+                if await Self.canConnectToLocalDaemon() {
+                    return
+                }
             }
 
-            if await Self.canConnectToLocalDaemon() {
-                return
-            }
-
-            preparedDaemonArguments = nil
+            self.preparedDaemonState = nil
         }
 
         if isStarting {
@@ -384,18 +410,30 @@ final class LocalDaemonController {
         defer { isStarting = false }
 
         do {
-            if try await installAndStartLaunchAgentIfPossible(daemonArguments: daemonArguments) {
-                preparedDaemonArguments = daemonArguments
+            if let configuration = try await installAndStartLaunchAgentIfPossible(daemonArguments: daemonArguments) {
+                preparedDaemonState = PreparedDaemonState(
+                    daemonArguments: daemonArguments,
+                    launchAgentPlist: configuration.plist
+                )
                 logger.info("Started local daemon via launchd LaunchAgent")
             } else if let daemonProcess, daemonProcess.isRunning {
-                preparedDaemonArguments = daemonArguments
+                preparedDaemonState = PreparedDaemonState(
+                    daemonArguments: daemonArguments,
+                    launchAgentPlist: nil
+                )
                 return
             } else if await Self.canConnectToLocalDaemon() {
-                preparedDaemonArguments = daemonArguments
+                preparedDaemonState = PreparedDaemonState(
+                    daemonArguments: daemonArguments,
+                    launchAgentPlist: nil
+                )
                 return
             } else {
                 try await launchDevelopmentChildProcess(daemonArguments: daemonArguments)
-                preparedDaemonArguments = daemonArguments
+                preparedDaemonState = PreparedDaemonState(
+                    daemonArguments: daemonArguments,
+                    launchAgentPlist: nil
+                )
             }
 
             guard await Self.waitUntilDaemonIsReachable() else {
@@ -417,16 +455,29 @@ final class LocalDaemonController {
         }
 
         let daemonArguments = Self.webDaemonArguments
-        if preparedDaemonArguments == daemonArguments {
-            if await Self.canLoadWebConsole() {
-                return true
+        if let configuration = Self.managedDaemonConfiguration(daemonArguments: daemonArguments),
+           Self.isManagedDaemonInstallationCurrent(configuration: configuration),
+           await Self.canLoadWebConsole() {
+            preparedDaemonState = PreparedDaemonState(
+                daemonArguments: daemonArguments,
+                launchAgentPlist: configuration.plist
+            )
+            return true
+        }
+
+        if let preparedDaemonState,
+           preparedDaemonState.daemonArguments == daemonArguments {
+            if preparedDaemonState.launchAgentPlist == nil {
+                if await Self.canLoadWebConsole() {
+                    return true
+                }
+
+                if let daemonProcess, daemonProcess.isRunning {
+                    return await Self.waitUntilWebConsoleIsReachable()
+                }
             }
 
-            if let daemonProcess, daemonProcess.isRunning {
-                return await Self.waitUntilWebConsoleIsReachable()
-            }
-
-            preparedDaemonArguments = nil
+            self.preparedDaemonState = nil
         }
 
         if isStarting {
@@ -437,18 +488,30 @@ final class LocalDaemonController {
         defer { isStarting = false }
 
         do {
-            if try await installAndStartLaunchAgentIfPossible(daemonArguments: daemonArguments) {
-                preparedDaemonArguments = daemonArguments
+            if let configuration = try await installAndStartLaunchAgentIfPossible(daemonArguments: daemonArguments) {
+                preparedDaemonState = PreparedDaemonState(
+                    daemonArguments: daemonArguments,
+                    launchAgentPlist: configuration.plist
+                )
                 logger.info("Started local web daemon via launchd LaunchAgent")
             } else if await Self.canLoadWebConsole() {
-                preparedDaemonArguments = daemonArguments
+                preparedDaemonState = PreparedDaemonState(
+                    daemonArguments: daemonArguments,
+                    launchAgentPlist: nil
+                )
                 return true
             } else if let daemonProcess, daemonProcess.isRunning {
-                preparedDaemonArguments = daemonArguments
+                preparedDaemonState = PreparedDaemonState(
+                    daemonArguments: daemonArguments,
+                    launchAgentPlist: nil
+                )
                 return await Self.waitUntilWebConsoleIsReachable()
             } else {
                 try await launchDevelopmentChildProcess(daemonArguments: daemonArguments)
-                preparedDaemonArguments = daemonArguments
+                preparedDaemonState = PreparedDaemonState(
+                    daemonArguments: daemonArguments,
+                    launchAgentPlist: nil
+                )
             }
 
             let reachable = await Self.waitUntilWebConsoleIsReachable()
@@ -481,30 +544,26 @@ final class LocalDaemonController {
         daemonProcess = nil
     }
 
-    private func installAndStartLaunchAgentIfPossible(daemonArguments: [String] = []) async throws -> Bool {
+    private func installAndStartLaunchAgentIfPossible(daemonArguments: [String] = []) async throws -> LocalDaemonManagedConfiguration? {
         if Self.isSandboxedDesktopBuild() {
             logger.notice("Skipping LaunchAgent install because the desktop app is running sandboxed")
-            return false
+            return nil
         }
 
-        guard let installableBinaryURL = Self.resolvedInstallableDaemonBinaryURL() else {
-            return false
+        guard let configuration = Self.managedDaemonConfiguration(daemonArguments: daemonArguments) else {
+            return nil
         }
 
-        let layout = LocalDaemonInstallLayout.make()
-        let environment = LocalDaemonEnvironment.make(
-            homeDirectoryPath: layout.homeDirectoryURL.path,
-            installLayout: layout
-        ).values
-
-        try Self.installManagedDaemon(
-            from: installableBinaryURL,
-            layout: layout,
-            environment: environment,
-            daemonArguments: daemonArguments
-        )
-        try Self.bootstrapManagedDaemon(layout: layout)
-        return true
+        if !Self.isManagedDaemonInstallationCurrent(configuration: configuration) {
+            try Self.installManagedDaemon(
+                from: configuration.sourceBinaryURL,
+                layout: configuration.layout,
+                environment: configuration.environment,
+                daemonArguments: daemonArguments
+            )
+        }
+        try Self.bootstrapManagedDaemon(layout: configuration.layout)
+        return configuration
     }
 
     private func launchDevelopmentChildProcess(daemonArguments: [String] = []) async throws {
@@ -662,6 +721,61 @@ final class LocalDaemonController {
         }
 
         return command.executableURL
+    }
+
+    nonisolated static func managedDaemonConfiguration(
+        daemonArguments: [String] = [],
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        sourceFilePath: String = #filePath,
+        pathExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
+        executableExists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> LocalDaemonManagedConfiguration? {
+        guard let sourceBinaryURL = resolvedInstallableDaemonBinaryURL(
+            environment: environment,
+            sourceFilePath: sourceFilePath,
+            pathExists: pathExists,
+            executableExists: executableExists
+        ) else {
+            return nil
+        }
+
+        let layout = LocalDaemonInstallLayout.make()
+        let managedEnvironment = LocalDaemonEnvironment.make(
+            from: environment,
+            homeDirectoryPath: layout.homeDirectoryURL.path,
+            installLayout: layout
+        ).values
+        let plist = makeLaunchAgentPlist(
+            layout: layout,
+            environment: managedEnvironment,
+            daemonArguments: daemonArguments
+        )
+
+        return LocalDaemonManagedConfiguration(
+            sourceBinaryURL: sourceBinaryURL,
+            layout: layout,
+            environment: managedEnvironment,
+            plist: plist
+        )
+    }
+
+    nonisolated static func isManagedDaemonInstallationCurrent(
+        configuration: LocalDaemonManagedConfiguration,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        let plistURL = configuration.layout.launchAgentPlistURL
+        let installedBinaryURL = configuration.layout.daemonBinaryURL
+        guard fileManager.fileExists(atPath: plistURL.path),
+              fileManager.fileExists(atPath: installedBinaryURL.path),
+              let installedPlist = try? String(contentsOf: plistURL, encoding: .utf8),
+              installedPlist == configuration.plist else {
+            return false
+        }
+
+        return fileManager.contentsEqual(
+            atPath: configuration.sourceBinaryURL.path,
+            andPath: installedBinaryURL.path
+        )
     }
 
     nonisolated static func resolvedWebLaunchCommand(

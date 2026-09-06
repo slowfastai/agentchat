@@ -87,8 +87,11 @@ struct AgentChatDesktopApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("AgentChat Web", id: "web-chat") {
+        WindowGroup(NotificationHelper.webChatWindowTitle, id: "web-chat") {
             WebChatWindowView()
+                .onAppear {
+                    bootstrapStoreIfNeeded()
+                }
         }
         .defaultSize(width: 1440, height: 920)
         .windowResizability(.contentSize)

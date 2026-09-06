@@ -68,6 +68,7 @@ final class DaemonChatStore: ObservableObject {
     private var snapshotsByThread: [String: DaemonThreadSnapshot] = [:]
     private var timelineByThread: [String: [DaemonTimelineEntry]] = [:]
     private var cursorByThread: [String: UInt64] = [:]
+    private var notificationReplayCutoffs: [String: UInt64] = [:]
     private var assistantTurns = AssistantTurnReducer()
     private var participantSelectionWasCustomized = false
     private var reconnectAttempt = 0
@@ -636,6 +637,7 @@ final class DaemonChatStore: ObservableObject {
                 timelineByThread[event.threadID] = []
                 timeline = []
                 cursorByThread[event.threadID] = 0
+                notificationReplayCutoffs[event.threadID] = 0
                 Task {
                     await send(AttachThreadRequest(threadID: event.threadID, afterSeq: nil))
                     for agentID in agentIDsToAdd {
@@ -645,7 +647,11 @@ final class DaemonChatStore: ObservableObject {
                     await send(AttachThreadRequest(threadID: event.threadID, afterSeq: nil))
                 }
             case "thread_list":
-                reconcileThreadSummaries(try decoder.decode(ThreadListEvent.self, from: data).threads)
+                let event = try decoder.decode(ThreadListEvent.self, from: data)
+                notificationReplayCutoffs = Dictionary(
+                    uniqueKeysWithValues: event.threads.map { ($0.threadID, $0.lastThreadSeq) }
+                )
+                reconcileThreadSummaries(event.threads)
                 applyThreadPresentation()
                 let candidateThreadID = activeThreadID ?? threads.first?.threadID
                 if let candidateThreadID,
@@ -659,6 +665,7 @@ final class DaemonChatStore: ObservableObject {
                 let snapshot = try decoder.decode(ThreadSnapshotEvent.self, from: data).snapshot
                 snapshotsByThread[snapshot.threadID] = snapshot
                 cursorByThread[snapshot.threadID] = max(cursorByThread[snapshot.threadID] ?? 0, snapshot.lastThreadSeq)
+                notificationReplayCutoffs[snapshot.threadID] = snapshot.lastThreadSeq
                 mergeThreadSummary(
                     DaemonThreadSummary(
                         threadID: snapshot.threadID,
@@ -680,11 +687,16 @@ final class DaemonChatStore: ObservableObject {
                 let event = try decoder.decode(ThreadClosedEvent.self, from: data)
                 pinnedThreadIDs.remove(event.threadID)
                 hiddenThreadIDs.remove(event.threadID)
+                notificationReplayCutoffs.removeValue(forKey: event.threadID)
                 persistThreadPreferences()
                 removeThreadFromLocalState(event.threadID)
             case "thread_replay_complete":
                 let event = try decoder.decode(ThreadReplayCompleteEvent.self, from: data)
                 cursorByThread[event.threadID] = max(cursorByThread[event.threadID] ?? 0, event.lastThreadSeq)
+                notificationReplayCutoffs[event.threadID] = max(
+                    notificationReplayCutoffs[event.threadID] ?? 0,
+                    event.lastThreadSeq
+                )
                 connectionState = .online
             case "thread_participant_added":
                 let event = try decoder.decode(ThreadParticipantAddedEvent.self, from: data)
@@ -771,8 +783,16 @@ final class DaemonChatStore: ObservableObject {
                 touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
             case "thread_agent_turn_end":
                 let event = try decoder.decode(ThreadAgentTurnEndEvent.self, from: data)
-                finalizeAssistantTurn(event)
+                let state = finalizeAssistantTurn(event)
                 touchThread(threadID: event.threadID, lastThreadSeq: event.threadSeq)
+                if shouldNotifyForLiveTurnEnd(event) {
+                    NotificationHelper.sendAgentResponseNotification(
+                        agentName: agentDisplayName(for: state?.agentID ?? event.agentID),
+                        message: state?.response ?? "",
+                        threadID: event.threadID,
+                        eventID: "\(event.threadID):\(event.threadSeq)"
+                    )
+                }
             case "error":
                 let event = try decoder.decode(ErrorEvent.self, from: data)
                 handleDaemonError(event)
@@ -840,14 +860,32 @@ final class DaemonChatStore: ObservableObject {
         )
     }
 
-    private func finalizeAssistantTurn(_ event: ThreadAgentTurnEndEvent) {
+    private func finalizeAssistantTurn(_ event: ThreadAgentTurnEndEvent) -> AssistantTurnState? {
         guard let state = assistantTurns.finish(turnEnd: event) else {
-            return
+            return nil
         }
         appendTimeline(
             state.timelineEntry(tintName: tintName(for: state.agentID)),
             to: event.threadID
         )
+        return state
+    }
+
+    private func shouldNotifyForLiveTurnEnd(_ event: ThreadAgentTurnEndEvent) -> Bool {
+        Self.shouldNotifyForLiveTurnEnd(
+            threadSeq: event.threadSeq,
+            replayCutoff: notificationReplayCutoffs[event.threadID]
+        )
+    }
+
+    nonisolated static func shouldNotifyForLiveTurnEnd(
+        threadSeq: UInt64,
+        replayCutoff: UInt64?
+    ) -> Bool {
+        guard let replayCutoff else {
+            return true
+        }
+        return threadSeq > replayCutoff
     }
 
     private func upsertParticipant(_ participant: DaemonThreadParticipant, in threadID: String) {
@@ -929,6 +967,7 @@ final class DaemonChatStore: ObservableObject {
         snapshotsByThread.removeValue(forKey: threadID)
         timelineByThread.removeValue(forKey: threadID)
         cursorByThread.removeValue(forKey: threadID)
+        notificationReplayCutoffs.removeValue(forKey: threadID)
         assistantTurns.removeStates(for: threadID)
 
         if activeThreadID == threadID {
@@ -1694,6 +1733,7 @@ final class DaemonChatStore: ObservableObject {
             snapshotsByThread.removeValue(forKey: removedThreadID)
             timelineByThread.removeValue(forKey: removedThreadID)
             cursorByThread.removeValue(forKey: removedThreadID)
+            notificationReplayCutoffs.removeValue(forKey: removedThreadID)
             assistantTurns.removeStates(for: removedThreadID)
             pinnedThreadIDs.remove(removedThreadID)
             hiddenThreadIDs.remove(removedThreadID)

@@ -3,8 +3,23 @@ import UserNotifications
 import AppKit
 
 enum NotificationHelper {
+    static let webChatWindowTitle = "AgentChat Web"
     static var isAuthorized = false
     private static var deliveredEventIDs = Set<String>()
+
+    static func shouldSuppressForegroundNotification(
+        appIsActive: Bool,
+        keyWindowTitle: String?
+    ) -> Bool {
+        appIsActive && keyWindowTitle == webChatWindowTitle
+    }
+
+    static func shouldSuppressForegroundNotification() -> Bool {
+        shouldSuppressForegroundNotification(
+            appIsActive: NSApp.isActive,
+            keyWindowTitle: NSApp.keyWindow?.title
+        )
+    }
 
     static func configure() {
         UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
@@ -39,7 +54,7 @@ enum NotificationHelper {
         threadID: String? = nil,
         eventID: String? = nil
     ) {
-        guard isAuthorized else { return }
+        guard isAuthorized, !shouldSuppressForegroundNotification() else { return }
         if let eventID {
             guard deliveredEventIDs.insert(eventID).inserted else { return }
         }
@@ -94,6 +109,9 @@ private final class NotificationDelegate: NSObject, UNUserNotificationCenterDele
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        [.banner, .sound]
+        if NotificationHelper.shouldSuppressForegroundNotification() {
+            return []
+        }
+        return [.banner, .sound]
     }
 }

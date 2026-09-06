@@ -122,6 +122,28 @@ struct AgentChatDesktopTests {
         ))
     }
 
+    @Test func foregroundNotificationsAreSuppressedOnlyForTheActiveWebChatWindow() {
+        #expect(NotificationHelper.shouldSuppressForegroundNotification(
+            appIsActive: true,
+            keyWindowTitle: NotificationHelper.webChatWindowTitle
+        ))
+        #expect(!NotificationHelper.shouldSuppressForegroundNotification(
+            appIsActive: false,
+            keyWindowTitle: NotificationHelper.webChatWindowTitle
+        ))
+        #expect(!NotificationHelper.shouldSuppressForegroundNotification(
+            appIsActive: true,
+            keyWindowTitle: "AgentChat Desktop"
+        ))
+    }
+
+    @Test func daemonStoreDoesNotNotifyForReplayedTurnEnds() {
+        #expect(!DaemonChatStore.shouldNotifyForLiveTurnEnd(threadSeq: 10, replayCutoff: 10))
+        #expect(!DaemonChatStore.shouldNotifyForLiveTurnEnd(threadSeq: 9, replayCutoff: 10))
+        #expect(DaemonChatStore.shouldNotifyForLiveTurnEnd(threadSeq: 11, replayCutoff: 10))
+        #expect(DaemonChatStore.shouldNotifyForLiveTurnEnd(threadSeq: 1, replayCutoff: nil))
+    }
+
     @Test @MainActor func agentUpdatePersistsDisplayNameAndAvatar() {
         let suiteName = "AgentChatDesktopTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

@@ -1046,7 +1046,6 @@ const state = {
   messages: new Map(),
   currentThreadId: null,
   attached: new Set(),
-  notificationReplayCutoffs: new Map(),
   configuringParticipantId: null,
   mentionCandidates: [],
   mentionIndex: 0,
@@ -1621,7 +1620,7 @@ function renderMessage(message) {
   const tools = message.tools && message.tools.length ? `<div class="assistant-tools">${message.tools.map((tool) => `<div class="tool-row"><span class="tool-status ${tool.status === "failed" ? "failed" : ""}">${escapeHtml(tool.status || "working")}</span><span>${escapeHtml(tool.title)}</span></div>`).join("")}</div>` : "";
   const plan = message.plan ? `<details class="assistant-plan"><summary>Plan update</summary><div class="detail">${escapeHtml(JSON.stringify(message.plan, null, 2))}</div></details>` : "";
   const body = message.response
-    ? `<details class="assistant-response" data-response-key="${escapeHtml(message.key)}"${message.responseExpanded === false ? "" : " open"}><summary>Response</summary><div class="message-body markdown">${renderMarkdown(message.response)}</div></details>`
+    ? `<details class="assistant-response" data-response-key="${escapeHtml(message.key)}"${message.responseExpanded === true ? " open" : ""}><summary>Response</summary><div class="message-body markdown">${renderMarkdown(message.response)}</div></details>`
     : (status === "streaming" ? '<div class="message-body">Working...</div>' : "");
   const footer = status === "streaming" ? "streaming" : (message.stop_reason || status);
   const avatar = message.avatar ? `<span class="message-avatar">${escapeHtml(message.avatar)}</span>` : "";
@@ -1639,21 +1638,6 @@ function assistantMessage(event) {
     messages.push(message);
   }
   return message;
-}
-
-function notifyNativeAgentResponse(event, message) {
-  const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.agentchatSystemNotification;
-  if (!handler || typeof handler.postMessage !== "function") return;
-  handler.postMessage({
-    event: "thread_agent_turn_end",
-    event_id: `${event.thread_id}:${event.thread_seq}`,
-    thread_id: event.thread_id,
-    thread_seq: event.thread_seq,
-    agent_id: event.agent_id,
-    agent_name: message.display_name || event.agent_id || "Agent",
-    response: message.response || "",
-    stop_reason: event.stop_reason || "EndTurn",
-  });
 }
 
 function updateSetting(participantId, settingId, value) {
@@ -1678,7 +1662,6 @@ function selectThread(threadId) {
   state.currentThreadId = threadId;
   state.timelineFollowing = true;
   state.attached.delete(threadId);
-  state.notificationReplayCutoffs.delete(threadId);
   state.messages.set(threadId, []);
   renderAll();
   send({ type: "attach_thread", thread_id: threadId, after_seq: 0 });
@@ -1705,7 +1688,6 @@ function handleEvent(event) {
       break;
     case "thread_snapshot":
       state.snapshots.set(event.snapshot.thread_id, event.snapshot);
-      state.notificationReplayCutoffs.set(event.snapshot.thread_id, event.snapshot.last_thread_seq);
       updateThreadSummary(event.snapshot.thread_id, {
         title: event.snapshot.title,
         working_dir: event.snapshot.working_dir,
@@ -1789,8 +1771,6 @@ function handleEvent(event) {
         const message = assistantMessage(event);
         message.state = "completed";
         message.stop_reason = event.stop_reason;
-        const replayCutoff = state.notificationReplayCutoffs.get(event.thread_id);
-        if (replayCutoff === undefined || event.thread_seq > replayCutoff) notifyNativeAgentResponse(event, message);
         updateThreadSummary(event.thread_id, { last_thread_seq: event.thread_seq, state: "idle" });
         if (state.currentThreadId === event.thread_id) renderAll();
       }
@@ -1996,8 +1976,6 @@ mod tests {
             "sidebar-collapsed",
             "inspector-collapsed",
             "setPanelCollapsed",
-            "notifyNativeAgentResponse",
-            "notificationReplayCutoffs",
             "assistant-response",
             "responseExpanded",
             "data-response-key",
@@ -2005,5 +1983,8 @@ mod tests {
         ] {
             assert!(PAGE.contains(marker), "chat page is missing {marker}");
         }
+        assert!(PAGE.contains("message.responseExpanded === true ? \" open\" : \"\""));
+        assert!(!PAGE.contains("message.responseExpanded === false ? \"\" : \" open\""));
+        assert!(!PAGE.contains("agentchatSystemNotification"));
     }
 }

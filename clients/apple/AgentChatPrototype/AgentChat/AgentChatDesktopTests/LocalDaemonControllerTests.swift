@@ -291,4 +291,38 @@ struct LocalDaemonControllerTests {
         #expect(plist.contains("<string>--port</string>"))
         #expect(plist.contains("<string>9391</string>"))
     }
+
+    @Test func managedDaemonInstallationRequiresMatchingPlistAndBinary() throws {
+        let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("AgentChatDaemonConfigurationTests-\(UUID().uuidString)", isDirectory: true)
+        let homeURL = rootURL.appendingPathComponent("home", isDirectory: true)
+        let layout = LocalDaemonInstallLayout.make(homeDirectoryURL: homeURL)
+        let sourceBinaryURL = rootURL.appendingPathComponent("source-daemon")
+        let configuration = LocalDaemonManagedConfiguration(
+            sourceBinaryURL: sourceBinaryURL,
+            layout: layout,
+            environment: [:],
+            plist: "desired-plist"
+        )
+        let fileManager = FileManager.default
+
+        defer {
+            try? fileManager.removeItem(at: rootURL)
+        }
+
+        try fileManager.createDirectory(at: layout.binDirectoryURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: layout.launchAgentsDirectoryURL, withIntermediateDirectories: true)
+        try Data("daemon-binary".utf8).write(to: sourceBinaryURL)
+        try Data("daemon-binary".utf8).write(to: layout.daemonBinaryURL)
+        try configuration.plist.write(to: layout.launchAgentPlistURL, atomically: true, encoding: .utf8)
+
+        #expect(LocalDaemonController.isManagedDaemonInstallationCurrent(configuration: configuration))
+
+        try "changed-plist".write(to: layout.launchAgentPlistURL, atomically: true, encoding: .utf8)
+        #expect(!LocalDaemonController.isManagedDaemonInstallationCurrent(configuration: configuration))
+
+        try configuration.plist.write(to: layout.launchAgentPlistURL, atomically: true, encoding: .utf8)
+        try Data("changed-binary".utf8).write(to: layout.daemonBinaryURL)
+        #expect(!LocalDaemonController.isManagedDaemonInstallationCurrent(configuration: configuration))
+    }
 }
