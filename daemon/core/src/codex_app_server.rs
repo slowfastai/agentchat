@@ -21,6 +21,17 @@ type TurnWaiters = Rc<RefCell<HashMap<String, oneshot::Sender<Result<AgentPrompt
 type CompletedTurns = Rc<RefCell<HashMap<String, Result<AgentPromptResult, String>>>>;
 type ActiveTurns = Rc<RefCell<HashMap<String, String>>>;
 
+struct PendingRequestCleanup {
+    pending_requests: PendingRequests,
+    id: u64,
+}
+
+impl Drop for PendingRequestCleanup {
+    fn drop(&mut self) {
+        self.pending_requests.borrow_mut().remove(&self.id);
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CodexApprovalStrategy {
     Decline,
@@ -1210,6 +1221,10 @@ impl CodexAppServerAgent {
         let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending_requests.borrow_mut().insert(id, tx);
+        let _pending_request_cleanup = PendingRequestCleanup {
+            pending_requests: self.pending_requests.clone(),
+            id,
+        };
 
         let request = json!({
             "jsonrpc": "2.0",
@@ -1219,7 +1234,6 @@ impl CodexAppServerAgent {
         });
 
         if let Err(err) = write_json(&self.writer, &request).await {
-            self.pending_requests.borrow_mut().remove(&id);
             return Err(err);
         }
 
@@ -1429,6 +1443,23 @@ impl AgentBackend for CodexAppServerAgent {
             .borrow_mut()
             .insert(session_id.clone(), settings);
         Ok(session_id)
+    }
+
+    async fn set_session_name(&self, session_id: String, name: String) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(());
+        }
+
+        self.send_request(
+            "thread/name/set",
+            json!({
+                "threadId": session_id,
+                "name": name,
+            }),
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn set_session_settings(

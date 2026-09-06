@@ -100,6 +100,13 @@ pub trait AgentBackend {
         Ok(session_id)
     }
 
+    /// Sets the human-readable name of an upstream session when the backend
+    /// supports it. Backends without a native session-name API can leave this
+    /// as a no-op.
+    async fn set_session_name(&self, _session_id: String, _name: String) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Changes settings for the next turn of a session.
     ///
     /// Backends that do not support runtime settings reject non-empty values

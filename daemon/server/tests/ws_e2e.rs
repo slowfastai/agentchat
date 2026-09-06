@@ -35,6 +35,8 @@ enum FakeAgentMode {
     WaitForCancel,
     ExitAfterSession,
     ApprovalRequests,
+    NameSetError,
+    NameSetNoResponse,
 }
 
 impl FakeAgentMode {
@@ -44,6 +46,8 @@ impl FakeAgentMode {
             Self::WaitForCancel => "wait_for_cancel",
             Self::ExitAfterSession => "exit_after_session",
             Self::ApprovalRequests => "approval_requests",
+            Self::NameSetError => "name_set_error",
+            Self::NameSetNoResponse => "name_set_no_response",
         }
     }
 }
@@ -834,6 +838,139 @@ async fn websocket_thread_allows_duplicate_agent_sessions_with_independent_setti
                 }
             }
             assert!(saw_first && saw_second);
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn websocket_thread_forwards_title_to_codex_backend() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_codex_harness(FakeAgentMode::Normal).await;
+            let mut ws = connect_ws(harness.port).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateThread {
+                    title: Some("Paper discussion".into()),
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+            let thread_id = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadCreated { thread_id, .. } => thread_id,
+                event => panic!("unexpected event while creating thread: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AddThreadParticipant {
+                    thread_id,
+                    agent_id: "fake".into(),
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::ThreadParticipantAdded { .. } => {}
+                event => panic!("unexpected event while adding participant: {event:?}"),
+            }
+
+            wait_for_file_contains(&harness.events_path, "thread_name:").await;
+            assert!(file_contains(
+                &harness.events_path,
+                "thread_name:fake-thread-1:Paper discussion"
+            ));
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn websocket_thread_survives_codex_name_set_error() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_codex_harness(FakeAgentMode::NameSetError).await;
+            let mut ws = connect_ws(harness.port).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateThread {
+                    title: Some("Paper discussion".into()),
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+            let thread_id = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadCreated { thread_id, .. } => thread_id,
+                event => panic!("unexpected event while creating thread: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AddThreadParticipant {
+                    thread_id,
+                    agent_id: "fake".into(),
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::ThreadParticipantAdded { .. } => {}
+                event => panic!("unexpected event while adding participant: {event:?}"),
+            }
+
+            wait_for_file_contains(&harness.events_path, "thread_name:").await;
+
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+            harness.finish().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn websocket_thread_survives_codex_name_set_timeout() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let harness = start_codex_harness(FakeAgentMode::NameSetNoResponse).await;
+            let mut ws = connect_ws(harness.port).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateThread {
+                    title: Some("Paper discussion".into()),
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+            let thread_id = match receive_event(&mut ws).await {
+                ResponseEvent::ThreadCreated { thread_id, .. } => thread_id,
+                event => panic!("unexpected event while creating thread: {event:?}"),
+            };
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::AddThreadParticipant {
+                    thread_id,
+                    agent_id: "fake".into(),
+                },
+            )
+            .await;
+            match receive_event(&mut ws).await {
+                ResponseEvent::ThreadParticipantAdded { .. } => {}
+                event => panic!("unexpected event while adding participant: {event:?}"),
+            }
+
+            wait_for_file_contains(&harness.events_path, "thread_name:").await;
 
             ws.send(Message::Close(None)).await.unwrap();
             drop(ws);

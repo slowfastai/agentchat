@@ -11,6 +11,8 @@ enum FakeAgentMode {
     WaitForCancel,
     ExitAfterSession,
     ApprovalRequests,
+    NameSetError,
+    NameSetNoResponse,
 }
 
 impl FakeAgentMode {
@@ -19,6 +21,8 @@ impl FakeAgentMode {
             Ok("wait_for_cancel") => Self::WaitForCancel,
             Ok("exit_after_session") => Self::ExitAfterSession,
             Ok("approval_requests") => Self::ApprovalRequests,
+            Ok("name_set_error") => Self::NameSetError,
+            Ok("name_set_no_response") => Self::NameSetNoResponse,
             _ => Self::Normal,
         }
     }
@@ -292,6 +296,36 @@ async fn main() {
                 )
                 .await;
             }
+            "thread/name/set" => {
+                let thread_id = params.get("threadId").and_then(Value::as_str).unwrap_or("");
+                let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+                server.record_event(&format!("thread_name:{thread_id}:{name}"));
+                if server.mode == FakeAgentMode::NameSetNoResponse {
+                    continue;
+                }
+                if server.mode == FakeAgentMode::NameSetError {
+                    write_json(
+                        &mut writer,
+                        &json!({
+                            "id": id,
+                            "error": {
+                                "code": -32000,
+                                "message": "fake thread/name/set failure"
+                            }
+                        }),
+                    )
+                    .await;
+                    continue;
+                }
+                write_json(
+                    &mut writer,
+                    &json!({
+                        "id": id,
+                        "result": {}
+                    }),
+                )
+                .await;
+            }
             "turn/start" => {
                 let thread_id = params
                     .get("threadId")
@@ -424,7 +458,10 @@ async fn main() {
                 }
 
                 match server.mode {
-                    FakeAgentMode::Normal | FakeAgentMode::ExitAfterSession => {
+                    FakeAgentMode::Normal
+                    | FakeAgentMode::ExitAfterSession
+                    | FakeAgentMode::NameSetError
+                    | FakeAgentMode::NameSetNoResponse => {
                         let tool_id = "tool-1";
                         write_json(
                             &mut writer,
