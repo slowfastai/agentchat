@@ -118,6 +118,7 @@ struct CodexOptions {
     experimental_raw_events: bool,
     persist_extended_history: bool,
     approval_strategy: CodexApprovalStrategy,
+    mcp_elicitation_servers: Vec<String>,
     default_settings: AgentSessionSettings,
 }
 
@@ -201,6 +202,11 @@ impl CodexOptions {
                 false,
             )?,
             approval_strategy: CodexApprovalStrategy::from_config(config)?,
+            mcp_elicitation_servers: config_extra_string_list(
+                config,
+                "mcp_elicitation_servers",
+                "mcpElicitationServers",
+            )?,
             default_settings: AgentSessionSettings {
                 model: config_extra_string(config, &["model", "default_model"]),
                 reasoning_effort: config_extra_string(
@@ -253,6 +259,28 @@ fn config_extra_string(config: &AgentConfig, keys: &[&str]) -> Option<String> {
             .filter(|value| !value.is_empty())
             .map(str::to_string)
     })
+}
+
+fn config_extra_string_list(
+    config: &AgentConfig,
+    snake_case: &str,
+    camel_case: &str,
+) -> Result<Vec<String>, String> {
+    match config_extra_value(config, snake_case, camel_case) {
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("codex {snake_case} must contain only strings"))
+            })
+            .collect(),
+        Some(Value::Null) | None => Ok(Vec::new()),
+        Some(_) => Err(format!("codex {snake_case} must be an array of strings")),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -772,13 +800,18 @@ fn tool_user_input_flow(request_id: u64, params: &Value) -> Option<RequestFlowUp
     })
 }
 
-fn mcp_elicitation_flow(request_id: u64, params: &Value) -> Option<RequestFlowUpdate> {
+fn mcp_elicitation_flow(
+    request_id: u64,
+    params: &Value,
+    options: &CodexOptions,
+) -> Option<RequestFlowUpdate> {
     let thread_id = request_thread_id(params)?;
     let tool_call_id = request_id_from_params("mcp-elicitation", request_id, params);
     let server_name = params
         .get("serverName")
         .and_then(Value::as_str)
         .unwrap_or("mcp");
+    let accepted = accepts_mcp_elicitation(params, options);
     let mut lines = vec![format!(
         "Codex requested MCP elicitation from {server_name}."
     )];
@@ -793,7 +826,11 @@ fn mcp_elicitation_flow(request_id: u64, params: &Value) -> Option<RequestFlowUp
         params.get("mode").and_then(Value::as_str),
     );
     let requested_content = Some(lines.join("\n"));
-    lines.push("Decision: daemon cancelled the elicitation.".into());
+    lines.push(if accepted {
+        "Decision: daemon auto-approved the Shua MCP tool call.".into()
+    } else {
+        "Decision: daemon cancelled the elicitation.".into()
+    });
     let resolved_content = Some(lines.join("\n"));
 
     Some(RequestFlowUpdate {
@@ -807,9 +844,35 @@ fn mcp_elicitation_flow(request_id: u64, params: &Value) -> Option<RequestFlowUp
         resolved_update: tool_update(
             tool_call_id,
             format!("MCP Input: {server_name}"),
-            "Cancelled",
+            if accepted { "Approved" } else { "Cancelled" },
             resolved_content,
         ),
+    })
+}
+
+fn accepts_mcp_elicitation(params: &Value, options: &CodexOptions) -> bool {
+    let Some(server_name) = params.get("serverName").and_then(Value::as_str) else {
+        return false;
+    };
+
+    options.approval_strategy.is_approved()
+        && params.get("mode").and_then(Value::as_str) == Some("form")
+        && options
+            .mcp_elicitation_servers
+            .iter()
+            .any(|allowed| allowed == server_name)
+}
+
+fn mcp_elicitation_response(id: u64, params: &Value, options: &CodexOptions) -> Value {
+    let accepted = accepts_mcp_elicitation(params, options);
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": {
+            "action": if accepted { "accept" } else { "cancel" },
+            "content": if accepted { json!({}) } else { Value::Null },
+            "_meta": null
+        }
     })
 }
 
@@ -826,7 +889,7 @@ async fn handle_server_request(
         "item/fileChange/requestApproval" => file_change_request_flow(id, &params, &options),
         "item/permissions/requestApproval" => permissions_request_flow(id, &params, &options),
         "item/tool/requestUserInput" => tool_user_input_flow(id, &params),
-        "mcpServer/elicitation/request" => mcp_elicitation_flow(id, &params),
+        "mcpServer/elicitation/request" => mcp_elicitation_flow(id, &params, &options),
         _ => None,
     };
 
@@ -865,11 +928,7 @@ async fn handle_server_request(
             "id": id,
             "result": { "answers": {} }
         }),
-        "mcpServer/elicitation/request" => json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": { "action": "cancel", "content": null, "_meta": null }
-        }),
+        "mcpServer/elicitation/request" => mcp_elicitation_response(id, &params, &options),
         _ => json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -1589,5 +1648,94 @@ impl AgentBackend for CodexAppServerAgent {
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(extra: HashMap<String, Value>) -> AgentConfig {
+        AgentConfig {
+            id: "codex".into(),
+            name: "Codex".into(),
+            backend: "codex_app_server".into(),
+            command: "codex".into(),
+            args: Vec::new(),
+            working_dir: None,
+            env_vars: HashMap::new(),
+            extra,
+        }
+    }
+
+    fn tool_approval_params(server_name: &str, mode: &str) -> Value {
+        json!({
+            "threadId": "thread-1",
+            "serverName": server_name,
+            "mode": mode,
+            "message": "Allow the MCP server to run a tool?",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        })
+    }
+
+    #[test]
+    fn configured_mcp_server_elicitations_are_accepted_with_empty_content() {
+        let options = CodexOptions::from_config(&config(HashMap::from([
+            ("approval_strategy".into(), json!("accept")),
+            ("mcp_elicitation_servers".into(), json!(["shua"])),
+        ])))
+        .expect("valid Codex options");
+        let params = tool_approval_params("shua", "form");
+
+        assert!(accepts_mcp_elicitation(&params, &options));
+        assert_eq!(
+            mcp_elicitation_response(7, &params, &options),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 7,
+                "result": {
+                    "action": "accept",
+                    "content": {},
+                    "_meta": null
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn unconfigured_or_non_form_mcp_elicitations_remain_cancelled() {
+        let options = CodexOptions::from_config(&config(HashMap::from([
+            ("approval_strategy".into(), json!("accept")),
+            ("mcp_elicitation_servers".into(), json!(["shua"])),
+        ])))
+        .expect("valid Codex options");
+
+        for params in [
+            tool_approval_params("other", "form"),
+            tool_approval_params("shua", "url"),
+        ] {
+            assert!(!accepts_mcp_elicitation(&params, &options));
+            assert_eq!(
+                mcp_elicitation_response(8, &params, &options)["result"]["action"],
+                "cancel"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_elicitation_acceptance_still_requires_approval_strategy() {
+        let options = CodexOptions::from_config(&config(HashMap::from([
+            ("approval_strategy".into(), json!("decline")),
+            ("mcp_elicitation_servers".into(), json!(["shua"])),
+        ])))
+        .expect("valid Codex options");
+
+        assert!(!accepts_mcp_elicitation(
+            &tool_approval_params("shua", "form"),
+            &options
+        ));
     }
 }
