@@ -827,7 +827,17 @@ fn mcp_elicitation_flow(
     );
     let requested_content = Some(lines.join("\n"));
     lines.push(if accepted {
-        "Decision: daemon auto-approved the Shua MCP tool call.".into()
+        match &options.approval_strategy {
+            CodexApprovalStrategy::Accept => format!(
+                "Decision: daemon auto-approved the trusted MCP tool call from {server_name}."
+            ),
+            CodexApprovalStrategy::AcceptForSession => format!(
+                "Decision: daemon auto-approved the trusted MCP tool call from {server_name} for this session."
+            ),
+            CodexApprovalStrategy::Decline => unreachable!(
+                "a declined approval strategy cannot accept an MCP elicitation"
+            ),
+        }
     } else {
         "Decision: daemon cancelled the elicitation.".into()
     });
@@ -856,22 +866,40 @@ fn accepts_mcp_elicitation(params: &Value, options: &CodexOptions) -> bool {
     };
 
     options.approval_strategy.is_approved()
-        && params.get("mode").and_then(Value::as_str) == Some("form")
+        && is_mcp_tool_approval(params)
         && options
             .mcp_elicitation_servers
             .iter()
             .any(|allowed| allowed == server_name)
 }
 
+fn is_mcp_tool_approval(params: &Value) -> bool {
+    let Some(metadata) = params.get("_meta").and_then(Value::as_object) else {
+        return false;
+    };
+
+    params.get("mode").and_then(Value::as_str) == Some("form")
+        && metadata.get("codex_approval_kind").and_then(Value::as_str) == Some("mcp_tool_call")
+        && metadata.get("codex_request_type").and_then(Value::as_str) == Some("approval_request")
+}
+
 fn mcp_elicitation_response(id: u64, params: &Value, options: &CodexOptions) -> Value {
     let accepted = accepts_mcp_elicitation(params, options);
+    let response_meta = if accepted {
+        match &options.approval_strategy {
+            CodexApprovalStrategy::AcceptForSession => json!({ "persist": "session" }),
+            CodexApprovalStrategy::Accept | CodexApprovalStrategy::Decline => Value::Null,
+        }
+    } else {
+        Value::Null
+    };
     json!({
         "jsonrpc": "2.0",
         "id": id,
         "result": {
             "action": if accepted { "accept" } else { "cancel" },
             "content": if accepted { json!({}) } else { Value::Null },
-            "_meta": null
+            "_meta": response_meta
         }
     })
 }
@@ -1668,8 +1696,8 @@ mod tests {
         }
     }
 
-    fn tool_approval_params(server_name: &str, mode: &str) -> Value {
-        json!({
+    fn elicitation_params(server_name: &str, mode: &str, metadata: Option<Value>) -> Value {
+        let mut params = json!({
             "threadId": "thread-1",
             "serverName": server_name,
             "mode": mode,
@@ -1678,11 +1706,26 @@ mod tests {
                 "type": "object",
                 "properties": {}
             }
-        })
+        });
+        if let Some(metadata) = metadata {
+            params["_meta"] = metadata;
+        }
+        params
+    }
+
+    fn tool_approval_params(server_name: &str, mode: &str) -> Value {
+        elicitation_params(
+            server_name,
+            mode,
+            Some(json!({
+                "codex_request_type": "approval_request",
+                "codex_approval_kind": "mcp_tool_call"
+            })),
+        )
     }
 
     #[test]
-    fn configured_mcp_server_elicitations_are_accepted_with_empty_content() {
+    fn mcp_tool_approval_from_configured_server_is_accepted_with_empty_content() {
         let options = CodexOptions::from_config(&config(HashMap::from([
             ("approval_strategy".into(), json!("accept")),
             ("mcp_elicitation_servers".into(), json!(["shua"])),
@@ -1703,6 +1746,69 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn regular_form_from_trusted_server_is_not_auto_accepted() {
+        let options = CodexOptions::from_config(&config(HashMap::from([
+            ("approval_strategy".into(), json!("accept")),
+            ("mcp_elicitation_servers".into(), json!(["shua"])),
+        ])))
+        .expect("valid Codex options");
+        let params = json!({
+            "threadId": "thread-1",
+            "serverName": "shua",
+            "mode": "form",
+            "message": "Provide a search query.",
+            "requestedSchema": {
+                "type": "object",
+                "properties": { "query": { "type": "string" } },
+                "required": ["query"]
+            }
+        });
+
+        assert!(!accepts_mcp_elicitation(&params, &options));
+        assert_eq!(
+            mcp_elicitation_response(9, &params, &options)["result"]["action"],
+            "cancel"
+        );
+    }
+
+    #[test]
+    fn tool_suggestion_form_is_not_auto_accepted() {
+        let options = CodexOptions::from_config(&config(HashMap::from([
+            ("approval_strategy".into(), json!("accept")),
+            ("mcp_elicitation_servers".into(), json!(["shua"])),
+        ])))
+        .expect("valid Codex options");
+        let params = elicitation_params(
+            "shua",
+            "form",
+            Some(json!({
+                "codex_request_type": "tool_suggestion",
+                "codex_approval_kind": "tool_suggestion"
+            })),
+        );
+
+        assert!(!accepts_mcp_elicitation(&params, &options));
+        assert_eq!(
+            mcp_elicitation_response(10, &params, &options)["result"]["action"],
+            "cancel"
+        );
+    }
+
+    #[test]
+    fn accept_for_session_persists_mcp_approval_for_session() {
+        let options = CodexOptions::from_config(&config(HashMap::from([
+            ("approval_strategy".into(), json!("accept_for_session")),
+            ("mcp_elicitation_servers".into(), json!(["shua"])),
+        ])))
+        .expect("valid Codex options");
+        let params = tool_approval_params("shua", "form");
+
+        let response = mcp_elicitation_response(11, &params, &options);
+        assert_eq!(response["result"]["action"], "accept");
+        assert_eq!(response["result"]["_meta"], json!({ "persist": "session" }));
     }
 
     #[test]
