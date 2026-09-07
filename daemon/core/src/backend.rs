@@ -100,6 +100,17 @@ pub trait AgentBackend {
         Ok(session_id)
     }
 
+    /// Creates a session with backend-specific configuration. Backends that
+    /// do not consume the configuration retain the existing session behavior.
+    async fn new_session_with_settings_and_config(
+        &self,
+        cwd: PathBuf,
+        settings: AgentSessionSettings,
+        _config: Option<Value>,
+    ) -> Result<String, String> {
+        self.new_session_with_settings(cwd, settings).await
+    }
+
     /// Sets the human-readable name of an upstream session when the backend
     /// supports it. Backends without a native session-name API can leave this
     /// as a no-op.

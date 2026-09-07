@@ -1414,7 +1414,23 @@ impl AgentBackend for CodexAppServerAgent {
         cwd: PathBuf,
         settings: AgentSessionSettings,
     ) -> Result<String, String> {
+        self.new_session_with_settings_and_config(cwd, settings, None)
+            .await
+    }
+
+    async fn new_session_with_settings_and_config(
+        &self,
+        cwd: PathBuf,
+        settings: AgentSessionSettings,
+        config: Option<Value>,
+    ) -> Result<String, String> {
         let resolved_cwd = self.resolve_cwd(cwd);
+        let effective_settings = if settings.model.is_none() && settings.reasoning_effort.is_none()
+        {
+            self.options.default_settings.clone()
+        } else {
+            settings
+        };
         let mut params = json!({
             "cwd": resolved_cwd.display().to_string(),
             "approvalPolicy": self.options.approval_policy.clone(),
@@ -1422,10 +1438,13 @@ impl AgentBackend for CodexAppServerAgent {
             "experimentalRawEvents": self.options.experimental_raw_events,
             "persistExtendedHistory": self.options.persist_extended_history,
         });
-        if let Some(model) = &settings.model {
+        if let Some(config) = config {
+            params["config"] = config;
+        }
+        if let Some(model) = &effective_settings.model {
             params["model"] = Value::String(model.clone());
         }
-        if let Some(reasoning_effort) = &settings.reasoning_effort {
+        if let Some(reasoning_effort) = &effective_settings.reasoning_effort {
             params["reasoningEffort"] = Value::String(reasoning_effort.clone());
         }
         if let Some(reviewer) = &self.options.approvals_reviewer {
@@ -1441,7 +1460,7 @@ impl AgentBackend for CodexAppServerAgent {
             .ok_or_else(|| String::from("codex thread/start response missing thread.id"))?;
         self.session_settings
             .borrow_mut()
-            .insert(session_id.clone(), settings);
+            .insert(session_id.clone(), effective_settings);
         Ok(session_id)
     }
 

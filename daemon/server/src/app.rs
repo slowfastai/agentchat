@@ -753,7 +753,7 @@ impl AppProtocolSession {
                 thread_id,
                 agent_id,
             } => {
-                self.handle_add_thread_participant(thread_id, agent_id, None)
+                self.handle_add_thread_participant(thread_id, agent_id, None, None)
                     .await;
             }
             ClientMessage::AddThreadParticipantWithConfig {
@@ -761,7 +761,16 @@ impl AppProtocolSession {
                 agent_id,
                 config,
             } => {
-                self.handle_add_thread_participant(thread_id, agent_id, Some(config))
+                self.handle_add_thread_participant(thread_id, agent_id, Some(config), None)
+                    .await;
+            }
+            ClientMessage::AddThreadParticipantWithAgentConfig {
+                thread_id,
+                agent_id,
+                config,
+                agent_config,
+            } => {
+                self.handle_add_thread_participant(thread_id, agent_id, Some(config), agent_config)
                     .await;
             }
             ClientMessage::SetThreadParticipantSettings {
@@ -896,6 +905,7 @@ impl AppProtocolSession {
             working_dir,
             settings,
             None,
+            None,
         )
         .await
     }
@@ -906,6 +916,7 @@ impl AppProtocolSession {
         working_dir: String,
         settings: AgentSessionSettings,
         session_name: Option<String>,
+        agent_config: Option<serde_json::Value>,
     ) -> Result<(String, String), ResponseEvent> {
         let cwd = {
             let p = PathBuf::from(&working_dir);
@@ -945,12 +956,15 @@ impl AppProtocolSession {
                 message: "agent is not online".into(),
             }),
             (Some(agent_id), Some(agent), true) => {
-                let session_result =
-                    if settings.model.is_none() && settings.reasoning_effort.is_none() {
-                        agent.new_session(cwd).await
-                    } else {
-                        agent.new_session_with_settings(cwd, settings).await
-                    };
+                let session_result = if agent_config.is_some() {
+                    agent
+                        .new_session_with_settings_and_config(cwd, settings, agent_config)
+                        .await
+                } else if settings.model.is_none() && settings.reasoning_effort.is_none() {
+                    agent.new_session(cwd).await
+                } else {
+                    agent.new_session_with_settings(cwd, settings).await
+                };
                 match session_result {
                     Ok(upstream_session_id) => {
                         if let Some(session_name) = session_name
@@ -1248,6 +1262,7 @@ impl AppProtocolSession {
         thread_id: String,
         agent_id: String,
         requested_config: Option<ThreadParticipantConfig>,
+        agent_config: Option<serde_json::Value>,
     ) {
         let (working_dir, thread_title) = match self.thread_store.borrow().get_thread(&thread_id) {
             Some(thread) => (thread.working_dir.clone(), thread.title.clone()),
@@ -1276,6 +1291,7 @@ impl AppProtocolSession {
                 working_dir,
                 config.settings.clone(),
                 thread_title,
+                agent_config,
             )
             .await
         {
