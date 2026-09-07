@@ -878,9 +878,19 @@ fn is_mcp_tool_approval(params: &Value) -> bool {
         return false;
     };
 
-    params.get("mode").and_then(Value::as_str) == Some("form")
-        && metadata.get("codex_approval_kind").and_then(Value::as_str) == Some("mcp_tool_call")
-        && metadata.get("codex_request_type").and_then(Value::as_str) == Some("approval_request")
+    if params.get("mode").and_then(Value::as_str) != Some("form")
+        || metadata.get("codex_approval_kind").and_then(Value::as_str) != Some("mcp_tool_call")
+    {
+        return false;
+    }
+
+    // Codex 0.153.0 marks MCP tool approvals with codex_approval_kind. Some
+    // app-server versions also include codex_request_type; reject that field
+    // when it is present but does not identify an approval request.
+    metadata
+        .get("codex_request_type")
+        .map(|value| value.as_str() == Some("approval_request"))
+        .unwrap_or(true)
 }
 
 fn mcp_elicitation_response(id: u64, params: &Value, options: &CodexOptions) -> Value {
@@ -1718,7 +1728,6 @@ mod tests {
             server_name,
             mode,
             Some(json!({
-                "codex_request_type": "approval_request",
                 "codex_approval_kind": "mcp_tool_call"
             })),
         )
@@ -1795,6 +1804,48 @@ mod tests {
             mcp_elicitation_response(10, &params, &options)["result"]["action"],
             "cancel"
         );
+    }
+
+    #[test]
+    fn non_approval_request_type_is_not_auto_accepted() {
+        let options = CodexOptions::from_config(&config(HashMap::from([
+            ("approval_strategy".into(), json!("accept")),
+            ("mcp_elicitation_servers".into(), json!(["shua"])),
+        ])))
+        .expect("valid Codex options");
+        let params = elicitation_params(
+            "shua",
+            "form",
+            Some(json!({
+                "codex_request_type": "regular_request",
+                "codex_approval_kind": "mcp_tool_call"
+            })),
+        );
+
+        assert!(!accepts_mcp_elicitation(&params, &options));
+        assert_eq!(
+            mcp_elicitation_response(12, &params, &options)["result"]["action"],
+            "cancel"
+        );
+    }
+
+    #[test]
+    fn approval_request_type_is_accepted_when_present() {
+        let options = CodexOptions::from_config(&config(HashMap::from([
+            ("approval_strategy".into(), json!("accept")),
+            ("mcp_elicitation_servers".into(), json!(["shua"])),
+        ])))
+        .expect("valid Codex options");
+        let params = elicitation_params(
+            "shua",
+            "form",
+            Some(json!({
+                "codex_request_type": "approval_request",
+                "codex_approval_kind": "mcp_tool_call"
+            })),
+        );
+
+        assert!(accepts_mcp_elicitation(&params, &options));
     }
 
     #[test]
