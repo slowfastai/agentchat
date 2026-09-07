@@ -735,6 +735,17 @@ pub enum ClientMessage {
         agent_id: String,
         config: ThreadParticipantConfig,
     },
+    /// Add an agent participant and pass backend-specific session configuration
+    /// to the upstream agent. Existing clients should continue using the
+    /// simpler variant above; this extension is used by macOS to scope MCP
+    /// servers to one PDF-agent session.
+    AddThreadParticipantWithAgentConfig {
+        thread_id: String,
+        agent_id: String,
+        config: ThreadParticipantConfig,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_config: Option<Value>,
+    },
     /// Change an agent participant's runtime settings for its next turn.
     SetThreadParticipantSettings {
         thread_id: String,
@@ -841,6 +852,22 @@ mod tests {
                         reasoning_effort: Some("max".into()),
                     },
                 },
+            },
+            ClientMessage::AddThreadParticipantWithAgentConfig {
+                thread_id: "thread-1".into(),
+                agent_id: "codex".into(),
+                config: ThreadParticipantConfig {
+                    display_name: "Paper Codex".into(),
+                    avatar: "PC".into(),
+                    settings: AgentSessionSettings::default(),
+                },
+                agent_config: Some(json!({
+                    "mcp_servers": {
+                        "shua": {
+                            "url": "http://127.0.0.1:43123/mcp?token=test"
+                        }
+                    }
+                })),
             },
             ClientMessage::SetThreadParticipantSettings {
                 thread_id: "thread-1".into(),
