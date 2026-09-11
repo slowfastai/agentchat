@@ -1590,6 +1590,10 @@ impl AppProtocolSession {
             }
         }
 
+        if let Some(session_id) = participant.session_id.as_deref() {
+            self.close_upstream_session(session_id).await;
+        }
+
         let participant = self
             .thread_store
             .borrow_mut()
@@ -1608,7 +1612,6 @@ impl AppProtocolSession {
             self.session_event_log
                 .borrow_mut()
                 .remove_session(&session_id);
-            self.close_upstream_session(&session_id).await;
             self.manager.borrow_mut().remove_session(&session_id);
             self.created_sessions
                 .retain(|created| created != &session_id);
@@ -1662,6 +1665,10 @@ impl AppProtocolSession {
             thread_id: thread_id.clone(),
         });
 
+        for session_id in &session_ids {
+            self.close_upstream_session(session_id).await;
+        }
+
         let removed_thread = self
             .thread_store
             .borrow_mut()
@@ -1682,7 +1689,6 @@ impl AppProtocolSession {
             self.session_event_log
                 .borrow_mut()
                 .remove_session(&session_id);
-            self.close_upstream_session(&session_id).await;
             self.manager.borrow_mut().remove_session(&session_id);
             self.created_sessions
                 .retain(|created| created != &session_id);
