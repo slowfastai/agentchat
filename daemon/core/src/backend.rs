@@ -144,6 +144,14 @@ pub trait AgentBackend {
 
     async fn prompt(&self, session_id: String, text: String) -> Result<AgentPromptResult, String>;
     async fn cancel(&self, session_id: String) -> Result<(), String>;
+
+    /// Closes an upstream session when the backend supports native session
+    /// cleanup. Backends without a session-level close operation retain the
+    /// historical no-op behavior.
+    async fn close_session(&self, _session_id: String) -> Result<(), String> {
+        Ok(())
+    }
+
     fn take_update_rx(&self) -> Option<mpsc::UnboundedReceiver<AgentNotification>>;
     fn subscribe_health(&self) -> watch::Receiver<bool>;
     fn is_alive(&self) -> bool;

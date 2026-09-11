@@ -332,6 +332,32 @@ impl AgentBackend for AcpAgent {
             .map_err(|err| err.to_string())
     }
 
+    async fn close_session(&self, session_id: String) -> Result<(), String> {
+        let result = if self.session_close_supported.get() {
+            self.conn
+                .close_session(CloseSessionRequest::new(session_id.clone()))
+                .await
+                .map(|_| ())
+                .map_err(|err| err.to_string())
+        } else {
+            Ok(())
+        };
+
+        self.session_config_options.borrow_mut().remove(&session_id);
+        self.discovered_setting_sessions
+            .borrow_mut()
+            .retain(|_, cached_session_id| cached_session_id != &session_id);
+
+        let latest_is_closed =
+            self.latest_session_id.borrow().as_deref() == Some(session_id.as_str());
+        if latest_is_closed {
+            *self.latest_session_id.borrow_mut() =
+                self.session_config_options.borrow().keys().next().cloned();
+        }
+
+        result
+    }
+
     fn setting_options(&self) -> Vec<AgentSettingOption> {
         let Some(session_id) = self.latest_session_id.borrow().clone() else {
             return Vec::new();

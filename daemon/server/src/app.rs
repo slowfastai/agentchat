@@ -848,6 +848,27 @@ impl AppProtocolSession {
         }
     }
 
+    async fn close_upstream_session(&self, public_session_id: &str) {
+        let target = {
+            let manager = self.manager.borrow();
+            let Some(binding) = manager.session_binding(public_session_id).cloned() else {
+                return;
+            };
+            manager
+                .get_agent(&binding.agent_id)
+                .map(|agent| (agent, binding.upstream_session_id))
+        };
+
+        let Some((agent, upstream_session_id)) = target else {
+            return;
+        };
+        if let Err(err) = agent.close_session(upstream_session_id.clone()).await {
+            warn!(
+                "failed to close upstream session {upstream_session_id} for public session {public_session_id}: {err}"
+            );
+        }
+    }
+
     pub async fn shutdown(&mut self) {
         let active_session_ids = self
             .active_prompt_sessions
@@ -874,10 +895,12 @@ impl AppProtocolSession {
         }
         self.active_prompt_sessions.borrow_mut().clear();
 
-        cleanup_created_sessions(&self.session_store, &self.created_sessions).await;
-        self.manager
-            .borrow_mut()
-            .remove_sessions(&self.created_sessions);
+        let created_sessions = self.created_sessions.clone();
+        for session_id in &created_sessions {
+            self.close_upstream_session(session_id).await;
+        }
+        cleanup_created_sessions(&self.session_store, &created_sessions).await;
+        self.manager.borrow_mut().remove_sessions(&created_sessions);
         self.created_sessions.clear();
     }
 
@@ -1585,6 +1608,7 @@ impl AppProtocolSession {
             self.session_event_log
                 .borrow_mut()
                 .remove_session(&session_id);
+            self.close_upstream_session(&session_id).await;
             self.manager.borrow_mut().remove_session(&session_id);
             self.created_sessions
                 .retain(|created| created != &session_id);
@@ -1658,6 +1682,7 @@ impl AppProtocolSession {
             self.session_event_log
                 .borrow_mut()
                 .remove_session(&session_id);
+            self.close_upstream_session(&session_id).await;
             self.manager.borrow_mut().remove_session(&session_id);
             self.created_sessions
                 .retain(|created| created != &session_id);
@@ -1951,6 +1976,7 @@ impl AppProtocolSession {
         self.session_event_log
             .borrow_mut()
             .remove_session(&session_id);
+        self.close_upstream_session(&session_id).await;
         self.manager.borrow_mut().remove_session(&session_id);
         self.created_sessions
             .retain(|created| created != &session_id);
@@ -2802,6 +2828,7 @@ fn spawn_distillation_task(
             }
         };
 
+        let close_agent = agent.clone();
         let distill_session_id = match agent
             .new_session(PathBuf::from(&transcript.working_dir))
             .await
@@ -2837,6 +2864,10 @@ fn spawn_distillation_task(
             .await;
 
         internal_sessions.borrow_mut().remove(&distill_session_id);
+
+        if let Err(err) = close_agent.close_session(distill_session_id.clone()).await {
+            warn!("failed to close distillation session {distill_session_id}: {err}");
+        }
 
         match result {
             Ok(skills) => {

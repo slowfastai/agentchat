@@ -3252,7 +3252,7 @@ async fn websocket_disconnect_keeps_in_flight_prompt_running_until_explicit_canc
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn websocket_close_session_removes_it_from_session_list() {
+async fn websocket_close_session_closes_upstream_and_keeps_other_session_alive() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -3267,14 +3267,36 @@ async fn websocket_close_session_removes_it_from_session_list() {
                 },
             )
             .await;
-            let session_id = expect_session_created(&mut ws).await;
+            let first_session_id = expect_session_created(&mut ws).await;
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::CreateSession {
+                    agent_id: None,
+                    working_dir: ".".into(),
+                },
+            )
+            .await;
+            let second_session_id = expect_session_created(&mut ws).await;
+
+            let first_upstream_session_id = harness
+                .manager
+                .borrow()
+                .upstream_session_for_session(&first_session_id)
+                .unwrap()
+                .to_string();
 
             send_client_message(&mut ws, &ClientMessage::ListSessions).await;
             match receive_event(&mut ws).await {
                 ResponseEvent::SessionList { sessions } => {
-                    assert!(sessions
-                        .iter()
-                        .any(|session| session.session_id == session_id));
+                    assert!(sessions.iter().any(|session| {
+                        session.session_id == first_session_id
+                            && session.agent_id == "fake"
+                    }));
+                    assert!(sessions.iter().any(|session| {
+                        session.session_id == second_session_id
+                            && session.agent_id == "fake"
+                    }));
                 }
                 event => panic!("unexpected event while listing sessions: {event:?}"),
             }
@@ -3282,31 +3304,66 @@ async fn websocket_close_session_removes_it_from_session_list() {
             send_client_message(
                 &mut ws,
                 &ClientMessage::CloseSession {
-                    session_id: session_id.clone(),
+                    session_id: first_session_id.clone(),
                 },
             )
             .await;
             match receive_event(&mut ws).await {
                 ResponseEvent::SessionClosed { session_id: sid } => {
-                    assert_eq!(sid, session_id);
+                    assert_eq!(sid, first_session_id);
                 }
                 event => panic!("unexpected event while closing session: {event:?}"),
             }
+
+            wait_for_file_line(
+                &harness.events_path,
+                &format!("close_session:{first_upstream_session_id}"),
+            )
+            .await;
 
             send_client_message(&mut ws, &ClientMessage::ListSessions).await;
             match receive_event(&mut ws).await {
                 ResponseEvent::SessionList { sessions } => {
                     assert!(!sessions
                         .iter()
-                        .any(|session| session.session_id == session_id));
+                        .any(|session| session.session_id == first_session_id));
+                    assert!(sessions
+                        .iter()
+                        .any(|session| session.session_id == second_session_id));
                 }
                 event => panic!("unexpected event while re-listing sessions: {event:?}"),
             }
 
             assert_eq!(
-                harness.manager.borrow().agent_for_session(&session_id),
+                harness.manager.borrow().agent_for_session(&first_session_id),
                 None
             );
+            assert_eq!(
+                harness
+                    .manager
+                    .borrow()
+                    .agent_for_session(&second_session_id),
+                Some("fake")
+            );
+
+            send_client_message(
+                &mut ws,
+                &ClientMessage::Prompt {
+                    session_id: second_session_id.clone(),
+                    content: "second session still works".into(),
+                },
+            )
+            .await;
+            let events = collect_prompt_events(&mut ws, &second_session_id).await;
+            assert!(events.iter().any(|event| matches!(
+                event,
+                ResponseEvent::Delta {
+                    session_id,
+                    delta_type: DeltaType::Text,
+                    content,
+                    ..
+                } if session_id == &second_session_id && content == "echo: second session still works"
+            )));
 
             ws.send(Message::Close(None)).await.unwrap();
             drop(ws);

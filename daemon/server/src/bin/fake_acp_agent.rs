@@ -108,11 +108,11 @@ impl acp::Agent for FakeAgent {
         args: acp::InitializeRequest,
     ) -> acp::Result<acp::InitializeResponse> {
         self.record_event("initialize");
-        Ok(
-            acp::InitializeResponse::new(args.protocol_version).agent_info(
-                acp::Implementation::new("fake-acp-agent", "0.1.0").title("Fake ACP Agent"),
-            ),
-        )
+        Ok(acp::InitializeResponse::new(args.protocol_version)
+            .agent_info(acp::Implementation::new("fake-acp-agent", "0.1.0").title("Fake ACP Agent"))
+            .agent_capabilities(acp::AgentCapabilities::new().session_capabilities(
+                acp::SessionCapabilities::new().close(acp::SessionCloseCapabilities::new()),
+            )))
     }
 
     async fn authenticate(
@@ -221,6 +221,14 @@ impl acp::Agent for FakeAgent {
         self.cancelled_sessions.borrow_mut().insert(session_id);
         self.cancel_notify.notify_waiters();
         Ok(())
+    }
+
+    async fn close_session(
+        &self,
+        args: acp::CloseSessionRequest,
+    ) -> acp::Result<acp::CloseSessionResponse> {
+        self.record_event(&format!("close_session:{}", args.session_id));
+        Ok(acp::CloseSessionResponse::new())
     }
 }
 
